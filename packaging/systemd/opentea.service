@@ -1,0 +1,39 @@
+[Unit]
+Description=OpenTEA server (CycloneDX Transparency Exchange API reference server)
+Documentation=https://github.com/oej/opentea
+After=network.target
+
+[Service]
+Type=simple
+User=opentea-server
+Group=opentea
+WorkingDirectory=/var/lib/opentea
+EnvironmentFile=-/etc/opentea/opentea.env
+ExecStart=/usr/local/bin/opentea
+Restart=on-failure
+RestartSec=5s
+
+# Hardening. The service needs no network capabilities (default listen port
+# :8080 is unprivileged) and no filesystem access outside its own data dir.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/opentea
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

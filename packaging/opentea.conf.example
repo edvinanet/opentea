@@ -1,0 +1,38 @@
+# Copy this file to /etc/opentea/opentea.conf (the default path the opentea
+# binary itself checks at startup -- no systemd-specific wiring needed; this
+# works no matter how the process is launched). To use a different path,
+# set TEA_CONFIG_FILE to point at it instead.
+#
+# Simple "KEY=VALUE" format: blank lines and lines starting with "#" are
+# ignored, no quoting. All keys are optional -- omit anything you want left
+# at its built-in default.
+#
+# Precedence (highest wins): environment variable > this file > built-in
+# default. That means an operator can always override a specific value with
+# an env var (e.g. in the systemd unit, or ad hoc) without editing this file.
+
+# Address the server listens on. Port must stay >1024 (unprivileged) unless
+# you also grant CAP_NET_BIND_SERVICE in the systemd unit.
+TEA_LISTEN_ADDR=:8080
+
+# Paths, if non-standard. Relative paths resolve against the process's
+# working directory (WorkingDirectory= in the systemd unit).
+TEA_DB_PATH=/var/lib/opentea/opentea.db
+TEA_BLOB_DIR=/var/lib/opentea/blobs
+
+# This server's own public root URL -- used in discovery responses and
+# generated file URLs.
+TEA_ROOT_URL=https://tea.example.com
+
+# Comma-separated list of supported TEA API versions, reported by discovery.
+TEA_VERSIONS=0.4.0
+
+# Organisation name, shown in the admin GUI and in GET /admin/v1/stats.
+# Leave unset to omit it entirely.
+TEA_ORG_NAME=Acme Corp
+
+# TLS: if both are set, the server listens with HTTPS instead of plain HTTP.
+# Leave both unset (the default) for plain HTTP -- e.g. if TLS is terminated
+# by a reverse proxy in front of this server instead.
+#TEA_TLS_CERT_FILE=/etc/opentea/tls/cert.pem
+#TEA_TLS_KEY_FILE=/etc/opentea/tls/key.pem

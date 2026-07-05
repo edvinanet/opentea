@@ -1,0 +1,55 @@
+package api
+
+import (
+	"errors"
+	"net/http"
+
+	"github.com/oej/opentea/internal/httpx"
+	"github.com/oej/opentea/internal/repo"
+	"github.com/oej/opentea/pkg/tea"
+)
+
+func (s *Server) getProductRelease(w http.ResponseWriter, r *http.Request) {
+	uuid, err := httpx.PathUUID(r, "uuid")
+	if err != nil {
+		httpx.BadRequest(w, "invalid uuid")
+		return
+	}
+	pr, err := s.repo.GetProductRelease(r.Context(), uuid)
+	if errors.Is(err, repo.ErrNotFound) {
+		httpx.NotFound(w)
+		return
+	}
+	if err != nil {
+		httpx.InternalError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, pr)
+}
+
+func (s *Server) queryProductReleases(w http.ResponseWriter, r *http.Request) {
+	idType, idValue, err := httpx.IDFilter(r)
+	if err != nil {
+		httpx.BadRequest(w, "invalid idType")
+		return
+	}
+	pp, ok := parsePageParams(w, r, productReleaseSortFields)
+	if !ok {
+		return
+	}
+
+	rows, err := s.repo.QueryProductReleases(r.Context(), idType, idValue, pp.SortField, pp.SortOrder, pp.Cursor, pp.PageSize+1)
+	if err != nil {
+		httpx.InternalError(w, r, err)
+		return
+	}
+	page, hasNext := splitPage(rows, pp.PageSize)
+
+	resp := tea.PaginatedProductReleases{Results: page}
+	resp.HasNext = hasNext
+	if hasNext {
+		last := page[len(page)-1]
+		resp.NextPageToken = nextPageToken(true, pp.SortField, pp.SortOrder, productReleaseSortValue(last, pp.SortField), last.UUID)
+	}
+	httpx.WriteJSON(w, http.StatusOK, resp)
+}

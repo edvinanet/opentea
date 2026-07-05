@@ -1,0 +1,32 @@
+{{define "content"}}
+<h1>Users</h1>
+{{if .Error}}<div class="error">{{.Error}}</div>{{end}}
+<table>
+<tr><th>Username</th><th>Role</th><th>Created</th><th></th></tr>
+{{range .Users}}
+<tr>
+  <td>{{.Username}}</td>
+  <td>{{.Role}}</td>
+  <td>{{.CreatedAt.Format "2006-01-02 15:04"}}</td>
+  <td>
+    <form class="inline" method="post" action="/admin/ui/users/{{.UUID}}/delete" onsubmit="return confirm('Delete user {{.Username}}?');">
+      <button type="submit">Delete</button>
+    </form>
+  </td>
+</tr>
+{{end}}
+</table>
+
+<h2>Add user</h2>
+<form method="post" action="/admin/ui/users">
+  <label>Username<input type="text" name="username" required></label>
+  <label>Password<input type="password" name="password" required></label>
+  <label>Role
+    <select name="role">
+      <option value="consumer">consumer</option>
+      <option value="admin">admin</option>
+    </select>
+  </label>
+  <button type="submit">Create</button>
+</form>
+{{end}}

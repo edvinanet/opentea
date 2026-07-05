@@ -1,0 +1,9 @@
+{
+  "_comment": "Placeholder fixture asset: not a real CycloneDX document.",
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.6",
+  "serialNumber": "urn:uuid:placeholder-acme-gateway-sbom-json",
+  "components": [
+    {"type": "application", "name": "acme-gateway-core", "version": "3.0.0-beta.1"}
+  ]
+}

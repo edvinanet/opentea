@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Placeholder fixture asset: not a real CycloneDX document. -->
+<bom xmlns="http://cyclonedx.org/schema/bom/1.6" serialNumber="urn:uuid:placeholder-acme-gateway-sbom-xml">
+  <components>
+    <component type="application">
+      <name>acme-gateway-core</name>
+      <version>3.0.0-beta.1</version>
+    </component>
+  </components>
+</bom>

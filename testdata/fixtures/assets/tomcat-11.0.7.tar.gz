@@ -1,0 +1,2 @@
+Placeholder fixture asset standing in for the Apache Tomcat 11.0.7 tar.gz distribution.
+Not a real archive -- just bytes for the fixtures loader to upload, checksum, and serve.

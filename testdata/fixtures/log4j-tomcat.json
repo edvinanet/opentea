@@ -1,0 +1,204 @@
+{
+  "steps": [
+    {
+      "op": "POST",
+      "path": "/admin/v1/products",
+      "body": {
+        "name": "Apache Log4j 2",
+        "identifiers": [
+          {"idType": "CPE", "idValue": "cpe:2.3:a:apache:log4j"},
+          {"idType": "PURL", "idValue": "pkg:maven/org.apache.logging.log4j/log4j-api"}
+        ]
+      },
+      "save": "log4jProduct"
+    },
+    {
+      "op": "POST",
+      "path": "/admin/v1/products/{{log4jProduct.uuid}}/releases",
+      "body": {
+        "version": "2.24.3",
+        "createdDate": "2025-04-01T15:43:00Z",
+        "releaseDate": "2025-04-01T15:43:00Z",
+        "identifiers": [
+          {"idType": "TEI", "idValue": "urn:tei:uuid:apache.org:log4j-2.24.3"}
+        ]
+      },
+      "save": "log4jRelease"
+    },
+    {
+      "op": "POST",
+      "path": "/admin/v1/components",
+      "body": {
+        "name": "Apache Log4j Core",
+        "identifiers": [
+          {"idType": "CPE", "idValue": "cpe:2.3:a:apache:log4j"},
+          {"idType": "PURL", "idValue": "pkg:maven/org.apache.logging.log4j/log4j-core"}
+        ]
+      },
+      "save": "log4jCoreComponent"
+    },
+    {
+      "op": "POST",
+      "path": "/admin/v1/components/{{log4jCoreComponent.uuid}}/releases",
+      "body": {
+        "version": "2.24.3",
+        "createdDate": "2025-04-01T15:43:00Z",
+        "releaseDate": "2025-04-01T15:43:00Z",
+        "identifiers": [
+          {"idType": "PURL", "idValue": "pkg:maven/org.apache.logging.log4j/log4j-core@2.24.3"}
+        ]
+      },
+      "save": "log4jCoreRelease"
+    },
+    {
+      "op": "POST",
+      "path": "/admin/v1/productReleases/{{log4jRelease.uuid}}/components",
+      "body": {
+        "uuid": "{{log4jCoreComponent.uuid}}",
+        "release": "{{log4jCoreRelease.uuid}}"
+      }
+    },
+    {
+      "op": "POST",
+      "path": "/admin/v1/artifacts",
+      "body": {
+        "name": "Build SBOM",
+        "type": "BOM",
+        "createdDate": "2025-04-01T15:43:00Z",
+        "formats": [
+          {"mediaType": "application/vnd.cyclonedx+xml", "description": "CycloneDX SBOM (XML)"}
+        ]
+      },
+      "save": "log4jSbomArtifact"
+    },
+    {
+      "op": "UPLOAD",
+      "path": "/admin/v1/artifacts/{{log4jSbomArtifact.uuid}}/1/files?formatIndex=0",
+      "file": "assets/log4j-core-sbom.xml",
+      "contentType": "application/vnd.cyclonedx+xml"
+    },
+    {
+      "op": "POST",
+      "path": "/admin/v1/artifacts",
+      "body": {
+        "name": "Vulnerability Disclosure Report",
+        "type": "VULNERABILITIES",
+        "createdDate": "2024-12-13T00:00:00Z",
+        "formats": [
+          {"mediaType": "application/vnd.cyclonedx+xml", "description": "CycloneDX VDR (XML)"}
+        ]
+      },
+      "save": "log4jVdrArtifact"
+    },
+    {
+      "op": "UPLOAD",
+      "path": "/admin/v1/artifacts/{{log4jVdrArtifact.uuid}}/1/files?formatIndex=0",
+      "file": "assets/log4j-core-vdr.xml",
+      "contentType": "application/vnd.cyclonedx+xml"
+    },
+    {
+      "op": "POST",
+      "path": "/admin/v1/componentReleases/{{log4jCoreRelease.uuid}}/collections",
+      "body": {
+        "updateReason": {"type": "INITIAL_RELEASE", "comment": "Initial collection for this release"},
+        "artifacts": [
+          {"uuid": "{{log4jSbomArtifact.uuid}}", "version": 1},
+          {"uuid": "{{log4jVdrArtifact.uuid}}", "version": 1}
+        ]
+      },
+      "save": "log4jCollection"
+    },
+    {
+      "op": "POST",
+      "path": "/admin/v1/productReleases/{{log4jRelease.uuid}}/cle/events",
+      "body": {
+        "type": "released",
+        "effective": "2025-04-01T15:43:00Z",
+        "published": "2025-04-01T15:43:00Z",
+        "version": "2.24.3",
+        "license": "Apache-2.0",
+        "description": "Log4j 2.24.3 released"
+      }
+    },
+
+    {
+      "op": "POST",
+      "path": "/admin/v1/components",
+      "body": {
+        "name": "Apache Tomcat",
+        "identifiers": [
+          {"idType": "CPE", "idValue": "cpe:2.3:a:apache:tomcat"}
+        ]
+      },
+      "save": "tomcatComponent"
+    },
+    {
+      "op": "POST",
+      "path": "/admin/v1/components/{{tomcatComponent.uuid}}/releases",
+      "body": {
+        "version": "11.0.7",
+        "createdDate": "2025-05-07T18:08:00Z",
+        "releaseDate": "2025-05-12T18:08:00Z",
+        "identifiers": [
+          {"idType": "PURL", "idValue": "pkg:maven/org.apache.tomcat/tomcat@11.0.7"}
+        ]
+      },
+      "save": "tomcatRelease"
+    },
+    {
+      "op": "POST",
+      "path": "/admin/v1/componentReleases/{{tomcatRelease.uuid}}/distributions",
+      "body": {"description": "Core binary distribution, zip archive"},
+      "save": "tomcatZipDist"
+    },
+    {
+      "op": "UPLOAD",
+      "path": "/admin/v1/distributions/{{tomcatZipDist.distributionId}}/files",
+      "file": "assets/tomcat-11.0.7.zip",
+      "contentType": "application/zip"
+    },
+    {
+      "op": "POST",
+      "path": "/admin/v1/componentReleases/{{tomcatRelease.uuid}}/distributions",
+      "body": {"description": "Core binary distribution, tar.gz archive"},
+      "save": "tomcatTarDist"
+    },
+    {
+      "op": "UPLOAD",
+      "path": "/admin/v1/distributions/{{tomcatTarDist.distributionId}}/files",
+      "file": "assets/tomcat-11.0.7.tar.gz",
+      "contentType": "application/gzip"
+    },
+    {
+      "op": "POST",
+      "path": "/admin/v1/artifacts",
+      "body": {
+        "name": "Build SBOM",
+        "type": "BOM",
+        "createdDate": "2025-05-07T18:08:00Z",
+        "distributionIds": ["{{tomcatZipDist.distributionId}}", "{{tomcatTarDist.distributionId}}"],
+        "formats": [
+          {"mediaType": "application/vnd.cyclonedx+xml", "description": "CycloneDX SBOM (XML)"}
+        ]
+      },
+      "save": "tomcatSbomArtifact"
+    },
+    {
+      "op": "UPLOAD",
+      "path": "/admin/v1/artifacts/{{tomcatSbomArtifact.uuid}}/1/files?formatIndex=0",
+      "file": "assets/tomcat-sbom.xml",
+      "contentType": "application/vnd.cyclonedx+xml"
+    },
+    {
+      "op": "POST",
+      "path": "/admin/v1/componentReleases/{{tomcatRelease.uuid}}/collections",
+      "body": {
+        "updateReason": {"type": "INITIAL_RELEASE", "comment": "Initial collection for this release"},
+        "artifacts": [
+          {"uuid": "{{tomcatSbomArtifact.uuid}}", "version": 1}
+        ]
+      },
+      "save": "tomcatCollection"
+    }
+  ]
+}

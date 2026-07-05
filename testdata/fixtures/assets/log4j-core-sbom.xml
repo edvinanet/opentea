@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Placeholder fixture asset: not a real CycloneDX document, just bytes to
+     upload/checksum/serve for interoperability testing. -->
+<bom xmlns="http://cyclonedx.org/schema/bom/1.6" serialNumber="urn:uuid:placeholder-log4j-core-sbom">
+  <components>
+    <component type="library">
+      <name>log4j-core</name>
+      <version>2.24.3</version>
+    </component>
+  </components>
+</bom>

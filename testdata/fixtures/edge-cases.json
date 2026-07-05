@@ -1,0 +1,163 @@
+{
+  "steps": [
+    {
+      "op": "POST",
+      "path": "/admin/v1/products",
+      "body": {
+        "name": "Acme Gateway",
+        "identifiers": [{"idType": "PURL", "idValue": "pkg:generic/acme-gateway"}]
+      },
+      "save": "product"
+    },
+    {
+      "op": "POST",
+      "path": "/admin/v1/products/{{product.uuid}}/releases",
+      "body": {
+        "version": "3.0.0-beta.1",
+        "createdDate": "2026-06-01T00:00:00Z",
+        "preRelease": true,
+        "identifiers": [{"idType": "TEI", "idValue": "urn:tei:uuid:acme.example.com:gateway-3.0.0-beta.1"}]
+      },
+      "save": "release"
+    },
+    {
+      "op": "POST",
+      "path": "/admin/v1/components",
+      "body": {"name": "acme-gateway-core"},
+      "save": "component"
+    },
+    {
+      "op": "POST",
+      "path": "/admin/v1/components/{{component.uuid}}/releases",
+      "body": {
+        "version": "3.0.0-beta.1",
+        "createdDate": "2026-06-01T00:00:00Z",
+        "preRelease": true
+      },
+      "save": "componentRelease"
+    },
+    {
+      "op": "POST",
+      "path": "/admin/v1/productReleases/{{release.uuid}}/components",
+      "body": {
+        "uuid": "{{component.uuid}}",
+        "release": "{{componentRelease.uuid}}"
+      }
+    },
+
+    {
+      "op": "POST",
+      "path": "/admin/v1/artifacts",
+      "body": {
+        "name": "Build SBOM",
+        "type": "BOM",
+        "createdDate": "2026-06-01T00:00:00Z",
+        "formats": [
+          {"mediaType": "application/vnd.cyclonedx+xml", "description": "CycloneDX SBOM (XML)"},
+          {"mediaType": "application/vnd.cyclonedx+json", "description": "CycloneDX SBOM (JSON)"}
+        ]
+      },
+      "save": "artifact"
+    },
+    {
+      "op": "UPLOAD",
+      "path": "/admin/v1/artifacts/{{artifact.uuid}}/1/files?formatIndex=0",
+      "file": "assets/edge-sbom.xml",
+      "contentType": "application/vnd.cyclonedx+xml"
+    },
+    {
+      "op": "UPLOAD",
+      "path": "/admin/v1/artifacts/{{artifact.uuid}}/1/files?formatIndex=1",
+      "file": "assets/edge-sbom.json",
+      "contentType": "application/vnd.cyclonedx+json"
+    },
+
+    {
+      "op": "POST",
+      "path": "/admin/v1/componentReleases/{{componentRelease.uuid}}/collections",
+      "body": {
+        "updateReason": {"type": "INITIAL_RELEASE", "comment": "First collection, XML format only known good at this point"},
+        "artifacts": [{"uuid": "{{artifact.uuid}}", "version": 1}]
+      },
+      "save": "collectionV1"
+    },
+    {
+      "op": "POST",
+      "path": "/admin/v1/componentReleases/{{componentRelease.uuid}}/collections",
+      "body": {
+        "updateReason": {"type": "VEX_UPDATED", "comment": "Added exploitability statements after initial triage"},
+        "artifacts": [{"uuid": "{{artifact.uuid}}", "version": 1}]
+      },
+      "save": "collectionV2"
+    },
+    {
+      "op": "POST",
+      "path": "/admin/v1/componentReleases/{{componentRelease.uuid}}/collections",
+      "body": {
+        "updateReason": {"type": "ARTIFACT_ADDED", "comment": "JSON-format SBOM added alongside XML"},
+        "artifacts": [{"uuid": "{{artifact.uuid}}", "version": 1}]
+      },
+      "save": "collectionV3"
+    },
+
+    {
+      "op": "POST",
+      "path": "/admin/v1/productReleases/{{release.uuid}}/cle/events",
+      "body": {
+        "type": "released",
+        "effective": "2026-06-01T00:00:00Z",
+        "published": "2026-06-01T00:00:00Z",
+        "version": "3.0.0-beta.1",
+        "license": "Apache-2.0",
+        "description": "Beta release for early adopter testing"
+      },
+      "save": "releasedEvent"
+    },
+    {
+      "op": "POST",
+      "path": "/admin/v1/productReleases/{{release.uuid}}/cle/events",
+      "body": {
+        "type": "endOfSupport",
+        "effective": "2026-09-01T00:00:00Z",
+        "published": "2026-06-01T00:00:00Z",
+        "versions": [{"range": "vers:generic/>=3.0.0-beta.1|<3.1.0"}],
+        "supportId": "beta",
+        "description": "Beta channel support ends when 3.1.0 GA ships"
+      },
+      "save": "eosEvent"
+    },
+    {
+      "op": "POST",
+      "path": "/admin/v1/productReleases/{{release.uuid}}/cle/events",
+      "body": {
+        "type": "supersededBy",
+        "effective": "2026-09-01T00:00:00Z",
+        "published": "2026-06-01T00:00:00Z",
+        "supersededByVersion": "3.1.0",
+        "description": "Superseded by the 3.1.0 general-availability release"
+      },
+      "save": "supersededEvent"
+    },
+    {
+      "op": "POST",
+      "path": "/admin/v1/productReleases/{{release.uuid}}/cle/events",
+      "body": {
+        "type": "withdrawn",
+        "effective": "2026-06-15T00:00:00Z",
+        "published": "2026-06-15T00:00:00Z",
+        "eventId": 2,
+        "reason": "End-of-support date was announced before the support policy was finalized; corrected in a later event"
+      },
+      "save": "withdrawnEvent"
+    },
+    {
+      "op": "POST",
+      "path": "/admin/v1/productReleases/{{release.uuid}}/cle/definitions",
+      "body": {
+        "id": "beta",
+        "description": "Beta channel support policy: best-effort, superseded by next release",
+        "url": "https://example.com/support/beta"
+      }
+    }
+  ]
+}

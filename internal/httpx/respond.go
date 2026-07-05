@@ -1,0 +1,60 @@
+// Package httpx holds small HTTP response and request-parsing helpers shared
+// by the api and admin handler packages.
+package httpx
+
+import (
+	"encoding/json"
+	"log/slog"
+	"net/http"
+
+	"github.com/oej/opentea/pkg/tea"
+)
+
+// WriteJSON writes v as a JSON response body with the given status code.
+func WriteJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if v == nil {
+		return
+	}
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		slog.Error("write json response failed", "error", err)
+	}
+}
+
+type messageBody struct {
+	Message string `json:"message"`
+}
+
+// BadRequest writes a 400 response. The spec only says "generic 400" for
+// this response, so {"message": ...} is our own convention.
+func BadRequest(w http.ResponseWriter, message string) {
+	WriteJSON(w, http.StatusBadRequest, messageBody{Message: message})
+}
+
+// NotFound writes a 404 response matching the spec's error-response schema.
+func NotFound(w http.ResponseWriter) {
+	WriteJSON(w, http.StatusNotFound, tea.ErrorResponse{Error: tea.ErrorObjectUnknown})
+}
+
+// Unauthorized writes a 401 response -- used both when a session/bearer
+// credential is missing where required, and when one was supplied but
+// didn't resolve to a valid identity. The spec's 401-unauthorized response
+// has no defined body shape ("Authentication required"), so this is our own
+// convention.
+func Unauthorized(w http.ResponseWriter, message string) {
+	WriteJSON(w, http.StatusUnauthorized, messageBody{Message: message})
+}
+
+// Forbidden writes a 403 response -- used when the caller is authenticated
+// but their role doesn't grant the required access.
+func Forbidden(w http.ResponseWriter, message string) {
+	WriteJSON(w, http.StatusForbidden, messageBody{Message: message})
+}
+
+// InternalError logs err server-side (with request context) and writes a
+// generic 500 response with no internal detail leaked to the client.
+func InternalError(w http.ResponseWriter, r *http.Request, err error) {
+	slog.Error("internal server error", "method", r.Method, "path", r.URL.Path, "error", err)
+	WriteJSON(w, http.StatusInternalServerError, messageBody{Message: "internal server error"})
+}

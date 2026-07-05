@@ -1,0 +1,234 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/oej/opentea/internal/bundle/schema.json",
+  "title": "OpenTEA product export/import bundle manifest",
+  "description": "Schema for manifest.json inside a product bundle zip. See docs/bundle-format.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["formatVersion", "exportedAt", "product", "productReleases", "components", "componentReleases", "collections"],
+  "properties": {
+    "formatVersion": { "const": "1.0" },
+    "exportedAt": { "type": "string", "format": "date-time" },
+    "product": { "$ref": "#/$defs/productEntry" },
+    "productReleases": { "type": "array", "items": { "$ref": "#/$defs/productReleaseEntry" } },
+    "components": { "type": "array", "items": { "$ref": "#/$defs/componentEntry" } },
+    "componentReleases": { "type": "array", "items": { "$ref": "#/$defs/componentReleaseEntry" } },
+    "collections": { "type": "array", "items": { "$ref": "#/$defs/collection" } }
+  },
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "identifier": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["idType", "idValue"],
+      "properties": {
+        "idType": { "type": "string", "enum": ["CPE", "TEI", "PURL", "COMPLIANCE_DOCUMENT"] },
+        "idValue": { "type": "string" }
+      }
+    },
+    "checksum": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algType", "algValue"],
+      "properties": {
+        "algType": {
+          "type": "string",
+          "enum": ["MD5", "SHA-1", "SHA-256", "SHA-384", "SHA-512", "SHA3-256", "SHA3-384", "SHA3-512", "BLAKE2b-256", "BLAKE2b-384", "BLAKE2b-512", "BLAKE3"]
+        },
+        "algValue": { "type": "string" }
+      }
+    },
+    "componentRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["uuid"],
+      "properties": {
+        "uuid": { "$ref": "#/$defs/uuid" },
+        "release": { "$ref": "#/$defs/uuid" }
+      }
+    },
+    "updateReason": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["INITIAL_RELEASE", "VEX_UPDATED", "ARTIFACT_UPDATED", "ARTIFACT_ADDED", "ARTIFACT_REMOVED"]
+        },
+        "comment": { "type": "string" }
+      }
+    },
+    "releaseDistribution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["distributionId"],
+      "properties": {
+        "distributionId": { "$ref": "#/$defs/uuid" },
+        "description": { "type": "string" },
+        "identifiers": { "type": "array", "items": { "$ref": "#/$defs/identifier" } },
+        "url": { "type": "string" },
+        "signatureUrl": { "type": "string" },
+        "checksums": { "type": "array", "items": { "$ref": "#/$defs/checksum" } }
+      }
+    },
+    "artifactFormat": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mediaType"],
+      "properties": {
+        "mediaType": { "type": "string" },
+        "description": { "type": "string" },
+        "url": { "type": "string" },
+        "signatureUrl": { "type": "string" },
+        "checksums": { "type": "array", "items": { "$ref": "#/$defs/checksum" } }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["uuid", "version", "type", "formats"],
+      "properties": {
+        "uuid": { "$ref": "#/$defs/uuid" },
+        "version": { "type": "integer", "minimum": 1 },
+        "name": { "type": "string" },
+        "type": {
+          "type": "string",
+          "enum": ["ATTESTATION", "BOM", "BUILD_META", "CERTIFICATION", "FORMULATION", "LICENSE", "RELEASE_NOTES", "SECURITY_TXT", "THREAT_MODEL", "VULNERABILITIES", "OTHER"]
+        },
+        "createdDate": { "type": "string", "format": "date-time" },
+        "distributionIds": { "type": "array", "items": { "$ref": "#/$defs/uuid" } },
+        "formats": { "type": "array", "items": { "$ref": "#/$defs/artifactFormat" } }
+      }
+    },
+    "collection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["uuid", "version", "date", "belongsTo", "artifacts"],
+      "properties": {
+        "uuid": { "$ref": "#/$defs/uuid" },
+        "version": { "type": "integer", "minimum": 1 },
+        "date": { "type": "string", "format": "date-time" },
+        "belongsTo": { "type": "string", "enum": ["COMPONENT_RELEASE", "PRODUCT_RELEASE"] },
+        "updateReason": { "$ref": "#/$defs/updateReason" },
+        "artifacts": { "type": "array", "items": { "$ref": "#/$defs/artifact" } }
+      }
+    },
+    "cleVersionSpecifier": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "version": { "type": "string" },
+        "range": { "type": "string" }
+      }
+    },
+    "cleEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type", "effective", "published"],
+      "properties": {
+        "id": { "type": "integer" },
+        "type": {
+          "type": "string",
+          "enum": ["released", "endOfDevelopment", "endOfSupport", "endOfLife", "endOfDistribution", "endOfMarketing", "supersededBy", "componentRenamed", "withdrawn"]
+        },
+        "effective": { "type": "string", "format": "date-time" },
+        "published": { "type": "string", "format": "date-time" },
+        "version": { "type": "string" },
+        "versions": { "type": "array", "items": { "$ref": "#/$defs/cleVersionSpecifier" } },
+        "supportId": { "type": "string" },
+        "license": { "type": "string" },
+        "supersededByVersion": { "type": "string" },
+        "identifiers": { "type": "array", "items": { "$ref": "#/$defs/identifier" } },
+        "eventId": { "type": "integer" },
+        "reason": { "type": "string" },
+        "description": { "type": "string" },
+        "references": { "type": "array", "items": { "type": "string", "format": "uri" } }
+      }
+    },
+    "cleSupportDefinition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "description"],
+      "properties": {
+        "id": { "type": "string" },
+        "description": { "type": "string" },
+        "url": { "type": "string", "format": "uri" }
+      }
+    },
+    "cle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["events"],
+      "properties": {
+        "events": { "type": "array", "items": { "$ref": "#/$defs/cleEvent" } },
+        "definitions": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "support": { "type": "array", "items": { "$ref": "#/$defs/cleSupportDefinition" } }
+          }
+        }
+      }
+    },
+    "productEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["uuid", "name", "identifiers"],
+      "properties": {
+        "uuid": { "$ref": "#/$defs/uuid" },
+        "name": { "type": "string" },
+        "identifiers": { "type": "array", "items": { "$ref": "#/$defs/identifier" } },
+        "cle": { "$ref": "#/$defs/cle" }
+      }
+    },
+    "productReleaseEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["uuid", "version", "createdDate", "components"],
+      "properties": {
+        "uuid": { "$ref": "#/$defs/uuid" },
+        "product": { "$ref": "#/$defs/uuid" },
+        "productName": { "type": "string" },
+        "version": { "type": "string" },
+        "createdDate": { "type": "string", "format": "date-time" },
+        "releaseDate": { "type": "string", "format": "date-time" },
+        "preRelease": { "type": "boolean" },
+        "identifiers": { "type": "array", "items": { "$ref": "#/$defs/identifier" } },
+        "components": { "type": "array", "items": { "$ref": "#/$defs/componentRef" } },
+        "cle": { "$ref": "#/$defs/cle" }
+      }
+    },
+    "componentEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["uuid", "name", "identifiers"],
+      "properties": {
+        "uuid": { "$ref": "#/$defs/uuid" },
+        "name": { "type": "string" },
+        "identifiers": { "type": "array", "items": { "$ref": "#/$defs/identifier" } },
+        "cle": { "$ref": "#/$defs/cle" }
+      }
+    },
+    "componentReleaseEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["uuid", "version", "createdDate"],
+      "properties": {
+        "uuid": { "$ref": "#/$defs/uuid" },
+        "component": { "$ref": "#/$defs/uuid" },
+        "componentName": { "type": "string" },
+        "version": { "type": "string" },
+        "createdDate": { "type": "string", "format": "date-time" },
+        "releaseDate": { "type": "string", "format": "date-time" },
+        "preRelease": { "type": "boolean" },
+        "identifiers": { "type": "array", "items": { "$ref": "#/$defs/identifier" } },
+        "distributions": { "type": "array", "items": { "$ref": "#/$defs/releaseDistribution" } },
+        "cle": { "$ref": "#/$defs/cle" }
+      }
+    }
+  }
+}

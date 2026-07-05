@@ -3,3 +3,10 @@
 *.db-shm
 *.db-wal
 /bin/
+
+# stray compiled binaries at repo root (e.g. from a manual `go build -o <name>
+# ./cmd/<name>` test) -- the real build output belongs in /bin/ via `make build`
+/opentea
+/teaclient
+/fixtures
+/bundlecheck

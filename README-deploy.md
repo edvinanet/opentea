@@ -23,12 +23,18 @@ On the target machine (or cross-compile and copy the binaries over):
 
 ```bash
 cd /path/to/opentea
-make build          # -> bin/opentea, bin/teaclient, bin/fixtures
+make build          # -> bin/opentea, bin/teaclient, bin/fixtures, bin/bundlecheck (as your normal user)
 sudo make install    # -> /usr/local/bin (override with PREFIX=... or BINDIR=...)
 ```
 
-`make install` installs all three components (the server plus the reference client and
-fixtures tools) -- only `opentea` itself needs the systemd unit below.
+Build and install are deliberately separate steps run as different users: `make build` must run
+as your normal user (not root) since `go build` shells out to `git` to stamp VCS info, which
+fails under `sudo` if the repo isn't owned by root (git's dubious-ownership check). `make
+install` only copies the binaries already in `./bin` -- it errors out immediately, without
+attempting a build, if you skip step one.
+
+`make install` installs all four components (the server plus the reference client, fixtures,
+and bundlecheck tools) -- only `opentea` itself needs the systemd unit below.
 
 ## 2. Create the group and user
 

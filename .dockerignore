@@ -1,0 +1,14 @@
+.git/
+.claude/
+data/
+bin/
+*.db
+*.db-shm
+*.db-wal
+spec/
+docs/
+packaging/
+*.md
+# testdata/ is NOT excluded: docker/testdata.Dockerfile needs
+# testdata/fixtures/ in the build context (the main Dockerfile doesn't COPY
+# it, so it costs nothing in the resulting image either way).

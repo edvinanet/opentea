@@ -18,7 +18,8 @@ reference test data (`testdata/fixtures/`) for interoperability testing — see
 [README-client.md](README-client.md). Also a product import/export bundle format for backup,
 ownership transfer, and provider migration (`internal/bundle`, admin-only `/admin/v1`
 endpoints), with a standalone validator CLI (`cmd/bundlecheck`) — see
-[docs/bundle-format.md](docs/bundle-format.md).
+[docs/bundle-format.md](docs/bundle-format.md). A `Dockerfile` builds and runs just the server
+for quick local testing — see [README-docker.md](README-docker.md).
 
 ## Building
 
@@ -88,6 +89,7 @@ internal/
 testdata/fixtures/   reference test data for cmd/fixtures
 packaging/systemd/   Debian systemd unit + example environment file (see README-deploy.md)
 docs/bundle-format.md   product import/export bundle specification + JSON Schema reference
+Dockerfile            builds + runs just the server for local testing (see README-docker.md)
 Makefile             build/install/test all four cmd/ binaries (`make help` for targets)
 ```
 

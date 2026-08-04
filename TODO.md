@@ -115,6 +115,19 @@ they don't get lost.
 - [ ] TLS cert/key rotation isn't automatic (no SIGHUP reload or filesystem watch) — a
       certificate renewal (e.g. via certbot) requires a `systemctl restart opentea.service` to
       pick up the new files. No ACME/Let's Encrypt integration either.
+- [x] ~~Dockerfile to run the server~~ — done (2026-08-04): `Dockerfile` (multi-stage,
+      `golang:1.26-alpine` builder + `alpine:3.20` runtime, static `CGO_ENABLED=0` build since
+      `modernc.org/sqlite` is pure Go, non-root `opentea-server` user, built-in `HEALTHCHECK`),
+      `.dockerignore`, `README-docker.md`. Reuses the same `TEA_*` config surface as the
+      systemd deployment rather than inventing a new one. Only `cmd/opentea` is containerized
+      (not the client/fixtures/bundlecheck dev tools). Build-tested and runtime-verified
+      end-to-end by the user: image builds clean, `createadmin` + named-volume persistence
+      work, server starts with correct config, `/tea/v1/products` responds, runs as non-root,
+      healthcheck reports healthy. (`docker build` prints a harmless BuildKit provenance
+      warning about not finding git commit info -- expected since `.git/` is excluded from the
+      build context on purpose; documented in `README-docker.md`'s Caveats section.)
+- [ ] No image publishing/registry/CI pipeline for the Docker image yet -- local `docker build`
+      only.
 
 ## Tooling
 - [x] ~~Makefile to run the build and test process~~ — done (2026-07-04): `Makefile` with

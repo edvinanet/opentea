@@ -1,0 +1,39 @@
+#!/bin/sh
+# opentea-seed: populates an *already-running* opentea container with the
+# reference test-data scenarios (testdata/fixtures/), via /admin/v1. Run it
+# from the host with `docker exec <container> opentea-seed` -- it talks to
+# the server over localhost inside the container, so there's no need to wait
+# for startup or juggle ports.
+#
+# Bootstraps a fixed test-only admin login if one doesn't already exist
+# (override via OPENTEA_SEED_USERNAME/OPENTEA_SEED_PASSWORD). Re-running this
+# against a server that already has the reference data loaded will create a
+# second copy of it (fixtures/products aren't deduped like the bundle
+# import/export format is) -- start from a fresh volume if you want a single
+# clean copy.
+set -e
+
+USERNAME="${OPENTEA_SEED_USERNAME:-admin}"
+PASSWORD="${OPENTEA_SEED_PASSWORD:-admin-testdata-only}"
+LISTEN_ADDR="${TEA_LISTEN_ADDR:-:8080}"
+SERVER="${OPENTEA_SEED_SERVER:-http://localhost:${LISTEN_ADDR#*:}}"
+TESTDATA_DIR="${OPENTEA_SEED_TESTDATA_DIR:-/usr/local/share/opentea/testdata}"
+
+echo "opentea-seed: bootstrapping admin user '$USERNAME' ..."
+if ! opentea createadmin -username="$USERNAME" -password="$PASSWORD" 2>/tmp/opentea-seed-createadmin.err; then
+    if grep -q "already taken" /tmp/opentea-seed-createadmin.err; then
+        echo "opentea-seed: admin user '$USERNAME' already exists, continuing"
+    else
+        cat /tmp/opentea-seed-createadmin.err >&2
+        rm -f /tmp/opentea-seed-createadmin.err
+        exit 1
+    fi
+fi
+rm -f /tmp/opentea-seed-createadmin.err
+
+for f in "$TESTDATA_DIR"/*.json; do
+    echo "opentea-seed: loading $f against $SERVER ..."
+    fixtures -server="$SERVER" -username="$USERNAME" -password="$PASSWORD" "$f"
+done
+
+echo "opentea-seed: done -- log in at $SERVER/admin/ui/login as $USERNAME / $PASSWORD"

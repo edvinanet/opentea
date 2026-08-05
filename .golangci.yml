@@ -1,0 +1,64 @@
+version: "2"
+linters:
+  enable:
+    # Minimum recommended
+    - errcheck
+    - govet
+    - revive
+    - staticcheck
+    # Additional recommended
+    - bodyclose
+    - gocyclo
+    - gosec
+    - ineffassign
+    - misspell
+  settings:
+    revive:
+      rules:
+        - name: exported
+    gocyclo:
+      min-complexity: 15
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+    rules:
+      # gosec's findings in test code are false positives here: cookie
+      # construction for outgoing test requests (G124's Secure/HttpOnly/
+      # SameSite only matter for Set-Cookie responses), HTTP requests to a
+      # test's own local httptest server (G107), file writes to t.TempDir()
+      # (G304/G306), and decompression in test fixture builders that never
+      # see untrusted input (G110) all trigger gosec without the context
+      # that makes them safe here.
+      #
+      # gocyclo's complexity count in this codebase's test files comes
+      # entirely from long, linear sequences of setup calls + independent
+      # assertions (build data step 1, assert; build data step 2, assert;
+      # ...), each with its own `if err != nil { t.Fatalf(...) }` guard --
+      # not from tangled branching logic. Splitting these into sub-helpers
+      # wouldn't reduce real complexity, only fragment the readable
+      # step-by-step narrative that makes a failing test easy to debug.
+      - path: _test\.go
+        linters:
+          - gosec
+          - gocyclo
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+formatters:
+  enable:
+    - goimports
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/oej/opentea

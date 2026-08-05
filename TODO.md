@@ -63,11 +63,20 @@ they don't get lost.
       travels, authentication/credentials do not).
 
 ## Reference client (this feature)
-- [ ] **Browsing consumer GUI** — a web GUI for the client that lets you browse any TEA server's
-      `/tea/v1` data (products, releases, components, collections, artifacts) read-only, for
-      rapid testing/exploration without the CLI. Distinct from the server's own `/admin/ui`
-      (which only covers users/stats/tokens, not product data browsing at all — see
-      `internal/webadmin`). Deferred — client is CLI-only (`cmd/teaclient`) for now.
+- [ ] **Browsing consumer GUI** — a web GUI for the *client* that lets you browse *any* TEA
+      server's `/tea/v1` data read-only, for rapid testing/exploration without the CLI, pointed
+      at whichever server you choose. Still deferred — client is CLI-only (`cmd/teaclient`) for
+      now. Distinct from `/admin/ui`'s own browsing (added 2026-08-04, see below) — that only
+      ever shows *this* server's own data via direct repo access, not an arbitrary remote server
+      over HTTP like this item would.
+- [x] ~~Add data browsing to /admin/ui~~ — done (2026-08-04): `/admin/ui/products` and
+      `/admin/ui/components` list pages plus detail pages (with linked releases, CLE events,
+      linked components, distributions, and collections/artifacts inline) —
+      `internal/webadmin/{products,productreleases,components,componentreleases}.go` +
+      matching templates. Read-only, gated at the same `consumer` role as the dashboard. The
+      dashboard's Product/Component Release cards link to the `/tea/v1` JSON query endpoints
+      instead of getting dedicated pages, since those entities have no owner-less list in the
+      repo layer to browse.
 - [ ] `teaclient check` is a deliberately modest first cut (pagination re-verification +
       bounded artifact-checksum sampling). Deeper spec-conformance checks belong here:
       required-field presence, enum validity (`pkg/tea/enums.go` now has the canonical value

@@ -1,0 +1,66 @@
+{{define "content"}}
+<h1>{{.ComponentRelease.ComponentName}} {{.ComponentRelease.Version}}</h1>
+<p><code>{{.ComponentRelease.UUID}}</code></p>
+<p>
+  Created: {{.ComponentRelease.CreatedDate.Format "2006-01-02"}}
+  {{if .ComponentRelease.ReleaseDate}} &middot; Released: {{.ComponentRelease.ReleaseDate.Format "2006-01-02"}}{{end}}
+  &middot; Pre-release: {{yesNo .ComponentRelease.PreRelease}}
+</p>
+
+<h2>Identifiers</h2>
+<table>
+<tr><th>Type</th><th>Value</th></tr>
+{{range .ComponentRelease.Identifiers}}
+<tr><td>{{.IDType}}</td><td>{{.IDValue}}</td></tr>
+{{end}}
+</table>
+
+<h2>Distributions</h2>
+{{if .ComponentRelease.Distributions}}
+<table>
+<tr><th>Description</th><th>URL</th><th>Checksums</th></tr>
+{{range .ComponentRelease.Distributions}}
+<tr>
+  <td>{{.Description}}</td>
+  <td>{{if .URL}}<a href="{{.URL}}">{{.URL}}</a>{{end}}</td>
+  <td>{{range .Checksums}}<code>{{.AlgType}}: {{.AlgValue}}</code> {{end}}</td>
+</tr>
+{{end}}
+</table>
+{{else}}<p>No distributions yet.</p>{{end}}
+
+<h2>Collections</h2>
+{{if .Collections}}
+{{range .Collections}}
+<h3>Version {{.Version}} &mdash; {{.Date.Format "2006-01-02 15:04"}}</h3>
+{{if .UpdateReason}}<p>Update reason: {{.UpdateReason.Type}}{{if .UpdateReason.Comment}} &mdash; {{.UpdateReason.Comment}}{{end}}</p>{{end}}
+{{if .Artifacts}}
+<table>
+<tr><th>Type</th><th>Name</th><th>Formats</th></tr>
+{{range .Artifacts}}
+<tr>
+  <td>{{.Type}}</td>
+  <td>{{.Name}}</td>
+  <td>{{range .Formats}}<code>{{.MediaType}}</code> {{end}}</td>
+</tr>
+{{end}}
+</table>
+{{else}}<p>No artifacts in this collection version.</p>{{end}}
+{{end}}
+{{else}}<p>No collections yet.</p>{{end}}
+
+<h2>Lifecycle events (CLE)</h2>
+{{if .ComponentReleaseCLE.Events}}
+<table>
+<tr><th>Type</th><th>Effective</th><th>Published</th><th>Version</th></tr>
+{{range .ComponentReleaseCLE.Events}}
+<tr>
+  <td>{{.Type}}</td>
+  <td>{{.Effective.Format "2006-01-02"}}</td>
+  <td>{{.Published.Format "2006-01-02"}}</td>
+  <td>{{.Version}}</td>
+</tr>
+{{end}}
+</table>
+{{else}}<p>No lifecycle events.</p>{{end}}
+{{end}}

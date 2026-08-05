@@ -21,4 +21,15 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 
 	mux.HandleFunc("GET /admin/ui/token", s.requireRole(model.RoleConsumer, s.tokenPage))
 	mux.HandleFunc("POST /admin/ui/token/generate", s.requireRole(model.RoleConsumer, s.generateToken))
+
+	// Read-only data browsing -- same role level as the dashboard/token
+	// pages. Collections/artifacts have no owner-less list, so they're
+	// rendered inline on the owning release's detail page rather than
+	// getting their own routes here.
+	mux.HandleFunc("GET /admin/ui/products", s.requireRole(model.RoleConsumer, s.productsPage))
+	mux.HandleFunc("GET /admin/ui/products/{uuid}", s.requireRole(model.RoleConsumer, s.productDetailPage))
+	mux.HandleFunc("GET /admin/ui/productReleases/{uuid}", s.requireRole(model.RoleConsumer, s.productReleaseDetailPage))
+	mux.HandleFunc("GET /admin/ui/components", s.requireRole(model.RoleConsumer, s.componentsPage))
+	mux.HandleFunc("GET /admin/ui/components/{uuid}", s.requireRole(model.RoleConsumer, s.componentDetailPage))
+	mux.HandleFunc("GET /admin/ui/componentReleases/{uuid}", s.requireRole(model.RoleConsumer, s.componentReleaseDetailPage))
 }

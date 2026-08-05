@@ -1,0 +1,12 @@
+{{define "content"}}
+<h1>Components</h1>
+<table>
+<tr><th>Name</th><th>Identifiers</th></tr>
+{{range .Components}}
+<tr>
+  <td><a href="/admin/ui/components/{{.UUID}}">{{.Name}}</a></td>
+  <td>{{range .Identifiers}}<code>{{.IDType}}: {{.IDValue}}</code> {{end}}</td>
+</tr>
+{{end}}
+</table>
+{{end}}

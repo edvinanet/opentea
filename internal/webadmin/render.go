@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/oej/opentea/internal/model"
+	"github.com/oej/opentea/pkg/tea"
 )
 
 // pageData is the single data type passed to every template -- only the
@@ -23,6 +24,27 @@ type pageData struct {
 
 	TokenInfo *time.Time // nil if the user has no API token yet
 	NewToken  string     // set only right after generation; shown once
+
+	Products        []tea.Product
+	Product         tea.Product
+	ProductCLE      tea.CLE
+	ProductReleases []tea.ProductRelease
+
+	ProductRelease           tea.ProductRelease
+	ProductReleaseCLE        tea.CLE
+	ProductReleaseComponents []componentRefView // linked components, resolved to a name
+
+	// Collections is shared by both the productRelease and componentRelease
+	// detail pages -- each Collection already carries its own Artifacts.
+	Collections []tea.Collection
+
+	Components        []tea.Component
+	Component         tea.Component
+	ComponentCLE      tea.CLE
+	ComponentReleases []tea.ComponentRelease
+
+	ComponentRelease    tea.ComponentRelease
+	ComponentReleaseCLE tea.CLE
 }
 
 func (s *Server) renderAuthenticated(w http.ResponseWriter, page string, data pageData) {

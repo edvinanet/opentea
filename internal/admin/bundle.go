@@ -2,10 +2,8 @@ package admin
 
 import (
 	"archive/zip"
-	"bytes"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 
 	"github.com/oej/opentea/internal/bundle"
@@ -55,20 +53,21 @@ func (s *Server) importProduct(w http.ResponseWriter, r *http.Request) {
 		httpx.BadRequest(w, "invalid multipart form: "+err.Error())
 		return
 	}
-	file, _, err := r.FormFile("bundle")
+	file, header, err := r.FormFile("bundle")
 	if err != nil {
 		httpx.BadRequest(w, `missing "bundle" form field: `+err.Error())
 		return
 	}
 	defer func() { _ = file.Close() }()
 
-	raw, err := io.ReadAll(file)
-	if err != nil {
-		httpx.BadRequest(w, "read bundle: "+err.Error())
-		return
-	}
-
-	zr, err := zip.NewReader(bytes.NewReader(raw), int64(len(raw)))
+	// multipart.File always implements io.ReaderAt (backed by an on-disk
+	// temp file once ParseMultipartForm's 32MiB memory threshold above is
+	// exceeded, an in-memory buffer below it) -- reading zr's entries
+	// through file directly, instead of first buffering the whole upload
+	// into a []byte, keeps a large bundle import from holding a second
+	// full copy (up to maxImportBundleSize) in memory on top of whatever
+	// ParseMultipartForm itself already retains.
+	zr, err := zip.NewReader(file, header.Size)
 	if err != nil {
 		httpx.BadRequest(w, "bundle is not a valid zip file: "+err.Error())
 		return

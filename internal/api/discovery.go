@@ -32,7 +32,7 @@ func (s *Server) discoveryByTEI(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, []tea.DiscoveryInfo{
 		{
 			ProductReleaseUUID: productReleaseUUID,
-			Servers: []tea.TeaServerInfo{
+			Servers: []tea.ServerInfo{
 				{RootURL: s.cfg.RootURL, Versions: s.cfg.Versions},
 			},
 		},

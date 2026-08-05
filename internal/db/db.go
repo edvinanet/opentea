@@ -76,12 +76,34 @@ func migrate(sqlDB *sql.DB) error {
 		if err != nil {
 			return fmt.Errorf("read migration %s: %w", name, err)
 		}
-		if _, err := sqlDB.Exec(string(contents)); err != nil {
-			return fmt.Errorf("apply migration %s: %w", name, err)
+		if err := applyMigration(sqlDB, name, string(contents)); err != nil {
+			return err
 		}
-		if _, err := sqlDB.Exec(`INSERT INTO schema_migrations (name) VALUES (?)`, name); err != nil {
-			return fmt.Errorf("record migration %s: %w", name, err)
-		}
+	}
+	return nil
+}
+
+// applyMigration runs contents and records name as applied in one
+// transaction, so a crash between the two can't leave the schema change
+// committed but unrecorded (which would otherwise make the next startup
+// retry a non-idempotent CREATE TABLE and fail). SQLite's DDL is
+// transactional, so this is safe even though contents typically contains
+// CREATE TABLE statements.
+func applyMigration(sqlDB *sql.DB, name, contents string) error {
+	tx, err := sqlDB.Begin()
+	if err != nil {
+		return fmt.Errorf("begin migration %s: %w", name, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.Exec(contents); err != nil {
+		return fmt.Errorf("apply migration %s: %w", name, err)
+	}
+	if _, err := tx.Exec(`INSERT INTO schema_migrations (name) VALUES (?)`, name); err != nil {
+		return fmt.Errorf("record migration %s: %w", name, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit migration %s: %w", name, err)
 	}
 	return nil
 }

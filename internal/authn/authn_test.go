@@ -115,3 +115,41 @@ func TestBearerUser(t *testing.T) {
 		t.Fatalf("BearerUser = %+v present=%v valid=%v, want user %s present=true valid=true", got, present, valid, user.UUID)
 	}
 }
+
+func TestSameOrigin(t *testing.T) {
+	const rootURL = "https://tea.example:8443"
+
+	cases := []struct {
+		name          string
+		method        string
+		origin, refer string
+		want          bool
+	}{
+		{"GET ignores origin entirely", http.MethodGet, "", "", true},
+		{"HEAD ignores origin entirely", http.MethodHead, "https://evil.example", "", true},
+		{"OPTIONS ignores origin entirely", http.MethodOptions, "https://evil.example", "", true},
+		{"POST with matching Origin", http.MethodPost, rootURL, "", true},
+		{"POST with mismatched Origin", http.MethodPost, "https://evil.example", "", false},
+		{"POST with matching scheme+host but different path in Origin", http.MethodPost, rootURL + "/whatever", "", true},
+		{"POST with no Origin or Referer", http.MethodPost, "", "", false},
+		{"POST falls back to matching Referer when Origin absent", http.MethodPost, "", rootURL + "/admin/ui/users", true},
+		{"POST falls back to mismatched Referer when Origin absent", http.MethodPost, "", "https://evil.example/x", false},
+		{"POST with unparseable Origin", http.MethodPost, "not a url\x7f", "", false},
+		{"DELETE with mismatched Origin", http.MethodDelete, "https://evil.example", "", false},
+		{"DELETE with matching Origin", http.MethodDelete, rootURL, "", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			req := httptest.NewRequest(c.method, "/", nil)
+			if c.origin != "" {
+				req.Header.Set("Origin", c.origin)
+			}
+			if c.refer != "" {
+				req.Header.Set("Referer", c.refer)
+			}
+			if got := SameOrigin(req, rootURL); got != c.want {
+				t.Errorf("SameOrigin(method=%s, Origin=%q, Referer=%q) = %v, want %v", c.method, c.origin, c.refer, got, c.want)
+			}
+		})
+	}
+}

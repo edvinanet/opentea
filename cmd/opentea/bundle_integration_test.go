@@ -35,6 +35,7 @@ func uploadBundle(t *testing.T, srv *testServer, path string, zipBytes []byte) (
 		t.Fatalf("new request: %v", err)
 	}
 	req.Header.Set("Content-Type", w.FormDataContentType())
+	req.Header.Set("Origin", srv.URL)
 	req.AddCookie(&http.Cookie{Name: authn.SessionCookieName, Value: srv.sessionToken})
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

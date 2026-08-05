@@ -111,6 +111,9 @@ func (r *Runner) runJSONStep(step Step, path string) error {
 	if hasBody {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	// Matches r.baseURL, the same origin the server issued r.cookie for --
+	// required by requireRole's CSRF Origin check on state-changing requests.
+	req.Header.Set("Origin", r.baseURL)
 	req.AddCookie(r.cookie)
 
 	resp, err := r.client.Do(req) //nolint:bodyclose // finish() (below) closes resp.Body via defer; the linter can't trace the close through that separate call
@@ -156,6 +159,7 @@ func (r *Runner) runUploadStep(step Step, path string) error {
 		return err
 	}
 	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.Header.Set("Origin", r.baseURL)
 	req.AddCookie(r.cookie)
 
 	resp, err := r.client.Do(req) //nolint:bodyclose // finish() (below) closes resp.Body via defer; the linter can't trace the close through that separate call

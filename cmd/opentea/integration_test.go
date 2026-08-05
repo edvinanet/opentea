@@ -91,6 +91,9 @@ func jsonRequest(t *testing.T, srv *testServer, method, path string, body any) (
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	// Origin matching srv.URL, as a real browser would send on a same-origin
+	// POST/DELETE -- requireRole's SameOrigin CSRF check requires this.
+	req.Header.Set("Origin", srv.URL)
 	req.AddCookie(&http.Cookie{Name: authn.SessionCookieName, Value: srv.sessionToken})
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -137,6 +140,7 @@ func uploadFile(t *testing.T, srv *testServer, path, filename string, content []
 		t.Fatalf("new request: %v", err)
 	}
 	req.Header.Set("Content-Type", w.FormDataContentType())
+	req.Header.Set("Origin", srv.URL)
 	req.AddCookie(&http.Cookie{Name: authn.SessionCookieName, Value: srv.sessionToken})
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -567,6 +571,7 @@ func TestRoleGatingAcrossStack(t *testing.T) {
 		if body != nil {
 			req.Header.Set("Content-Type", "application/json")
 		}
+		req.Header.Set("Origin", srv.URL)
 		req.AddCookie(cookie)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
@@ -607,6 +612,68 @@ func TestRoleGatingAcrossStack(t *testing.T) {
 	}
 	if status := doWithCookie(http.MethodPost, "/admin/v1/products", adminCookie, []byte(`{"name":"acme"}`)); status != http.StatusCreated {
 		t.Fatalf("admin POST /admin/v1/products: status=%d, want 201", status)
+	}
+}
+
+// TestCSRFProtection is the regression test for the CSRF finding: a
+// state-changing request carrying a genuinely valid session cookie must
+// still be rejected if its declared origin doesn't match the server's own
+// (simulating a forged cross-site request riding the victim's cookie -- the
+// scenario SameSite=Lax alone doesn't fully cover, see requireRole in both
+// internal/admin and internal/webadmin). Safe methods (GET) must stay
+// unaffected regardless of origin.
+func TestCSRFProtection(t *testing.T) {
+	srv := newTestServer(t)
+	adminCookie := &http.Cookie{Name: authn.SessionCookieName, Value: srv.sessionToken}
+
+	do := func(method, path, origin string, body []byte) int {
+		var reader io.Reader
+		if body != nil {
+			reader = bytes.NewReader(body)
+		}
+		req, err := http.NewRequest(method, srv.URL+path, reader)
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		req.AddCookie(adminCookie)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v", method, path, err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	// A forged cross-site POST: valid cookie, wrong Origin -> rejected.
+	if status := do(http.MethodPost, "/admin/v1/products", "https://evil.example", []byte(`{"name":"forged"}`)); status != http.StatusForbidden {
+		t.Fatalf("POST with cross-site Origin: status=%d, want 403", status)
+	}
+	// No Origin/Referer at all on a state-changing request -> also rejected.
+	if status := do(http.MethodPost, "/admin/v1/products", "", []byte(`{"name":"forged"}`)); status != http.StatusForbidden {
+		t.Fatalf("POST with no Origin: status=%d, want 403", status)
+	}
+	// Same-origin POST still works.
+	if status := do(http.MethodPost, "/admin/v1/products", srv.URL, []byte(`{"name":"legit"}`)); status != http.StatusCreated {
+		t.Fatalf("POST with matching Origin: status=%d, want 201", status)
+	}
+	// GET is unaffected by a mismatched Origin -- it's not a CSRF target.
+	if status := do(http.MethodGet, "/admin/v1/products", "https://evil.example", nil); status != http.StatusOK {
+		t.Fatalf("GET with cross-site Origin: status=%d, want 200", status)
+	}
+
+	// Same story for the HTML admin GUI (internal/webadmin), which shares
+	// the same requireRole/SameOrigin protection.
+	if status := do(http.MethodPost, "/admin/ui/token/generate", "https://evil.example", []byte{}); status != http.StatusForbidden {
+		t.Fatalf("GUI POST with cross-site Origin: status=%d, want 403", status)
+	}
+	if status := do(http.MethodPost, "/admin/ui/token/generate", srv.URL, []byte{}); status == http.StatusForbidden {
+		t.Fatalf("GUI POST with matching Origin: status=%d, want non-403", status)
 	}
 }
 

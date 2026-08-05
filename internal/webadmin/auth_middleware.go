@@ -25,6 +25,10 @@ func (s *Server) requireRole(minRole string, next roleHandler) http.HandlerFunc 
 			http.Error(w, "Forbidden: your role doesn't have access to this page.", http.StatusForbidden)
 			return
 		}
+		if !authn.SameOrigin(r, s.cfg.RootURL) {
+			http.Error(w, "Forbidden: cross-origin request rejected.", http.StatusForbidden)
+			return
+		}
 		next(w, r, user)
 	}
 }

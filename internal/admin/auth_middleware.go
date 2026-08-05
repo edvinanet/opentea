@@ -21,6 +21,10 @@ func (s *Server) requireRole(minRole string, next http.HandlerFunc) http.Handler
 			httpx.Forbidden(w, "forbidden")
 			return
 		}
+		if !authn.SameOrigin(r, s.cfg.RootURL) {
+			httpx.Forbidden(w, "cross-origin request rejected")
+			return
+		}
 		next(w, r)
 	}
 }

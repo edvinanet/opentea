@@ -137,6 +137,10 @@ func TestPagesRenderWithoutError(t *testing.T) {
 			t.Fatalf("new request: %v", err)
 		}
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		// Matches newTestServer's cfg.RootURL, not srv.URL (the httptest
+		// listener's real address) -- requireRole's SameOrigin check
+		// compares Origin against cfg.RootURL, not the actual listener.
+		req.Header.Set("Origin", "http://example.test")
 		if cookie != "" {
 			req.AddCookie(&http.Cookie{Name: authn.SessionCookieName, Value: cookie})
 		}

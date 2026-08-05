@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -44,6 +45,47 @@ func SessionUser(ctx context.Context, r *http.Request, store *repo.Repo) (model.
 		return model.User{}, false
 	}
 	return user, true
+}
+
+// SameOrigin reports whether r's declared origin matches rootURL's -- a
+// CSRF defense-in-depth check for state-changing requests authenticated by
+// an ambient session cookie (the only auth mechanism internal/admin and
+// internal/webadmin's requireRole support; SameSite=Lax on that cookie
+// already blocks most cross-site POSTs, but not same-site/subdomain
+// attacks, so callers should still run this check before acting on a
+// non-safe-method request). Bearer-token requests aren't in scope: a
+// forged cross-site request can't attach a header the victim's browser
+// wouldn't send on its own, so they're not CSRF targets and don't need
+// this check.
+//
+// GET/HEAD/OPTIONS are always allowed (assumed side-effect-free, so not a
+// CSRF target); other methods require an Origin header (falling back to
+// Referer, since some non-browser or older-browser requests only send
+// that) whose scheme+host match rootURL's -- absent or mismatched is
+// rejected.
+func SameOrigin(r *http.Request, rootURL string) bool {
+	switch r.Method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return true
+	}
+
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		origin = r.Header.Get("Referer")
+	}
+	if origin == "" {
+		return false
+	}
+
+	want, err := url.Parse(rootURL)
+	if err != nil {
+		return false
+	}
+	got, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	return got.Scheme == want.Scheme && got.Host == want.Host
 }
 
 // BearerUser resolves a user from an `Authorization: Bearer <token>` header.

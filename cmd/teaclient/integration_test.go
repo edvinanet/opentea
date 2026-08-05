@@ -31,7 +31,7 @@ func newTestServer(t *testing.T) (*httptest.Server, *repo.Repo, storage.Storage)
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
-	t.Cleanup(func() { sqlDB.Close() })
+	t.Cleanup(func() { _ = sqlDB.Close() })
 
 	blobStore, err := storage.NewFSStorage(filepath.Join(dir, "blobs"))
 	if err != nil {

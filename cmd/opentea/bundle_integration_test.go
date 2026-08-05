@@ -40,7 +40,7 @@ func uploadBundle(t *testing.T, srv *testServer, path string, zipBytes []byte) (
 	if err != nil {
 		t.Fatalf("POST %s: %v", path, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatalf("read response body: %v", err)
@@ -158,7 +158,7 @@ func TestBundleExportImportRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET export: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("GET export: status=%d body=%s", resp.StatusCode, body)
@@ -194,7 +194,7 @@ func TestBundleExportImportRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /tea/v1/product: %v", err)
 	}
-	defer resp2.Body.Close()
+	defer func() { _ = resp2.Body.Close() }()
 	body2, _ := io.ReadAll(resp2.Body)
 	if resp2.StatusCode != http.StatusOK {
 		t.Fatalf("GET /tea/v1/product: status=%d body=%s", resp2.StatusCode, body2)
@@ -211,7 +211,7 @@ func TestBundleExportImportRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET .../collection/latest: %v", err)
 	}
-	defer resp3.Body.Close()
+	defer func() { _ = resp3.Body.Close() }()
 	body3, _ := io.ReadAll(resp3.Body)
 	if resp3.StatusCode != http.StatusOK {
 		t.Fatalf("GET /tea/v1/collection: status=%d body=%s", resp3.StatusCode, body3)

@@ -21,7 +21,7 @@ func runCreateAdmin(args []string) {
 	fs := flag.NewFlagSet("createadmin", flag.ExitOnError)
 	username := fs.String("username", "", "username for the new admin user (required)")
 	password := fs.String("password", "", "password for the new admin user (required)")
-	fs.Parse(args)
+	_ = fs.Parse(args)
 
 	if *username == "" || *password == "" {
 		fmt.Fprintln(os.Stderr, "usage: opentea createadmin -username=<name> -password=<password>")
@@ -38,7 +38,7 @@ func runCreateAdmin(args []string) {
 		fmt.Fprintf(os.Stderr, "open database: %v\n", err)
 		os.Exit(1)
 	}
-	defer sqlDB.Close()
+	defer func() { _ = sqlDB.Close() }()
 
 	r := repo.New(sqlDB)
 	user, err := r.CreateUser(context.Background(), *username, *password, model.RoleAdmin)

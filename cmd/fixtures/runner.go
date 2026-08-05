@@ -39,7 +39,7 @@ func Login(baseURL, username, password string) (*Runner, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusSeeOther {
 		body, _ := io.ReadAll(resp.Body)
@@ -113,7 +113,7 @@ func (r *Runner) runJSONStep(step Step, path string) error {
 	}
 	req.AddCookie(r.cookie)
 
-	resp, err := r.client.Do(req)
+	resp, err := r.client.Do(req) //nolint:bodyclose // finish() (below) closes resp.Body via defer; the linter can't trace the close through that separate call
 	if err != nil {
 		return err
 	}
@@ -125,7 +125,7 @@ func (r *Runner) runUploadStep(step Step, path string) error {
 	if r.fixtureDir != "" && !filepath.IsAbs(filePath) {
 		filePath = filepath.Join(r.fixtureDir, filePath)
 	}
-	content, err := os.ReadFile(filePath)
+	content, err := os.ReadFile(filePath) //nolint:gosec // filePath is derived from the operator's own local fixture JSON file, not remote input
 	if err != nil {
 		return fmt.Errorf("read upload file: %w", err)
 	}
@@ -158,7 +158,7 @@ func (r *Runner) runUploadStep(step Step, path string) error {
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	req.AddCookie(r.cookie)
 
-	resp, err := r.client.Do(req)
+	resp, err := r.client.Do(req) //nolint:bodyclose // finish() (below) closes resp.Body via defer; the linter can't trace the close through that separate call
 	if err != nil {
 		return err
 	}
@@ -168,7 +168,7 @@ func (r *Runner) runUploadStep(step Step, path string) error {
 // finish checks the response status, and if step.Save is set, decodes the
 // JSON body into the variable pool under that name.
 func (r *Runner) finish(resp *http.Response, save string) error {
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return err

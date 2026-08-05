@@ -42,7 +42,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("open database: %v", err)
 	}
-	defer sqlDB.Close()
+	defer func() { _ = sqlDB.Close() }()
 
 	blobStore, err := storage.NewFSStorage(cfg.BlobDir)
 	if err != nil {
@@ -54,10 +54,24 @@ func main() {
 
 	tlsEnabled := cfg.TLSCertFile != ""
 	slog.Info("opentea server starting", "addr", cfg.ListenAddr, "rootURL", cfg.RootURL, "dbPath", cfg.DBPath, "blobDir", cfg.BlobDir, "tls", tlsEnabled)
+
+	// ReadHeaderTimeout guards against slow-header (slowloris-style)
+	// connections; ReadTimeout/WriteTimeout are deliberately left at the
+	// zero value (no limit) since this server streams large blob
+	// uploads/downloads (up to 1 GiB, see internal/admin/upload.go) that a
+	// blanket whole-request timeout would risk truncating on a slow but
+	// legitimate connection. IdleTimeout still bounds genuinely idle
+	// keep-alive connections.
+	srv := &http.Server{
+		Addr:              cfg.ListenAddr,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 	if tlsEnabled {
-		err = http.ListenAndServeTLS(cfg.ListenAddr, cfg.TLSCertFile, cfg.TLSKeyFile, mux)
+		err = srv.ListenAndServeTLS(cfg.TLSCertFile, cfg.TLSKeyFile)
 	} else {
-		err = http.ListenAndServe(cfg.ListenAddr, mux)
+		err = srv.ListenAndServe()
 	}
 	if err != nil {
 		log.Fatalf("server stopped: %v", err)

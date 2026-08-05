@@ -46,7 +46,7 @@ func checkOne(path string) (valid bool, err error) {
 	if err != nil {
 		return false, fmt.Errorf("open: %w", err)
 	}
-	defer zr.Close()
+	defer func() { _ = zr.Close() }()
 
 	report, err := bundle.Check(&zr.Reader)
 	if err != nil {

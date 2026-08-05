@@ -46,7 +46,7 @@ func newTestServer(t *testing.T) *testServer {
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
-	t.Cleanup(func() { sqlDB.Close() })
+	t.Cleanup(func() { _ = sqlDB.Close() })
 
 	blobStore, err := storage.NewFSStorage(filepath.Join(dir, "blobs"))
 	if err != nil {
@@ -96,7 +96,7 @@ func jsonRequest(t *testing.T, srv *testServer, method, path string, body any) (
 	if err != nil {
 		t.Fatalf("%s %s: %v", method, path, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatalf("read response body: %v", err)
@@ -142,7 +142,7 @@ func uploadFile(t *testing.T, srv *testServer, path, filename string, content []
 	if err != nil {
 		t.Fatalf("POST %s: %v", path, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatalf("read response body: %v", err)
@@ -328,7 +328,7 @@ func TestWorkedExample(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET artifact file: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET artifact file: status=%d", resp.StatusCode)
 	}
@@ -504,13 +504,13 @@ func TestAdminLoginFlow(t *testing.T) {
 
 	resp := postForm(t, srv, "/admin/ui/login", url.Values{"username": {"test-admin"}, "password": {"wrong"}}, nil)
 	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK || !bytes.Contains(body, []byte("invalid username or password")) {
 		t.Fatalf("wrong password: status=%d body=%s", resp.StatusCode, body)
 	}
 
 	resp = postForm(t, srv, "/admin/ui/login", url.Values{"username": {"test-admin"}, "password": {"test-password"}}, nil)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("correct password: status=%d, want 303 redirect", resp.StatusCode)
 	}
@@ -533,7 +533,7 @@ func TestAdminLoginFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /admin/v1/products with session cookie: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /admin/v1/products with session cookie: status=%d, want 200", resp.StatusCode)
 	}
@@ -572,7 +572,7 @@ func TestRoleGatingAcrossStack(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s %s: %v", method, path, err)
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return resp.StatusCode
 	}
 
@@ -582,7 +582,7 @@ func TestRoleGatingAcrossStack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /admin/v1/products (no session): %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("no session: status=%d, want 401", resp.StatusCode)
 	}
@@ -629,7 +629,7 @@ func TestTeaV1BearerToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET with garbage bearer token: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("garbage bearer token: status=%d, want 401", resp.StatusCode)
 	}
@@ -647,7 +647,7 @@ func TestTeaV1BearerToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET with valid bearer token: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("valid bearer token: status=%d, want 200", resp.StatusCode)
 	}

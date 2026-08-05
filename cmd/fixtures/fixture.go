@@ -33,7 +33,7 @@ type Step struct {
 }
 
 func loadFixtureFile(path string) (Fixture, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // path is this CLI's own command-line argument, operator-controlled, not remote input
 	if err != nil {
 		return Fixture{}, fmt.Errorf("read fixture file: %w", err)
 	}

@@ -24,7 +24,7 @@ func writeValidBundle(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
-	t.Cleanup(func() { sqlDB.Close() })
+	t.Cleanup(func() { _ = sqlDB.Close() })
 	r := repo.New(sqlDB)
 
 	store, err := storage.NewFSStorage(filepath.Join(dir, "blobs"))
@@ -47,7 +47,7 @@ func writeValidBundle(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("create zip file: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	if err := bundle.Export(ctx, r, store, product.UUID, f); err != nil {
 		t.Fatalf("Export: %v", err)

@@ -37,6 +37,22 @@ func runCheck(args []string) error {
 	ctx := context.Background()
 	report := &checkReport{Failures: []string{}}
 
+	checkProductsAndReleases(ctx, client, report)
+	componentReleases := checkComponentsAndReleases(ctx, client, report)
+	verifyArtifactSample(ctx, client, componentReleases, *sample, report)
+
+	if err := printCheckReport(report, jsonOut); err != nil {
+		return err
+	}
+	if len(report.Failures) > 0 {
+		return fmt.Errorf("conformance check found %d issue(s)", len(report.Failures))
+	}
+	return nil
+}
+
+// checkProductsAndReleases lists every product, then re-fetches every one
+// of its releases, recording counts and any failures onto report.
+func checkProductsAndReleases(ctx context.Context, client *teaclient.Client, report *checkReport) {
 	products, err := teaclient.ListAll(func(token string) ([]tea.Product, bool, string, error) {
 		resp, err := client.QueryProducts(ctx, teaclient.ListParams{PageToken: token})
 		return resp.Results, resp.HasNext, resp.NextPageToken, err
@@ -62,7 +78,12 @@ func runCheck(args []string) error {
 			}
 		}
 	}
+}
 
+// checkComponentsAndReleases lists every component and component release,
+// recording counts and any failures onto report. Returns the component
+// releases so the caller can sample-verify their artifacts.
+func checkComponentsAndReleases(ctx context.Context, client *teaclient.Client, report *checkReport) []tea.ComponentRelease {
 	components, err := teaclient.ListAll(func(token string) ([]tea.Component, bool, string, error) {
 		resp, err := client.QueryComponents(ctx, teaclient.ListParams{PageToken: token})
 		return resp.Results, resp.HasNext, resp.NextPageToken, err
@@ -80,10 +101,16 @@ func runCheck(args []string) error {
 		report.fail("list component releases: %v", err)
 	}
 	report.ComponentReleasesChecked = len(componentReleases)
+	return componentReleases
+}
 
+// verifyArtifactSample downloads and checksum-verifies up to sample
+// artifacts across componentReleases, recording the count and any failures
+// onto report.
+func verifyArtifactSample(ctx context.Context, client *teaclient.Client, componentReleases []tea.ComponentRelease, sample int, report *checkReport) {
 	verified := 0
 	for _, cr := range componentReleases {
-		if verified >= *sample {
+		if verified >= sample {
 			break
 		}
 		withCollection, err := client.GetComponentReleaseWithCollection(ctx, cr.UUID)
@@ -92,7 +119,7 @@ func runCheck(args []string) error {
 			continue
 		}
 		for _, artifact := range withCollection.LatestCollection.Artifacts {
-			if verified >= *sample {
+			if verified >= sample {
 				break
 			}
 			for i, format := range artifact.Formats {
@@ -108,26 +135,21 @@ func runCheck(args []string) error {
 		}
 	}
 	report.ArtifactsVerified = verified
+}
 
+func printCheckReport(report *checkReport, jsonOut bool) error {
 	if jsonOut {
-		if err := printResult(report, nil, true); err != nil {
-			return err
-		}
-	} else {
-		fmt.Printf("checked %d products, %d product releases, %d components, %d component releases; verified %d artifact checksum(s)\n",
-			report.ProductsChecked, report.ProductReleasesChecked, report.ComponentsChecked, report.ComponentReleasesChecked, report.ArtifactsVerified)
-		if len(report.Failures) == 0 {
-			fmt.Println("no issues found")
-		} else {
-			fmt.Printf("%d issue(s) found:\n", len(report.Failures))
-			for _, f := range report.Failures {
-				fmt.Println("  -", f)
-			}
-		}
+		return printResult(report, nil, true)
 	}
-
-	if len(report.Failures) > 0 {
-		return fmt.Errorf("conformance check found %d issue(s)", len(report.Failures))
+	fmt.Printf("checked %d products, %d product releases, %d components, %d component releases; verified %d artifact checksum(s)\n",
+		report.ProductsChecked, report.ProductReleasesChecked, report.ComponentsChecked, report.ComponentReleasesChecked, report.ArtifactsVerified)
+	if len(report.Failures) == 0 {
+		fmt.Println("no issues found")
+	} else {
+		fmt.Printf("%d issue(s) found:\n", len(report.Failures))
+		for _, f := range report.Failures {
+			fmt.Println("  -", f)
+		}
 	}
 	return nil
 }

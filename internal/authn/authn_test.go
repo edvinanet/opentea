@@ -57,7 +57,7 @@ func TestSessionUser(t *testing.T) {
 	ctx := context.Background()
 	store := newTestRepo(t)
 
-	user, err := store.CreateUser(ctx, "alice", "pw", model.RoleAdmin)
+	user, err := store.CreateUser(ctx, "alice", "password1", model.RoleAdmin)
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestBearerUser(t *testing.T) {
 	ctx := context.Background()
 	store := newTestRepo(t)
 
-	user, err := store.CreateUser(ctx, "alice", "pw", model.RoleConsumer)
+	user, err := store.CreateUser(ctx, "alice", "password1", model.RoleConsumer)
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestSessionUserLogsUnexpectedError(t *testing.T) {
 	}
 	store := repo.New(sqlDB)
 
-	user, err := store.CreateUser(ctx, "alice", "pw", model.RoleAdmin)
+	user, err := store.CreateUser(ctx, "alice", "password1", model.RoleAdmin)
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
@@ -199,7 +199,7 @@ func TestBearerUserLogsUnexpectedError(t *testing.T) {
 	}
 	store := repo.New(sqlDB)
 
-	user, err := store.CreateUser(ctx, "alice", "pw", model.RoleConsumer)
+	user, err := store.CreateUser(ctx, "alice", "password1", model.RoleConsumer)
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}

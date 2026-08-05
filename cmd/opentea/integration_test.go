@@ -405,6 +405,28 @@ func TestErrorResponses(t *testing.T) {
 	}
 }
 
+// TestCreateUserRejectsShortPassword is the regression test for the finding
+// that admin-created accounts had no password strength requirement (only
+// non-empty). Exercises the rejection through both the JSON admin API and
+// the HTML GUI form, and confirms a long-enough password still succeeds.
+func TestCreateUserRejectsShortPassword(t *testing.T) {
+	srv := newTestServer(t)
+
+	status, raw := jsonRequest(t, srv, http.MethodPost, "/admin/v1/users", map[string]any{
+		"username": "shortpw", "password": "short", "role": "consumer",
+	})
+	if status != http.StatusBadRequest {
+		t.Fatalf("POST /admin/v1/users (short password): status=%d body=%s, want 400", status, raw)
+	}
+
+	status, raw = jsonRequest(t, srv, http.MethodPost, "/admin/v1/users", map[string]any{
+		"username": "longenoughpw", "password": "longenough1", "role": "consumer",
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("POST /admin/v1/users (long enough password): status=%d body=%s, want 201", status, raw)
+	}
+}
+
 // TestUploadToInvalidTargetDoesNotOrphanBlob is the regression test for the
 // finding that receiveFile persisted a blob before uploadDistributionFile/
 // uploadArtifactFormatFile confirmed the target they'd attach it to even

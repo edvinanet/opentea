@@ -35,6 +35,10 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 		httpx.BadRequest(w, "username already taken")
 		return
 	}
+	if errors.Is(err, repo.ErrPasswordTooShort) {
+		httpx.BadRequest(w, err.Error())
+		return
+	}
 	if err != nil {
 		httpx.InternalError(w, r, err)
 		return

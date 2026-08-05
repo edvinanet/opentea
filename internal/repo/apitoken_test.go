@@ -11,7 +11,7 @@ func TestAPITokenGenerateAndLookup(t *testing.T) {
 	ctx := context.Background()
 	r := newTestRepo(t)
 
-	user, err := r.CreateUser(ctx, "alice", "pw", model.RoleConsumer)
+	user, err := r.CreateUser(ctx, "alice", "password1", model.RoleConsumer)
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
@@ -53,7 +53,7 @@ func TestAPITokenRegenerateInvalidatesOld(t *testing.T) {
 	ctx := context.Background()
 	r := newTestRepo(t)
 
-	user, err := r.CreateUser(ctx, "alice", "pw", model.RoleConsumer)
+	user, err := r.CreateUser(ctx, "alice", "password1", model.RoleConsumer)
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}

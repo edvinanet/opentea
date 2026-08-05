@@ -36,6 +36,10 @@ func (s *Server) createUserForm(w http.ResponseWriter, r *http.Request, user mod
 		s.rerenderUsersWithError(w, r, user, "username already taken")
 		return
 	}
+	if errors.Is(err, repo.ErrPasswordTooShort) {
+		s.rerenderUsersWithError(w, r, user, err.Error())
+		return
+	}
 	if err != nil {
 		s.rerenderUsersWithError(w, r, user, "internal error, please try again")
 		return

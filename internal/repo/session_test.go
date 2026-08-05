@@ -12,7 +12,7 @@ func TestSessionCreateGetDelete(t *testing.T) {
 	ctx := context.Background()
 	r := newTestRepo(t)
 
-	user, err := r.CreateUser(ctx, "alice", "pw", model.RoleAdmin)
+	user, err := r.CreateUser(ctx, "alice", "password1", model.RoleAdmin)
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
@@ -48,7 +48,7 @@ func TestSessionExpiry(t *testing.T) {
 	ctx := context.Background()
 	r := newTestRepo(t)
 
-	user, err := r.CreateUser(ctx, "alice", "pw", model.RoleAdmin)
+	user, err := r.CreateUser(ctx, "alice", "password1", model.RoleAdmin)
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestSessionTokenStoredHashed(t *testing.T) {
 	ctx := context.Background()
 	r := newTestRepo(t)
 
-	user, err := r.CreateUser(ctx, "alice", "pw", model.RoleAdmin)
+	user, err := r.CreateUser(ctx, "alice", "password1", model.RoleAdmin)
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}

@@ -101,7 +101,7 @@ func TestPagesRenderWithoutError(t *testing.T) {
 
 	productUUID, productReleaseUUID, componentUUID, componentReleaseUUID := seedBrowseData(t, ctx, r)
 
-	admin, err := r.CreateUser(ctx, "admin", "adminpw", model.RoleAdmin)
+	admin, err := r.CreateUser(ctx, "admin", "adminpass1", model.RoleAdmin)
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
@@ -166,8 +166,12 @@ func TestPagesRenderWithoutError(t *testing.T) {
 	}
 
 	// Trigger the "users" page error re-render branch (duplicate username).
-	if status, body := post("/admin/ui/users", token, map[string]string{"username": "admin", "password": "x", "role": "consumer"}); status != http.StatusOK {
-		t.Fatalf("POST /admin/ui/users (duplicate): status=%d body=%s", status, body)
+	status, respBody := post("/admin/ui/users", token, map[string]string{"username": "admin", "password": "longenough1", "role": "consumer"})
+	if status != http.StatusOK {
+		t.Fatalf("POST /admin/ui/users (duplicate): status=%d body=%s", status, respBody)
+	}
+	if !strings.Contains(respBody, "username already taken") {
+		t.Fatalf("expected the duplicate-username error, got body=%s", respBody)
 	}
 
 	if status, body := get("/admin/ui/token", token); status != http.StatusOK {
@@ -212,7 +216,7 @@ func TestBrowsePagesNotFound(t *testing.T) {
 	ctx := context.Background()
 	srv, r := newTestServer(t)
 
-	admin, err := r.CreateUser(ctx, "admin", "adminpw", model.RoleAdmin)
+	admin, err := r.CreateUser(ctx, "admin", "adminpass1", model.RoleAdmin)
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
@@ -263,7 +267,7 @@ func TestProductReleaseDetailPageAfterLinkedComponentDeleted(t *testing.T) {
 	ctx := context.Background()
 	srv, r := newTestServer(t)
 
-	admin, err := r.CreateUser(ctx, "admin", "adminpw", model.RoleAdmin)
+	admin, err := r.CreateUser(ctx, "admin", "adminpass1", model.RoleAdmin)
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}

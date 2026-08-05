@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 
 	"golang.org/x/crypto/bcrypt"
@@ -12,6 +13,13 @@ import (
 	"github.com/oej/opentea/internal/model"
 )
 
+// minPasswordLength matches NIST SP 800-63B's minimum for user-chosen
+// passwords -- deliberately just a length floor, not a composition rule
+// (required uppercase/digit/symbol mixes are explicitly discouraged by the
+// same guidance; they push users toward predictable substitutions without
+// meaningfully increasing entropy).
+const minPasswordLength = 8
+
 var (
 	// ErrInvalidCredentials is returned by VerifyLogin on any mismatch --
 	// deliberately the same error whether the username or the password was
@@ -19,13 +27,21 @@ var (
 	ErrInvalidCredentials = errors.New("repo: invalid credentials")
 	// ErrUsernameTaken is returned by CreateUser when the username is already in use.
 	ErrUsernameTaken = errors.New("repo: username already taken")
+	// ErrPasswordTooShort is returned by CreateUser when the password is
+	// shorter than minPasswordLength.
+	ErrPasswordTooShort = fmt.Errorf("repo: password must be at least %d characters", minPasswordLength)
 	// ErrLastAdmin is returned by DeleteUser when deleting would leave no admin users.
 	ErrLastAdmin = errors.New("repo: cannot delete the last admin user")
 )
 
 // CreateUser creates a new user with a bcrypt-hashed password. Returns
-// ErrUsernameTaken if username is already in use.
+// ErrPasswordTooShort if plaintextPassword is shorter than
+// minPasswordLength, or ErrUsernameTaken if username is already in use.
 func (r *Repo) CreateUser(ctx context.Context, username, plaintextPassword, role string) (model.User, error) {
+	if len(plaintextPassword) < minPasswordLength {
+		return model.User{}, ErrPasswordTooShort
+	}
+
 	hash, err := bcrypt.GenerateFromPassword([]byte(plaintextPassword), bcrypt.DefaultCost)
 	if err != nil {
 		return model.User{}, err

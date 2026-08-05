@@ -12,7 +12,10 @@ import (
 )
 
 // CreateSession creates a new session for userUUID, valid for ttl from now,
-// and returns the opaque token to be stored in the client's cookie.
+// and returns the opaque token to be stored in the client's cookie -- this
+// is the only time the raw value is ever available; only its hash is
+// stored (see hashToken), matching SetAPIToken so a leaked/read DB file
+// doesn't hand out directly-usable sessions either.
 func (r *Repo) CreateSession(ctx context.Context, userUUID string, ttl time.Duration) (token string, expiresAt time.Time, err error) {
 	var raw [32]byte
 	if _, err := rand.Read(raw[:]); err != nil {
@@ -22,8 +25,8 @@ func (r *Repo) CreateSession(ctx context.Context, userUUID string, ttl time.Dura
 	expiresAt = time.Now().Add(ttl)
 
 	if _, err := r.db.ExecContext(ctx,
-		`INSERT INTO session (token, user_uuid, expires_at) VALUES (?, ?, ?)`,
-		token, userUUID, formatTime(expiresAt),
+		`INSERT INTO session (token_hash, user_uuid, expires_at) VALUES (?, ?, ?)`,
+		hashToken(token), userUUID, formatTime(expiresAt),
 	); err != nil {
 		return "", time.Time{}, err
 	}
@@ -37,7 +40,7 @@ func (r *Repo) GetSessionUser(ctx context.Context, token string) (model.User, er
 	err := r.db.QueryRowContext(ctx,
 		`SELECT u.uuid, u.username, u.role, u.created_at, s.expires_at
 		 FROM session s JOIN user u ON u.uuid = s.user_uuid
-		 WHERE s.token = ?`, token,
+		 WHERE s.token_hash = ?`, hashToken(token),
 	).Scan(&u.UUID, &u.Username, &u.Role, &createdAt, &expiresAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.User{}, ErrNotFound
@@ -64,6 +67,6 @@ func (r *Repo) GetSessionUser(ctx context.Context, token string) (model.User, er
 
 // DeleteSession invalidates the session identified by token (used on logout).
 func (r *Repo) DeleteSession(ctx context.Context, token string) error {
-	_, err := r.db.ExecContext(ctx, `DELETE FROM session WHERE token = ?`, token)
+	_, err := r.db.ExecContext(ctx, `DELETE FROM session WHERE token_hash = ?`, hashToken(token))
 	return err
 }

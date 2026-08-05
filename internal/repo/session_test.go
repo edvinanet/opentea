@@ -69,3 +69,32 @@ func TestGetSessionUserUnknownToken(t *testing.T) {
 		t.Fatalf("err = %v, want ErrNotFound", err)
 	}
 }
+
+// TestSessionTokenStoredHashed is the regression test for storing session
+// tokens raw (found in a security review): the session table must hold only
+// hashToken's output, matching api_token, so a leaked/read DB file doesn't
+// hand out directly-usable sessions.
+func TestSessionTokenStoredHashed(t *testing.T) {
+	ctx := context.Background()
+	r := newTestRepo(t)
+
+	user, err := r.CreateUser(ctx, "alice", "pw", model.RoleAdmin)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	token, _, err := r.CreateSession(ctx, user.UUID, time.Hour)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	var stored string
+	if err := r.db.QueryRowContext(ctx, `SELECT token_hash FROM session WHERE user_uuid = ?`, user.UUID).Scan(&stored); err != nil {
+		t.Fatalf("query session row: %v", err)
+	}
+	if stored == token {
+		t.Fatal("session table stores the raw token verbatim, want only its hash")
+	}
+	if stored != hashToken(token) {
+		t.Fatalf("stored value = %q, want hashToken(token) = %q", stored, hashToken(token))
+	}
+}

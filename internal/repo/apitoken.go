@@ -23,7 +23,7 @@ func (r *Repo) SetAPIToken(ctx context.Context, userUUID string) (string, error)
 		return "", err
 	}
 	token := base64.RawURLEncoding.EncodeToString(raw[:])
-	hash := hashAPIToken(token)
+	hash := hashToken(token)
 
 	_, err := r.db.ExecContext(ctx,
 		`INSERT INTO api_token (user_uuid, token_hash, created_at) VALUES (?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
@@ -57,7 +57,7 @@ func (r *Repo) GetAPITokenCreatedAt(ctx context.Context, userUUID string) (*time
 
 // GetUserByAPIToken resolves a raw bearer token to its owning user.
 func (r *Repo) GetUserByAPIToken(ctx context.Context, token string) (model.User, error) {
-	hash := hashAPIToken(token)
+	hash := hashToken(token)
 
 	var u model.User
 	var createdAt string
@@ -80,7 +80,13 @@ func (r *Repo) GetUserByAPIToken(ctx context.Context, token string) (model.User,
 	return u, nil
 }
 
-func hashAPIToken(token string) string {
+// hashToken hashes a raw, high-entropy random token (an API token or a
+// session token -- see session.go) for storage/lookup: a fast, unsalted
+// SHA-256 is fine here, unlike for passwords, since a 256-bit random token
+// isn't brute-forceable regardless of hash speed. Used instead of storing
+// the raw value directly so a leaked/read DB file doesn't hand out
+// directly-usable tokens.
+func hashToken(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:])
 }

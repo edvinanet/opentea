@@ -8,6 +8,7 @@ package authn
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -34,14 +35,22 @@ func RoleSatisfies(userRole, minRole string) bool {
 }
 
 // SessionUser resolves the logged-in user from the session cookie on r, if
-// there is a valid, unexpired session.
+// there is a valid, unexpired session. A missing/unknown/expired cookie is
+// silently treated as anonymous (expected, high-volume, not worth logging);
+// any other repo error (DB unavailable, corrupted row, etc.) still resolves
+// to "no user" -- callers must fail closed either way -- but is logged, so
+// an outage doesn't get silently misdiagnosed as a wave of client mistakes.
 func SessionUser(ctx context.Context, r *http.Request, store *repo.Repo) (model.User, bool) {
 	cookie, err := r.Cookie(SessionCookieName)
 	if err != nil || cookie.Value == "" {
 		return model.User{}, false
 	}
 	user, err := store.GetSessionUser(ctx, cookie.Value)
+	if errors.Is(err, repo.ErrNotFound) {
+		return model.User{}, false
+	}
 	if err != nil {
+		slog.Error("session lookup failed", "method", r.Method, "path", r.URL.Path, "error", err)
 		return model.User{}, false
 	}
 	return user, true
@@ -95,7 +104,11 @@ func SameOrigin(r *http.Request, rootURL string) bool {
 // unauthenticated-read model).
 //
 // present=true, valid=false means a header was sent but didn't resolve to a
-// real token -- the caller must reject the request.
+// real token -- the caller must reject the request. An unknown token is
+// silently treated this way (expected, high-volume, not worth logging); any
+// other repo error (DB unavailable, corrupted row, etc.) still resolves to
+// valid=false -- callers must fail closed either way -- but is logged, so
+// an outage doesn't get silently misdiagnosed as a wave of bad tokens.
 func BearerUser(ctx context.Context, r *http.Request, store *repo.Repo) (user model.User, present, valid bool) {
 	header := r.Header.Get("Authorization")
 	if header == "" {
@@ -110,6 +123,7 @@ func BearerUser(ctx context.Context, r *http.Request, store *repo.Repo) (user mo
 		return model.User{}, true, false
 	}
 	if err != nil {
+		slog.Error("bearer token lookup failed", "method", r.Method, "path", r.URL.Path, "error", err)
 		return model.User{}, true, false
 	}
 	return u, true, true

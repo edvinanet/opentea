@@ -11,6 +11,7 @@ import (
 	"github.com/oej/opentea/pkg/tea"
 )
 
+// ProductReleaseInput carries the fields needed to create a new product release.
 type ProductReleaseInput struct {
 	Version     string
 	CreatedDate time.Time
@@ -19,6 +20,8 @@ type ProductReleaseInput struct {
 	Identifiers []tea.Identifier
 }
 
+// CreateProductRelease creates a new release of productUUID with a fresh
+// generated UUID. Returns ErrNotFound if productUUID doesn't exist.
 func (r *Repo) CreateProductRelease(ctx context.Context, productUUID string, in ProductReleaseInput) (tea.ProductRelease, error) {
 	var productName string
 	if err := r.db.QueryRowContext(ctx, `SELECT name FROM product WHERE uuid = ?`, productUUID).Scan(&productName); err != nil {
@@ -33,7 +36,7 @@ func (r *Repo) CreateProductRelease(ctx context.Context, productUUID string, in 
 	if err != nil {
 		return tea.ProductRelease{}, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	_, err = tx.ExecContext(ctx,
 		`INSERT INTO product_release (uuid, product_uuid, product_name, version, created_date, release_date, pre_release) VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -76,7 +79,7 @@ func (r *Repo) ImportProductRelease(ctx context.Context, in ImportProductRelease
 	if err != nil {
 		return false, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	var exists int
 	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM product_release WHERE uuid = ?`, in.UUID).Scan(&exists); err == nil {
@@ -101,6 +104,8 @@ func (r *Repo) ImportProductRelease(ctx context.Context, in ImportProductRelease
 	return true, nil
 }
 
+// GetProductRelease fetches a product release by UUID, including its
+// identifiers and linked components. Returns ErrNotFound if uuid doesn't exist.
 func (r *Repo) GetProductRelease(ctx context.Context, uuid string) (tea.ProductRelease, error) {
 	var (
 		productUUID sql.NullString
@@ -163,7 +168,7 @@ func listProductReleaseComponents(ctx context.Context, q dbtx, productReleaseUUI
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	out := []tea.ComponentRef{}
 	for rows.Next() {
@@ -249,16 +254,16 @@ func (r *Repo) queryProductReleaseUUIDs(ctx context.Context, query string, args 
 	for rows.Next() {
 		var u string
 		if err := rows.Scan(&u); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return nil, err
 		}
 		uuids = append(uuids, u)
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
+		_ = rows.Close()
 		return nil, err
 	}
-	rows.Close()
+	_ = rows.Close()
 
 	out := make([]tea.ProductRelease, 0, len(uuids))
 	for _, u := range uuids {
@@ -271,12 +276,14 @@ func (r *Repo) queryProductReleaseUUIDs(ctx context.Context, query string, args 
 	return out, nil
 }
 
+// DeleteProductRelease deletes the release identified by uuid, cascading to
+// its component links and collections. Returns ErrNotFound if uuid doesn't exist.
 func (r *Repo) DeleteProductRelease(ctx context.Context, uuid string) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	res, err := tx.ExecContext(ctx, `DELETE FROM product_release WHERE uuid = ?`, uuid)
 	if err != nil {

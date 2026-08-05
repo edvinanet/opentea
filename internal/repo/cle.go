@@ -9,6 +9,7 @@ import (
 	"github.com/oej/opentea/pkg/tea"
 )
 
+// CLEEventInput carries the fields needed to record a new CLE event.
 type CLEEventInput struct {
 	Type                string
 	Effective           time.Time
@@ -25,12 +26,14 @@ type CLEEventInput struct {
 	References          []string
 }
 
+// CreateCLEEvent records a new lifecycle event for (ownerType, ownerUUID),
+// assigning it the next sequential id for that owner.
 func (r *Repo) CreateCLEEvent(ctx context.Context, ownerType, ownerUUID string, in CLEEventInput) (tea.CLEEvent, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return tea.CLEEvent{}, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	var maxID sql.NullInt64
 	if err := tx.QueryRowContext(ctx, `SELECT MAX(id) FROM cle_event WHERE owner_type = ? AND owner_uuid = ?`, ownerType, ownerUUID).Scan(&maxID); err != nil {
@@ -93,7 +96,7 @@ func (r *Repo) ImportCLEEvent(ctx context.Context, ownerType, ownerUUID string, 
 	if err != nil {
 		return false, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	var exists int
 	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM cle_event WHERE owner_type = ? AND owner_uuid = ? AND id = ?`, ownerType, ownerUUID, e.ID).Scan(&exists); err == nil {
@@ -151,7 +154,7 @@ func (r *Repo) ImportCLESupportDefinition(ctx context.Context, ownerType, ownerU
 	if err != nil {
 		return false, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	var exists int
 	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM cle_support_definition WHERE owner_type = ? AND owner_uuid = ? AND id = ?`, ownerType, ownerUUID, def.ID).Scan(&exists); err == nil {
@@ -172,6 +175,8 @@ func (r *Repo) ImportCLESupportDefinition(ctx context.Context, ownerType, ownerU
 	return true, nil
 }
 
+// CreateCLESupportDefinition records a support policy definition for
+// (ownerType, ownerUUID), referenceable by CLE events via their SupportID.
 func (r *Repo) CreateCLESupportDefinition(ctx context.Context, ownerType, ownerUUID string, def tea.CLESupportDefinition) (tea.CLESupportDefinition, error) {
 	if _, err := r.db.ExecContext(ctx,
 		`INSERT INTO cle_support_definition (owner_type, owner_uuid, id, description, url) VALUES (?, ?, ?, ?, ?)`,
@@ -197,16 +202,16 @@ func (r *Repo) GetCLE(ctx context.Context, ownerType, ownerUUID string) (tea.CLE
 	for rows.Next() {
 		var id int
 		if err := rows.Scan(&id); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return tea.CLE{}, err
 		}
 		ids = append(ids, id)
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
+		_ = rows.Close()
 		return tea.CLE{}, err
 	}
-	rows.Close()
+	_ = rows.Close()
 
 	events := []tea.CLEEvent{}
 	for _, id := range ids {
@@ -296,7 +301,7 @@ func (r *Repo) listCLEEventVersions(ctx context.Context, ownerType, ownerUUID st
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []tea.CLEVersionSpecifier
 	for rows.Next() {
@@ -316,7 +321,7 @@ func (r *Repo) listCLEEventIdentifiers(ctx context.Context, ownerType, ownerUUID
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []tea.Identifier
 	for rows.Next() {
@@ -336,7 +341,7 @@ func (r *Repo) listCLEEventReferences(ctx context.Context, ownerType, ownerUUID 
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []string
 	for rows.Next() {
@@ -355,7 +360,7 @@ func (r *Repo) listCLESupportDefinitions(ctx context.Context, ownerType, ownerUU
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []tea.CLESupportDefinition
 	for rows.Next() {

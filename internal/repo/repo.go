@@ -15,6 +15,7 @@ type Repo struct {
 	db *sql.DB
 }
 
+// New wraps db as a Repo.
 func New(db *sql.DB) *Repo {
 	return &Repo{db: db}
 }

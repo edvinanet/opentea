@@ -62,6 +62,7 @@ func (r *Repo) GetSessionUser(ctx context.Context, token string) (model.User, er
 	return u, nil
 }
 
+// DeleteSession invalidates the session identified by token (used on logout).
 func (r *Repo) DeleteSession(ctx context.Context, token string) error {
 	_, err := r.db.ExecContext(ctx, `DELETE FROM session WHERE token = ?`, token)
 	return err

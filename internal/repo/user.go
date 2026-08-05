@@ -17,10 +17,14 @@ var (
 	// deliberately the same error whether the username or the password was
 	// wrong, so callers can't use it to enumerate valid usernames.
 	ErrInvalidCredentials = errors.New("repo: invalid credentials")
-	ErrUsernameTaken      = errors.New("repo: username already taken")
-	ErrLastAdmin          = errors.New("repo: cannot delete the last admin user")
+	// ErrUsernameTaken is returned by CreateUser when the username is already in use.
+	ErrUsernameTaken = errors.New("repo: username already taken")
+	// ErrLastAdmin is returned by DeleteUser when deleting would leave no admin users.
+	ErrLastAdmin = errors.New("repo: cannot delete the last admin user")
 )
 
+// CreateUser creates a new user with a bcrypt-hashed password. Returns
+// ErrUsernameTaken if username is already in use.
 func (r *Repo) CreateUser(ctx context.Context, username, plaintextPassword, role string) (model.User, error) {
 	hash, err := bcrypt.GenerateFromPassword([]byte(plaintextPassword), bcrypt.DefaultCost)
 	if err != nil {
@@ -41,6 +45,7 @@ func (r *Repo) CreateUser(ctx context.Context, username, plaintextPassword, role
 	return r.GetUserByUUID(ctx, uuid)
 }
 
+// GetUserByUUID fetches a user by UUID. Returns ErrNotFound if uuid doesn't exist.
 func (r *Repo) GetUserByUUID(ctx context.Context, uuid string) (model.User, error) {
 	var u model.User
 	var createdAt string
@@ -61,12 +66,14 @@ func (r *Repo) GetUserByUUID(ctx context.Context, uuid string) (model.User, erro
 	return u, nil
 }
 
+// ListUsers returns every user, ordered by username. Unpaginated: matches
+// the current admin GUI's user-management page, which lists everyone at once.
 func (r *Repo) ListUsers(ctx context.Context) ([]model.User, error) {
 	rows, err := r.db.QueryContext(ctx, `SELECT uuid, username, role, created_at FROM user ORDER BY username`)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	out := []model.User{}
 	for rows.Next() {
@@ -111,12 +118,14 @@ func (r *Repo) VerifyLogin(ctx context.Context, username, plaintextPassword stri
 	return u, nil
 }
 
+// DeleteUser deletes the user identified by uuid. Returns ErrNotFound if
+// uuid doesn't exist, or ErrLastAdmin if uuid is the only remaining admin user.
 func (r *Repo) DeleteUser(ctx context.Context, uuid string) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	var role string
 	if err := tx.QueryRowContext(ctx, `SELECT role FROM user WHERE uuid = ?`, uuid).Scan(&role); errors.Is(err, sql.ErrNoRows) {

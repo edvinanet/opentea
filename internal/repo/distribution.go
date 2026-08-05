@@ -9,6 +9,9 @@ import (
 	"github.com/oej/opentea/pkg/tea"
 )
 
+// CreateDistribution creates a new distribution for componentReleaseUUID
+// with a fresh generated ID. Returns ErrNotFound if componentReleaseUUID
+// doesn't exist.
 func (r *Repo) CreateDistribution(ctx context.Context, componentReleaseUUID, description string) (tea.ReleaseDistribution, error) {
 	// Ensure the parent exists so we fail with ErrNotFound rather than a raw FK error.
 	var exists int
@@ -51,7 +54,7 @@ func (r *Repo) ImportDistribution(ctx context.Context, in ImportDistributionInpu
 	if err != nil {
 		return false, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	var exists int
 	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM release_distribution WHERE distribution_id = ?`, in.DistributionID).Scan(&exists); err == nil {
@@ -78,6 +81,7 @@ func (r *Repo) ImportDistribution(ctx context.Context, in ImportDistributionInpu
 	return true, nil
 }
 
+// GetDistribution fetches a distribution by ID. Returns ErrNotFound if id doesn't exist.
 func (r *Repo) GetDistribution(ctx context.Context, id string) (tea.ReleaseDistribution, error) {
 	var description, url, sigURL sql.NullString
 	err := r.db.QueryRowContext(ctx,
@@ -116,7 +120,7 @@ func (r *Repo) SetDistributionFile(ctx context.Context, id, url, sha256Hex strin
 	if err != nil {
 		return tea.ReleaseDistribution{}, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	res, err := tx.ExecContext(ctx, `UPDATE release_distribution SET url = ? WHERE distribution_id = ?`, url, id)
 	if err != nil {
@@ -146,16 +150,16 @@ func listDistributionsForRelease(ctx context.Context, q dbtx, componentReleaseUU
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return nil, err
 		}
 		ids = append(ids, id)
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
+		_ = rows.Close()
 		return nil, err
 	}
-	rows.Close()
+	_ = rows.Close()
 
 	out := []tea.ReleaseDistribution{}
 	for _, id := range ids {

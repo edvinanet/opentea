@@ -10,16 +10,22 @@ import (
 	"github.com/oej/opentea/pkg/tea"
 )
 
+// ArtifactRef identifies one artifact revision (by its versioned identity)
+// to include in a collection.
 type ArtifactRef struct {
 	UUID    string
 	Version int
 }
 
+// CollectionInput carries the fields needed to publish a new collection version.
 type CollectionInput struct {
 	UpdateReason *tea.UpdateReason
 	Artifacts    []ArtifactRef
 }
 
+// CreateCollectionForComponentRelease publishes a new collection version
+// for componentReleaseUUID (version auto-incremented from any existing
+// collection for it). Returns ErrNotFound if componentReleaseUUID doesn't exist.
 func (r *Repo) CreateCollectionForComponentRelease(ctx context.Context, componentReleaseUUID string, in CollectionInput) (tea.Collection, error) {
 	var exists int
 	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM component_release WHERE uuid = ?`, componentReleaseUUID).Scan(&exists); err != nil {
@@ -31,6 +37,9 @@ func (r *Repo) CreateCollectionForComponentRelease(ctx context.Context, componen
 	return r.createCollection(ctx, componentReleaseUUID, "COMPONENT_RELEASE", in)
 }
 
+// CreateCollectionForProductRelease publishes a new collection version for
+// productReleaseUUID (version auto-incremented from any existing collection
+// for it). Returns ErrNotFound if productReleaseUUID doesn't exist.
 func (r *Repo) CreateCollectionForProductRelease(ctx context.Context, productReleaseUUID string, in CollectionInput) (tea.Collection, error) {
 	var exists int
 	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM product_release WHERE uuid = ?`, productReleaseUUID).Scan(&exists); err != nil {
@@ -47,7 +56,7 @@ func (r *Repo) createCollection(ctx context.Context, ownerUUID, belongsTo string
 	if err != nil {
 		return tea.Collection{}, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	var maxVersion sql.NullInt64
 	if err := tx.QueryRowContext(ctx, `SELECT MAX(version) FROM collection WHERE uuid = ?`, ownerUUID).Scan(&maxVersion); err != nil {
@@ -109,7 +118,7 @@ func (r *Repo) ImportCollection(ctx context.Context, in ImportCollectionInput) (
 	if err != nil {
 		return false, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	var exists int
 	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM collection WHERE uuid = ? AND version = ?`, in.UUID, in.Version).Scan(&exists); err == nil {
@@ -148,6 +157,8 @@ func (r *Repo) ImportCollection(ctx context.Context, in ImportCollectionInput) (
 	return true, nil
 }
 
+// GetLatestCollection fetches the highest-versioned collection for
+// ownerUUID. Returns ErrNotFound if ownerUUID has no collections yet.
 func (r *Repo) GetLatestCollection(ctx context.Context, ownerUUID string) (tea.Collection, error) {
 	var version sql.NullInt64
 	if err := r.db.QueryRowContext(ctx, `SELECT MAX(version) FROM collection WHERE uuid = ?`, ownerUUID).Scan(&version); err != nil {
@@ -159,6 +170,9 @@ func (r *Repo) GetLatestCollection(ctx context.Context, ownerUUID string) (tea.C
 	return r.GetCollectionByVersion(ctx, ownerUUID, int(version.Int64))
 }
 
+// GetCollectionByVersion fetches one specific collection version for
+// ownerUUID, including its artifacts. Returns ErrNotFound if that
+// (ownerUUID, version) pair doesn't exist.
 func (r *Repo) GetCollectionByVersion(ctx context.Context, ownerUUID string, version int) (tea.Collection, error) {
 	var (
 		date                  string
@@ -213,16 +227,16 @@ func (r *Repo) listCollectionArtifacts(ctx context.Context, ownerUUID string, ve
 	for rows.Next() {
 		var rf ref
 		if err := rows.Scan(&rf.uuid, &rf.version); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return nil, err
 		}
 		refs = append(refs, rf)
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
+		_ = rows.Close()
 		return nil, err
 	}
-	rows.Close()
+	_ = rows.Close()
 
 	out := []tea.Artifact{}
 	for _, rf := range refs {
@@ -248,7 +262,7 @@ func (r *Repo) ListCollections(ctx context.Context, ownerUUID, sortOrder string,
 	where, whereArgs := pq.whereClause()
 	query += where
 	args = append(args, whereArgs...)
-	query += pq.orderByClause() + " LIMIT ?"
+	query += pq.orderByClause() + " LIMIT ?" //nolint:gosec // orderByClause's SortColumn is the hardcoded literal "version" here, never user input
 	args = append(args, limit)
 
 	rows, err := r.db.QueryContext(ctx, query, args...)
@@ -259,16 +273,16 @@ func (r *Repo) ListCollections(ctx context.Context, ownerUUID, sortOrder string,
 	for rows.Next() {
 		var v int
 		if err := rows.Scan(&v); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return nil, err
 		}
 		versions = append(versions, v)
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
+		_ = rows.Close()
 		return nil, err
 	}
-	rows.Close()
+	_ = rows.Close()
 
 	out := make([]tea.Collection, 0, len(versions))
 	for _, v := range versions {

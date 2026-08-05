@@ -17,6 +17,8 @@ func (r *Repo) UpsertBlob(ctx context.Context, sha256Hex string, sizeBytes int64
 	return err
 }
 
+// GetBlobMediaType returns the recorded Content-Type for a stored blob.
+// Returns ErrNotFound if sha256Hex has no bookkeeping row.
 func (r *Repo) GetBlobMediaType(ctx context.Context, sha256Hex string) (string, error) {
 	var mediaType sql.NullString
 	err := r.db.QueryRowContext(ctx, `SELECT media_type FROM blob WHERE sha256 = ?`, sha256Hex).Scan(&mediaType)

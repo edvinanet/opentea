@@ -11,6 +11,7 @@ import (
 	"github.com/oej/opentea/pkg/tea"
 )
 
+// ComponentReleaseInput carries the fields needed to create a new component release.
 type ComponentReleaseInput struct {
 	Version     string
 	CreatedDate time.Time
@@ -19,6 +20,8 @@ type ComponentReleaseInput struct {
 	Identifiers []tea.Identifier
 }
 
+// CreateComponentRelease creates a new release of componentUUID with a
+// fresh generated UUID. Returns ErrNotFound if componentUUID doesn't exist.
 func (r *Repo) CreateComponentRelease(ctx context.Context, componentUUID string, in ComponentReleaseInput) (tea.ComponentRelease, error) {
 	var componentName string
 	if err := r.db.QueryRowContext(ctx, `SELECT name FROM component WHERE uuid = ?`, componentUUID).Scan(&componentName); err != nil {
@@ -33,7 +36,7 @@ func (r *Repo) CreateComponentRelease(ctx context.Context, componentUUID string,
 	if err != nil {
 		return tea.ComponentRelease{}, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	_, err = tx.ExecContext(ctx,
 		`INSERT INTO component_release (uuid, component_uuid, component_name, version, created_date, release_date, pre_release) VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -65,12 +68,16 @@ type ImportComponentReleaseInput struct {
 	Identifiers   []tea.Identifier
 }
 
+// ImportComponentRelease creates a component release preserving its source
+// identity (in.UUID), or leaves an existing one with that UUID untouched --
+// see ImportComponentReleaseInput and internal/bundle for the idempotency
+// rationale.
 func (r *Repo) ImportComponentRelease(ctx context.Context, in ImportComponentReleaseInput) (created bool, err error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	var exists int
 	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM component_release WHERE uuid = ?`, in.UUID).Scan(&exists); err == nil {
@@ -95,6 +102,8 @@ func (r *Repo) ImportComponentRelease(ctx context.Context, in ImportComponentRel
 	return true, nil
 }
 
+// GetComponentRelease fetches a component release by UUID, including its
+// identifiers and distributions. Returns ErrNotFound if uuid doesn't exist.
 func (r *Repo) GetComponentRelease(ctx context.Context, uuid string) (tea.ComponentRelease, error) {
 	var (
 		componentUUID sql.NullString
@@ -162,6 +171,7 @@ func componentReleaseSortColumn(sortField string) (string, error) {
 	}
 }
 
+// ListComponentReleasesByComponent returns up to limit releases of componentUUID.
 func (r *Repo) ListComponentReleasesByComponent(ctx context.Context, componentUUID, sortField, sortOrder string, cursor *pagination.Cursor, limit int) ([]tea.ComponentRelease, error) {
 	sortColumn, err := componentReleaseSortColumn(sortField)
 	if err != nil {
@@ -172,6 +182,8 @@ func (r *Repo) ListComponentReleasesByComponent(ctx context.Context, componentUU
 	return r.queryComponentReleaseUUIDs(ctx, query, args, sortColumn, sortOrder, cursor, limit)
 }
 
+// QueryComponentReleases returns up to limit releases across all
+// components, filtered by idType/idValue.
 func (r *Repo) QueryComponentReleases(ctx context.Context, idType, idValue, sortField, sortOrder string, cursor *pagination.Cursor, limit int) ([]tea.ComponentRelease, error) {
 	sortColumn, err := componentReleaseSortColumn(sortField)
 	if err != nil {
@@ -202,16 +214,16 @@ func (r *Repo) queryComponentReleaseUUIDs(ctx context.Context, query string, arg
 	for rows.Next() {
 		var u string
 		if err := rows.Scan(&u); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return nil, err
 		}
 		uuids = append(uuids, u)
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
+		_ = rows.Close()
 		return nil, err
 	}
-	rows.Close()
+	_ = rows.Close()
 
 	out := make([]tea.ComponentRelease, 0, len(uuids))
 	for _, u := range uuids {
@@ -224,12 +236,14 @@ func (r *Repo) queryComponentReleaseUUIDs(ctx context.Context, query string, arg
 	return out, nil
 }
 
+// DeleteComponentRelease deletes the release identified by uuid, cascading
+// to its distributions and collections. Returns ErrNotFound if uuid doesn't exist.
 func (r *Repo) DeleteComponentRelease(ctx context.Context, uuid string) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	res, err := tx.ExecContext(ctx, `DELETE FROM component_release WHERE uuid = ?`, uuid)
 	if err != nil {

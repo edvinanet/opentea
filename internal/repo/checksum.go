@@ -25,7 +25,7 @@ func listChecksums(ctx context.Context, q dbtx, ownerType, ownerID string) ([]te
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []tea.Checksum
 	for rows.Next() {

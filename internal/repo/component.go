@@ -10,6 +10,7 @@ import (
 	"github.com/oej/opentea/pkg/tea"
 )
 
+// CreateComponent creates a new component with a fresh generated UUID.
 func (r *Repo) CreateComponent(ctx context.Context, name string, identifiers []tea.Identifier) (tea.Component, error) {
 	uuid := idgen.New()
 
@@ -17,7 +18,7 @@ func (r *Repo) CreateComponent(ctx context.Context, name string, identifiers []t
 	if err != nil {
 		return tea.Component{}, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	if _, err := tx.ExecContext(ctx, `INSERT INTO component (uuid, name) VALUES (?, ?)`, uuid, name); err != nil {
 		return tea.Component{}, err
@@ -39,7 +40,7 @@ func (r *Repo) ImportComponent(ctx context.Context, uuid, name string, identifie
 	if err != nil {
 		return false, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	var exists int
 	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM component WHERE uuid = ?`, uuid).Scan(&exists); err == nil {
@@ -60,6 +61,7 @@ func (r *Repo) ImportComponent(ctx context.Context, uuid, name string, identifie
 	return true, nil
 }
 
+// GetComponent fetches a component by UUID. Returns ErrNotFound if uuid doesn't exist.
 func (r *Repo) GetComponent(ctx context.Context, uuid string) (tea.Component, error) {
 	var name string
 	err := r.db.QueryRowContext(ctx, `SELECT name FROM component WHERE uuid = ?`, uuid).Scan(&name)
@@ -98,14 +100,14 @@ func (r *Repo) QueryComponents(ctx context.Context, idType, idValue, sortField, 
 	where, whereArgs := pq.whereClause()
 	query += where
 	args = append(args, whereArgs...)
-	query += pq.orderByClause() + " LIMIT ?"
+	query += pq.orderByClause() + " LIMIT ?" //nolint:gosec // orderByClause's SortColumn always comes from a fixed, pre-validated allowlist, never raw input
 	args = append(args, limit)
 
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	out := []tea.Component{}
 	for rows.Next() {
@@ -129,12 +131,14 @@ func (r *Repo) QueryComponents(ctx context.Context, idType, idValue, sortField, 
 	return out, nil
 }
 
+// DeleteComponent deletes the component identified by uuid, cascading to
+// its releases. Returns ErrNotFound if uuid doesn't exist.
 func (r *Repo) DeleteComponent(ctx context.Context, uuid string) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	res, err := tx.ExecContext(ctx, `DELETE FROM component WHERE uuid = ?`, uuid)
 	if err != nil {

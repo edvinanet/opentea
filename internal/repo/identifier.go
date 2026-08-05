@@ -25,7 +25,7 @@ func listIdentifiers(ctx context.Context, q dbtx, ownerType, ownerUUID string) (
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	out := []tea.Identifier{}
 	for rows.Next() {

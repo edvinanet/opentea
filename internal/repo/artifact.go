@@ -10,11 +10,13 @@ import (
 	"github.com/oej/opentea/pkg/tea"
 )
 
+// ArtifactFormatInput carries the fields needed to create one format of a new artifact.
 type ArtifactFormatInput struct {
 	MediaType   string
 	Description string
 }
 
+// ArtifactInput carries the fields needed to create a new artifact.
 type ArtifactInput struct {
 	Name            string
 	Type            string
@@ -34,7 +36,7 @@ func (r *Repo) CreateArtifact(ctx context.Context, in ArtifactInput) (tea.Artifa
 	if err != nil {
 		return tea.Artifact{}, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO artifact (uuid, version, name, type, created_date) VALUES (?, ?, ?, ?, ?)`,
@@ -101,7 +103,7 @@ func (r *Repo) ImportArtifact(ctx context.Context, in ImportArtifactInput) (crea
 	if err != nil {
 		return false, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	var exists int
 	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM artifact WHERE uuid = ? AND version = ?`, in.UUID, in.Version).Scan(&exists); err == nil {
@@ -145,6 +147,8 @@ func (r *Repo) ImportArtifact(ctx context.Context, in ImportArtifactInput) (crea
 	return true, nil
 }
 
+// GetArtifactLatest fetches the highest-versioned revision of artifact
+// uuid. Returns ErrNotFound if uuid has no revisions.
 func (r *Repo) GetArtifactLatest(ctx context.Context, uuid string) (tea.Artifact, error) {
 	var version sql.NullInt64
 	if err := r.db.QueryRowContext(ctx, `SELECT MAX(version) FROM artifact WHERE uuid = ?`, uuid).Scan(&version); err != nil {
@@ -156,6 +160,8 @@ func (r *Repo) GetArtifactLatest(ctx context.Context, uuid string) (tea.Artifact
 	return r.GetArtifactByVersion(ctx, uuid, int(version.Int64))
 }
 
+// GetArtifactByVersion fetches one specific revision of artifact uuid.
+// Returns ErrNotFound if that (uuid, version) pair doesn't exist.
 func (r *Repo) GetArtifactByVersion(ctx context.Context, uuid string, version int) (tea.Artifact, error) {
 	var name sql.NullString
 	var artifactType string
@@ -201,7 +207,7 @@ func listArtifactDistributionIDs(ctx context.Context, q dbtx, uuid string, versi
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []string
 	for rows.Next() {
@@ -228,16 +234,16 @@ func listArtifactFormats(ctx context.Context, q dbtx, uuid string, version int) 
 	for rows.Next() {
 		var rr row
 		if err := rows.Scan(&rr.id, &rr.mediaType, &rr.description, &rr.url, &rr.sig); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return nil, err
 		}
 		rowsData = append(rowsData, rr)
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
+		_ = rows.Close()
 		return nil, err
 	}
-	rows.Close()
+	_ = rows.Close()
 
 	out := []tea.ArtifactFormat{}
 	for _, rr := range rowsData {
@@ -269,16 +275,16 @@ func (r *Repo) SetArtifactFormatFile(ctx context.Context, artifactUUID string, a
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return tea.Artifact{}, err
 		}
 		ids = append(ids, id)
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
+		_ = rows.Close()
 		return tea.Artifact{}, err
 	}
-	rows.Close()
+	_ = rows.Close()
 
 	if formatIndex < 0 || formatIndex >= len(ids) {
 		return tea.Artifact{}, ErrNotFound
@@ -289,7 +295,7 @@ func (r *Repo) SetArtifactFormatFile(ctx context.Context, artifactUUID string, a
 	if err != nil {
 		return tea.Artifact{}, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	if _, err := tx.ExecContext(ctx, `UPDATE artifact_format SET url = ? WHERE id = ?`, url, formatID); err != nil {
 		return tea.Artifact{}, err

@@ -10,6 +10,7 @@ import (
 	"github.com/oej/opentea/pkg/tea"
 )
 
+// CreateProduct creates a new product with a fresh generated UUID.
 func (r *Repo) CreateProduct(ctx context.Context, name string, identifiers []tea.Identifier) (tea.Product, error) {
 	uuid := idgen.New()
 
@@ -17,7 +18,7 @@ func (r *Repo) CreateProduct(ctx context.Context, name string, identifiers []tea
 	if err != nil {
 		return tea.Product{}, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	if _, err := tx.ExecContext(ctx, `INSERT INTO product (uuid, name) VALUES (?, ?)`, uuid, name); err != nil {
 		return tea.Product{}, err
@@ -42,7 +43,7 @@ func (r *Repo) ImportProduct(ctx context.Context, uuid, name string, identifiers
 	if err != nil {
 		return false, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	var exists int
 	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM product WHERE uuid = ?`, uuid).Scan(&exists); err == nil {
@@ -63,6 +64,7 @@ func (r *Repo) ImportProduct(ctx context.Context, uuid, name string, identifiers
 	return true, nil
 }
 
+// GetProduct fetches a product by UUID. Returns ErrNotFound if uuid doesn't exist.
 func (r *Repo) GetProduct(ctx context.Context, uuid string) (tea.Product, error) {
 	var name string
 	err := r.db.QueryRowContext(ctx, `SELECT name FROM product WHERE uuid = ?`, uuid).Scan(&name)
@@ -85,13 +87,12 @@ func (r *Repo) GetProduct(ctx context.Context, uuid string) (tea.Product, error)
 // cursor. sortField must already be validated upstream (the only allowed
 // value for products is "name").
 func (r *Repo) QueryProducts(ctx context.Context, idType, idValue, sortField, sortOrder string, cursor *pagination.Cursor, limit int) ([]tea.Product, error) {
-	sortColumn := "name"
 	switch sortField {
 	case "name", "":
-		sortColumn = "name"
 	default:
 		return nil, errors.New("repo: unsupported sortField for product: " + sortField)
 	}
+	sortColumn := "name"
 
 	query := `SELECT uuid, name FROM product WHERE 1=1`
 	var args []any
@@ -104,14 +105,14 @@ func (r *Repo) QueryProducts(ctx context.Context, idType, idValue, sortField, so
 	where, whereArgs := pq.whereClause()
 	query += where
 	args = append(args, whereArgs...)
-	query += pq.orderByClause() + " LIMIT ?"
+	query += pq.orderByClause() + " LIMIT ?" //nolint:gosec // orderByClause's SortColumn always comes from a fixed, pre-validated allowlist (see the switch above), never raw input
 	args = append(args, limit)
 
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	out := []tea.Product{}
 	for rows.Next() {
@@ -135,12 +136,14 @@ func (r *Repo) QueryProducts(ctx context.Context, idType, idValue, sortField, so
 	return out, nil
 }
 
+// DeleteProduct deletes the product identified by uuid, cascading to its
+// releases. Returns ErrNotFound if uuid doesn't exist.
 func (r *Repo) DeleteProduct(ctx context.Context, uuid string) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	res, err := tx.ExecContext(ctx, `DELETE FROM product WHERE uuid = ?`, uuid)
 	if err != nil {

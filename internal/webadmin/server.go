@@ -18,14 +18,15 @@ var templatesFS embed.FS
 
 // Server holds the dependencies for the /admin/ui browser GUI handlers.
 type Server struct {
-	repo      *repo.Repo
-	cfg       config.Config
-	templates map[string]*template.Template
+	repo         *repo.Repo
+	cfg          config.Config
+	templates    map[string]*template.Template
+	loginLimiter *loginLimiter
 }
 
 // NewRouter builds the /admin/ui/... mux.
 func NewRouter(r *repo.Repo, cfg config.Config) http.Handler {
-	srv := &Server{repo: r, cfg: cfg, templates: loadTemplates()}
+	srv := &Server{repo: r, cfg: cfg, templates: loadTemplates(), loginLimiter: newLoginLimiter()}
 	mux := http.NewServeMux()
 	srv.registerRoutes(mux)
 	return mux

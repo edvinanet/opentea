@@ -17,6 +17,14 @@ func (s *Server) loginForm(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) loginSubmit(w http.ResponseWriter, r *http.Request) {
+	// Checked before touching the form body or calling VerifyLogin at all,
+	// so a throttled client can't burn CPU on bcrypt (or anything else) by
+	// retrying -- see loginLimiter's doc comment.
+	if !s.loginLimiter.allow(clientIP(r)) {
+		s.renderLogin(w, pageData{Error: "too many login attempts, please wait a moment and try again"})
+		return
+	}
+
 	if err := r.ParseForm(); err != nil {
 		s.renderLogin(w, pageData{Error: "invalid form submission"})
 		return

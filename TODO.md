@@ -127,6 +127,17 @@ they don't get lost.
       partway through a multi-entity import (e.g. via a `context.Context` wrapper that cancels
       after N queries) and asserts the same all-or-nothing rollback `TestImportIsAtomicOnFailure`
       checks for.
+- [ ] No concurrency limit on large uploads (found 2026-08-05, external review): both
+      `importProduct` (`internal/admin/bundle.go`) and `receiveFile` (`internal/admin/upload.go`)
+      cap a single upload at 1 GiB, but nothing caps how many of those can run at once. The
+      memory-exhaustion angle is fixed -- `importProduct` no longer buffers the whole bundle into
+      a `[]byte` (reads via `multipart.File`'s `io.ReaderAt` instead), and `receiveFile` already
+      streamed straight into blob storage -- so concurrent large uploads are now bounded by disk
+      (temp files + blob writes) rather than RAM, but many concurrent 1 GiB imports/uploads from
+      authenticated admins could still exhaust disk space or degrade the single SQLite connection.
+      Consider a bounded semaphore (e.g. `internal/admin`-wide, gating both handlers) if this
+      becomes a real concern -- admin-only surface, so the practical exposure is lower than a
+      public endpoint.
 - [ ] Related to the above: `importBlobs` writes blob files to disk (via `storage.Put`) before
       any DB error partway through the rest of the import could occur, and those writes can't
       be rolled back by a DB transaction (filesystem isn't transactional). Low risk in practice

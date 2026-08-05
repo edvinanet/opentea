@@ -119,6 +119,14 @@ they don't get lost.
       test: `TestImportIsAtomicOnFailure` (`internal/bundle/import_test.go`) injects a late FK
       failure and asserts every earlier-written entity (product, release, component, component
       release) is also gone after rollback.
+- [ ] No test for context cancellation mid-`Import` (caller's `ctx` canceled/timed out while
+      writes are in flight). `TestImportIsAtomicOnFailure` only proves rollback for an
+      *application* error (an FK violation); a canceled context should hit the same rollback
+      path in `Repo.WithTx` (`ExecContext` returns `context.Canceled`, which propagates through
+      the same error return), but that's inference, not a test. Add a test that cancels `ctx`
+      partway through a multi-entity import (e.g. via a `context.Context` wrapper that cancels
+      after N queries) and asserts the same all-or-nothing rollback `TestImportIsAtomicOnFailure`
+      checks for.
 - [ ] Related to the above: `importBlobs` writes blob files to disk (via `storage.Put`) before
       any DB error partway through the rest of the import could occur, and those writes can't
       be rolled back by a DB transaction (filesystem isn't transactional). Low risk in practice

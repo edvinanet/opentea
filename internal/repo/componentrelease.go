@@ -73,33 +73,26 @@ type ImportComponentReleaseInput struct {
 // see ImportComponentReleaseInput and internal/bundle for the idempotency
 // rationale.
 func (r *Repo) ImportComponentRelease(ctx context.Context, in ImportComponentReleaseInput) (created bool, err error) {
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return false, err
-	}
-	defer func() { _ = tx.Rollback() }()
+	return runInTx(ctx, r, func(tx dbtx) (bool, error) {
+		var exists int
+		if err := tx.QueryRowContext(ctx, `SELECT 1 FROM component_release WHERE uuid = ?`, in.UUID).Scan(&exists); err == nil {
+			return false, nil
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return false, err
+		}
 
-	var exists int
-	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM component_release WHERE uuid = ?`, in.UUID).Scan(&exists); err == nil {
-		return false, nil
-	} else if !errors.Is(err, sql.ErrNoRows) {
-		return false, err
-	}
-
-	_, err = tx.ExecContext(ctx,
-		`INSERT INTO component_release (uuid, component_uuid, component_name, version, created_date, release_date, pre_release) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		in.UUID, in.ComponentUUID, in.ComponentName, in.Version, formatTime(in.CreatedDate), formatTimePtr(in.ReleaseDate), boolToInt(in.PreRelease),
-	)
-	if err != nil {
-		return false, err
-	}
-	if err := insertIdentifiers(ctx, tx, OwnerComponentRelease, in.UUID, in.Identifiers); err != nil {
-		return false, err
-	}
-	if err := tx.Commit(); err != nil {
-		return false, err
-	}
-	return true, nil
+		_, err := tx.ExecContext(ctx,
+			`INSERT INTO component_release (uuid, component_uuid, component_name, version, created_date, release_date, pre_release) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			in.UUID, in.ComponentUUID, in.ComponentName, in.Version, formatTime(in.CreatedDate), formatTimePtr(in.ReleaseDate), boolToInt(in.PreRelease),
+		)
+		if err != nil {
+			return false, err
+		}
+		if err := insertIdentifiers(ctx, tx, OwnerComponentRelease, in.UUID, in.Identifiers); err != nil {
+			return false, err
+		}
+		return true, nil
+	})
 }
 
 // GetComponentRelease fetches a component release by UUID, including its

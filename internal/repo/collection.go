@@ -114,47 +114,40 @@ type ImportCollectionInput struct {
 // artifacts, collections are versioned, so a bundle can introduce a new
 // version of a collection the target already has earlier versions of.
 func (r *Repo) ImportCollection(ctx context.Context, in ImportCollectionInput) (created bool, err error) {
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return false, err
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	var exists int
-	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM collection WHERE uuid = ? AND version = ?`, in.UUID, in.Version).Scan(&exists); err == nil {
-		return false, nil
-	} else if !errors.Is(err, sql.ErrNoRows) {
-		return false, err
-	}
-
-	var reasonType, reasonComment any
-	if in.UpdateReason != nil {
-		reasonType = in.UpdateReason.Type
-		if in.UpdateReason.Comment != "" {
-			reasonComment = in.UpdateReason.Comment
+	return runInTx(ctx, r, func(tx dbtx) (bool, error) {
+		var exists int
+		if err := tx.QueryRowContext(ctx, `SELECT 1 FROM collection WHERE uuid = ? AND version = ?`, in.UUID, in.Version).Scan(&exists); err == nil {
+			return false, nil
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return false, err
 		}
-	}
 
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO collection (uuid, version, date, belongs_to, update_reason_type, update_reason_comment) VALUES (?, ?, ?, ?, ?, ?)`,
-		in.UUID, in.Version, formatTime(in.Date), in.BelongsTo, reasonType, reasonComment,
-	); err != nil {
-		return false, err
-	}
+		var reasonType, reasonComment any
+		if in.UpdateReason != nil {
+			reasonType = in.UpdateReason.Type
+			if in.UpdateReason.Comment != "" {
+				reasonComment = in.UpdateReason.Comment
+			}
+		}
 
-	for _, a := range in.Artifacts {
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO collection_artifact (collection_uuid, collection_version, artifact_uuid, artifact_version) VALUES (?, ?, ?, ?)`,
-			in.UUID, in.Version, a.UUID, a.Version,
+			`INSERT INTO collection (uuid, version, date, belongs_to, update_reason_type, update_reason_comment) VALUES (?, ?, ?, ?, ?, ?)`,
+			in.UUID, in.Version, formatTime(in.Date), in.BelongsTo, reasonType, reasonComment,
 		); err != nil {
 			return false, err
 		}
-	}
 
-	if err := tx.Commit(); err != nil {
-		return false, err
-	}
-	return true, nil
+		for _, a := range in.Artifacts {
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO collection_artifact (collection_uuid, collection_version, artifact_uuid, artifact_version) VALUES (?, ?, ?, ?)`,
+				in.UUID, in.Version, a.UUID, a.Version,
+			); err != nil {
+				return false, err
+			}
+		}
+
+		return true, nil
+	})
 }
 
 // GetLatestCollection fetches the highest-versioned collection for

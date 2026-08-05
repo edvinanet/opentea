@@ -69,39 +69,54 @@ func Import(ctx context.Context, r *repo.Repo, store storage.Storage, rootURL st
 	}
 
 	sha256ToMediaType := collectMediaTypes(m)
-	sha256ToURL, err := importBlobs(ctx, r, store, zr, rootURL, sha256ToMediaType)
-	if err != nil {
-		return nil, err
-	}
-
 	res := newImportResult()
 
-	productCreated, err := r.ImportProduct(ctx, m.Product.UUID, m.Product.Name, m.Product.Identifiers)
-	if err != nil {
-		return nil, fmt.Errorf("import product: %w", err)
-	}
-	res.ProductCreated = productCreated
-	res.record("product", productCreated)
-	if err := importCLE(ctx, r, repo.OwnerProduct, m.Product.UUID, m.Product.CLE, res); err != nil {
-		return nil, err
-	}
+	// Every DB write below runs inside one transaction spanning the whole
+	// import: a failure partway through (bad FK, disk error, canceled
+	// context) rolls back every entity written so far instead of leaving a
+	// partially-imported product tree committed. Blob *files* are written to
+	// storage.Put outside any rollback's reach (the filesystem isn't
+	// transactional) -- see TODO.md for the follow-up orphan-blob GC that
+	// covers that separate, lower-risk gap; a blob's own DB bookkeeping row
+	// (UpsertBlob, inside importBlobs) does still participate in this
+	// transaction, so it never survives with nothing referencing it.
+	err = r.WithTx(ctx, func(txRepo *repo.Repo) error {
+		sha256ToURL, err := importBlobs(ctx, txRepo, store, zr, rootURL, sha256ToMediaType)
+		if err != nil {
+			return err
+		}
 
-	if err := importProductReleases(ctx, r, m, res); err != nil {
-		return nil, err
-	}
-	if err := importComponents(ctx, r, m, res); err != nil {
-		return nil, err
-	}
-	if err := importComponentReleases(ctx, r, m, sha256ToURL, res); err != nil {
-		return nil, err
-	}
-	// Component links are made only now, after every component release they
-	// might pin has been imported -- product_release_component's FK on
-	// component_release_uuid would otherwise fail for a pinned ref.
-	if err := importComponentLinks(ctx, r, m); err != nil {
-		return nil, err
-	}
-	if err := importCollections(ctx, r, m, sha256ToURL, res); err != nil {
+		productCreated, err := txRepo.ImportProduct(ctx, m.Product.UUID, m.Product.Name, m.Product.Identifiers)
+		if err != nil {
+			return fmt.Errorf("import product: %w", err)
+		}
+		res.ProductCreated = productCreated
+		res.record("product", productCreated)
+		if err := importCLE(ctx, txRepo, repo.OwnerProduct, m.Product.UUID, m.Product.CLE, res); err != nil {
+			return err
+		}
+
+		if err := importProductReleases(ctx, txRepo, m, res); err != nil {
+			return err
+		}
+		if err := importComponents(ctx, txRepo, m, res); err != nil {
+			return err
+		}
+		if err := importComponentReleases(ctx, txRepo, m, sha256ToURL, res); err != nil {
+			return err
+		}
+		// Component links are made only now, after every component release
+		// they might pin has been imported -- product_release_component's FK
+		// on component_release_uuid would otherwise fail for a pinned ref.
+		if err := importComponentLinks(ctx, txRepo, m); err != nil {
+			return err
+		}
+		if err := importCollections(ctx, txRepo, m, sha256ToURL, res); err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
 		return nil, err
 	}
 

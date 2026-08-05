@@ -36,29 +36,22 @@ func (r *Repo) CreateComponent(ctx context.Context, name string, identifiers []t
 // ImportComponent mirrors ImportProduct -- see there for the identity/
 // idempotency rationale.
 func (r *Repo) ImportComponent(ctx context.Context, uuid, name string, identifiers []tea.Identifier) (created bool, err error) {
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return false, err
-	}
-	defer func() { _ = tx.Rollback() }()
+	return runInTx(ctx, r, func(tx dbtx) (bool, error) {
+		var exists int
+		if err := tx.QueryRowContext(ctx, `SELECT 1 FROM component WHERE uuid = ?`, uuid).Scan(&exists); err == nil {
+			return false, nil
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return false, err
+		}
 
-	var exists int
-	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM component WHERE uuid = ?`, uuid).Scan(&exists); err == nil {
-		return false, nil
-	} else if !errors.Is(err, sql.ErrNoRows) {
-		return false, err
-	}
-
-	if _, err := tx.ExecContext(ctx, `INSERT INTO component (uuid, name) VALUES (?, ?)`, uuid, name); err != nil {
-		return false, err
-	}
-	if err := insertIdentifiers(ctx, tx, OwnerComponent, uuid, identifiers); err != nil {
-		return false, err
-	}
-	if err := tx.Commit(); err != nil {
-		return false, err
-	}
-	return true, nil
+		if _, err := tx.ExecContext(ctx, `INSERT INTO component (uuid, name) VALUES (?, ?)`, uuid, name); err != nil {
+			return false, err
+		}
+		if err := insertIdentifiers(ctx, tx, OwnerComponent, uuid, identifiers); err != nil {
+			return false, err
+		}
+		return true, nil
+	})
 }
 
 // GetComponent fetches a component by UUID. Returns ErrNotFound if uuid doesn't exist.

@@ -75,33 +75,26 @@ type ImportProductReleaseInput struct {
 // (created=false), not a merge. Component links are handled separately via
 // the existing idempotent LinkComponent.
 func (r *Repo) ImportProductRelease(ctx context.Context, in ImportProductReleaseInput) (created bool, err error) {
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return false, err
-	}
-	defer func() { _ = tx.Rollback() }()
+	return runInTx(ctx, r, func(tx dbtx) (bool, error) {
+		var exists int
+		if err := tx.QueryRowContext(ctx, `SELECT 1 FROM product_release WHERE uuid = ?`, in.UUID).Scan(&exists); err == nil {
+			return false, nil
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return false, err
+		}
 
-	var exists int
-	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM product_release WHERE uuid = ?`, in.UUID).Scan(&exists); err == nil {
-		return false, nil
-	} else if !errors.Is(err, sql.ErrNoRows) {
-		return false, err
-	}
-
-	_, err = tx.ExecContext(ctx,
-		`INSERT INTO product_release (uuid, product_uuid, product_name, version, created_date, release_date, pre_release) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		in.UUID, in.ProductUUID, in.ProductName, in.Version, formatTime(in.CreatedDate), formatTimePtr(in.ReleaseDate), boolToInt(in.PreRelease),
-	)
-	if err != nil {
-		return false, err
-	}
-	if err := insertIdentifiers(ctx, tx, OwnerProductRelease, in.UUID, in.Identifiers); err != nil {
-		return false, err
-	}
-	if err := tx.Commit(); err != nil {
-		return false, err
-	}
-	return true, nil
+		_, err := tx.ExecContext(ctx,
+			`INSERT INTO product_release (uuid, product_uuid, product_name, version, created_date, release_date, pre_release) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			in.UUID, in.ProductUUID, in.ProductName, in.Version, formatTime(in.CreatedDate), formatTimePtr(in.ReleaseDate), boolToInt(in.PreRelease),
+		)
+		if err != nil {
+			return false, err
+		}
+		if err := insertIdentifiers(ctx, tx, OwnerProductRelease, in.UUID, in.Identifiers); err != nil {
+			return false, err
+		}
+		return true, nil
+	})
 }
 
 // GetProductRelease fetches a product release by UUID, including its
@@ -115,7 +108,7 @@ func (r *Repo) GetProductRelease(ctx context.Context, uuid string) (tea.ProductR
 		releaseDate sql.NullString
 		preRelease  int
 	)
-	err := r.db.QueryRowContext(ctx,
+	err := r.conn().QueryRowContext(ctx,
 		`SELECT product_uuid, product_name, version, created_date, release_date, pre_release FROM product_release WHERE uuid = ?`, uuid,
 	).Scan(&productUUID, &productName, &version, &createdDate, &releaseDate, &preRelease)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -134,11 +127,11 @@ func (r *Repo) GetProductRelease(ctx context.Context, uuid string) (tea.ProductR
 		return tea.ProductRelease{}, err
 	}
 
-	ids, err := listIdentifiers(ctx, r.db, OwnerProductRelease, uuid)
+	ids, err := listIdentifiers(ctx, r.conn(), OwnerProductRelease, uuid)
 	if err != nil {
 		return tea.ProductRelease{}, err
 	}
-	components, err := listProductReleaseComponents(ctx, r.db, uuid)
+	components, err := listProductReleaseComponents(ctx, r.conn(), uuid)
 	if err != nil {
 		return tea.ProductRelease{}, err
 	}
@@ -188,7 +181,7 @@ func listProductReleaseComponents(ctx context.Context, q dbtx, productReleaseUUI
 // LinkComponent adds (or replaces the pin for) a component reference on a
 // product release -- the admin-API stand-in for productRelease.components[].
 func (r *Repo) LinkComponent(ctx context.Context, productReleaseUUID string, ref tea.ComponentRef) (tea.ProductRelease, error) {
-	if _, err := r.db.ExecContext(ctx,
+	if _, err := r.conn().ExecContext(ctx,
 		`INSERT INTO product_release_component (product_release_uuid, component_uuid, component_release_uuid) VALUES (?, ?, ?)
 		 ON CONFLICT (product_release_uuid, component_uuid) DO UPDATE SET component_release_uuid = excluded.component_release_uuid`,
 		productReleaseUUID, ref.UUID, ref.Release,

@@ -108,6 +108,36 @@ they don't get lost.
       (MD5, SHA-1/384/512, SHA3-*, BLAKE2b-*, BLAKE3) are stored as-is but not independently
       verified, matching `pkg/teaclient`'s existing BLAKE3-unsupported limitation.
 - [ ] No dry-run/validate-only mode for import (report what would happen without writing).
+- [x] ~~`bundle.Import` isn't atomic~~ -- fixed (2026-08-05): found by external review; each
+      entity's own `repo.Import*` call was individually transactional, but nothing spanned the
+      whole import, so a failure partway through left earlier entities committed. Added
+      `Repo.WithTx(ctx, func(txRepo *Repo) error) error` plus a `conn()`/`runInTx` helper pair
+      (`internal/repo/repo.go`) so every `Import*` method, `LinkComponent`, and `UpsertBlob`
+      composes into one outer transaction when called through a `WithTx`-scoped `Repo`;
+      `bundle.Import` now wraps its whole write sequence (including `importBlobs`'s DB
+      bookkeeping, not its file write -- see the item below) in one `WithTx` call. Regression
+      test: `TestImportIsAtomicOnFailure` (`internal/bundle/import_test.go`) injects a late FK
+      failure and asserts every earlier-written entity (product, release, component, component
+      release) is also gone after rollback.
+- [ ] Related to the above: `importBlobs` writes blob files to disk (via `storage.Put`) before
+      any DB error partway through the rest of the import could occur, and those writes can't
+      be rolled back by a DB transaction (filesystem isn't transactional). Low risk in practice
+      -- blobs are content-addressed, so a leftover file from a failed import is either picked
+      up harmlessly by a later successful retry, or just sits as an orphan at its own hash path
+      -- but there's currently no cleanup/garbage-collection for blobs that end up orphaned
+      this way (or orphaned by other means, e.g. a deleted product/artifact leaving its blob
+      behind). Needs a GC pass (e.g. sweep `internal/storage` for blobs with no referencing row
+      in `blob`/checksum tables) rather than being handled at import time.
+- [ ] Bundle-level signing/hashing (noted 2026-08-05, not yet designed): today only individual
+      `files/<sha256>` entries are checksum-verified (see the two done items above) -- there's
+      no signature or hash covering the *bundle zip as a whole* (manifest + files together), so
+      nothing currently proves a bundle wasn't tampered with after export beyond its individual
+      file contents matching their own claimed hashes (e.g. the manifest itself, or which files
+      are included/excluded, isn't provable as untampered). Distinct from the per-entity
+      `SignatureURL` gap already tracked under **Trust architecture overlay** above -- that's
+      about signing individual distributions/artifacts; this is about signing/hashing the
+      bundle file itself. Revisit alongside that trust-architecture design work once it's
+      formalized, rather than inventing an ad hoc bundle-signing scheme now.
 - [ ] Export is strictly per-product; no whole-server ("export everything") bundle mode.
 - [ ] No `teaclient`/CLI convenience commands for actually running export/import -- that
       remains server-side (`/admin/v1`) only, per the user's explicit scoping. (A *standalone

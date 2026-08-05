@@ -92,87 +92,73 @@ func (r *Repo) CreateCLEEvent(ctx context.Context, ownerType, ownerUUID string, 
 // cross-references within the same bundle keep resolving correctly. See
 // ImportProduct for the identity/idempotency rationale.
 func (r *Repo) ImportCLEEvent(ctx context.Context, ownerType, ownerUUID string, e tea.CLEEvent) (created bool, err error) {
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return false, err
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	var exists int
-	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM cle_event WHERE owner_type = ? AND owner_uuid = ? AND id = ?`, ownerType, ownerUUID, e.ID).Scan(&exists); err == nil {
-		return false, nil
-	} else if !errors.Is(err, sql.ErrNoRows) {
-		return false, err
-	}
-
-	_, err = tx.ExecContext(ctx,
-		`INSERT INTO cle_event (owner_type, owner_uuid, id, type, effective, published, version, support_id, license, superseded_by_version, event_id_ref, reason, description)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		ownerType, ownerUUID, e.ID, e.Type, formatTime(e.Effective), formatTime(e.Published),
-		nullIfEmpty(e.Version), nullIfEmpty(e.SupportID), nullIfEmpty(e.License), nullIfEmpty(e.SupersededByVersion),
-		e.EventID, nullIfEmpty(e.Reason), nullIfEmpty(e.Description),
-	)
-	if err != nil {
-		return false, err
-	}
-
-	for _, v := range e.Versions {
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO cle_event_version (owner_type, owner_uuid, event_id, version, version_range) VALUES (?, ?, ?, ?, ?)`,
-			ownerType, ownerUUID, e.ID, nullIfEmpty(v.Version), nullIfEmpty(v.Range),
-		); err != nil {
+	return runInTx(ctx, r, func(tx dbtx) (bool, error) {
+		var exists int
+		if err := tx.QueryRowContext(ctx, `SELECT 1 FROM cle_event WHERE owner_type = ? AND owner_uuid = ? AND id = ?`, ownerType, ownerUUID, e.ID).Scan(&exists); err == nil {
+			return false, nil
+		} else if !errors.Is(err, sql.ErrNoRows) {
 			return false, err
 		}
-	}
-	for _, ident := range e.Identifiers {
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO cle_event_identifier (owner_type, owner_uuid, event_id, id_type, id_value) VALUES (?, ?, ?, ?, ?)`,
-			ownerType, ownerUUID, e.ID, ident.IDType, ident.IDValue,
-		); err != nil {
-			return false, err
-		}
-	}
-	for _, ref := range e.References {
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO cle_event_reference (owner_type, owner_uuid, event_id, uri) VALUES (?, ?, ?, ?)`,
-			ownerType, ownerUUID, e.ID, ref,
-		); err != nil {
-			return false, err
-		}
-	}
 
-	if err := tx.Commit(); err != nil {
-		return false, err
-	}
-	return true, nil
+		_, err := tx.ExecContext(ctx,
+			`INSERT INTO cle_event (owner_type, owner_uuid, id, type, effective, published, version, support_id, license, superseded_by_version, event_id_ref, reason, description)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			ownerType, ownerUUID, e.ID, e.Type, formatTime(e.Effective), formatTime(e.Published),
+			nullIfEmpty(e.Version), nullIfEmpty(e.SupportID), nullIfEmpty(e.License), nullIfEmpty(e.SupersededByVersion),
+			e.EventID, nullIfEmpty(e.Reason), nullIfEmpty(e.Description),
+		)
+		if err != nil {
+			return false, err
+		}
+
+		for _, v := range e.Versions {
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO cle_event_version (owner_type, owner_uuid, event_id, version, version_range) VALUES (?, ?, ?, ?, ?)`,
+				ownerType, ownerUUID, e.ID, nullIfEmpty(v.Version), nullIfEmpty(v.Range),
+			); err != nil {
+				return false, err
+			}
+		}
+		for _, ident := range e.Identifiers {
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO cle_event_identifier (owner_type, owner_uuid, event_id, id_type, id_value) VALUES (?, ?, ?, ?, ?)`,
+				ownerType, ownerUUID, e.ID, ident.IDType, ident.IDValue,
+			); err != nil {
+				return false, err
+			}
+		}
+		for _, ref := range e.References {
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO cle_event_reference (owner_type, owner_uuid, event_id, uri) VALUES (?, ?, ?, ?)`,
+				ownerType, ownerUUID, e.ID, ref,
+			); err != nil {
+				return false, err
+			}
+		}
+
+		return true, nil
+	})
 }
 
 // ImportCLESupportDefinition creates the support definition if one with this
 // (ownerType, ownerUUID, id) doesn't already exist.
 func (r *Repo) ImportCLESupportDefinition(ctx context.Context, ownerType, ownerUUID string, def tea.CLESupportDefinition) (created bool, err error) {
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return false, err
-	}
-	defer func() { _ = tx.Rollback() }()
+	return runInTx(ctx, r, func(tx dbtx) (bool, error) {
+		var exists int
+		if err := tx.QueryRowContext(ctx, `SELECT 1 FROM cle_support_definition WHERE owner_type = ? AND owner_uuid = ? AND id = ?`, ownerType, ownerUUID, def.ID).Scan(&exists); err == nil {
+			return false, nil
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return false, err
+		}
 
-	var exists int
-	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM cle_support_definition WHERE owner_type = ? AND owner_uuid = ? AND id = ?`, ownerType, ownerUUID, def.ID).Scan(&exists); err == nil {
-		return false, nil
-	} else if !errors.Is(err, sql.ErrNoRows) {
-		return false, err
-	}
-
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO cle_support_definition (owner_type, owner_uuid, id, description, url) VALUES (?, ?, ?, ?, ?)`,
-		ownerType, ownerUUID, def.ID, def.Description, nullIfEmpty(def.URL),
-	); err != nil {
-		return false, err
-	}
-	if err := tx.Commit(); err != nil {
-		return false, err
-	}
-	return true, nil
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO cle_support_definition (owner_type, owner_uuid, id, description, url) VALUES (?, ?, ?, ?, ?)`,
+			ownerType, ownerUUID, def.ID, def.Description, nullIfEmpty(def.URL),
+		); err != nil {
+			return false, err
+		}
+		return true, nil
+	})
 }
 
 // CreateCLESupportDefinition records a support policy definition for

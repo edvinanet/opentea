@@ -10,7 +10,7 @@ import (
 // handler to serve the right Content-Type). Blobs are content-addressed, so
 // re-uploading identical bytes is a no-op on conflict.
 func (r *Repo) UpsertBlob(ctx context.Context, sha256Hex string, sizeBytes int64, mediaType string) error {
-	_, err := r.db.ExecContext(ctx,
+	_, err := r.conn().ExecContext(ctx,
 		`INSERT INTO blob (sha256, size_bytes, media_type) VALUES (?, ?, ?) ON CONFLICT (sha256) DO NOTHING`,
 		sha256Hex, sizeBytes, nullIfEmpty(mediaType),
 	)

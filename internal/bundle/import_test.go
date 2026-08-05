@@ -4,6 +4,8 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -378,5 +380,154 @@ func TestImportRejectsBadManifest(t *testing.T) {
 	store := newTestStore(t)
 	if _, err := Import(context.Background(), r, store, "http://dest.example", zr); err == nil {
 		t.Fatal("expected Import to reject a manifest missing required fields")
+	}
+}
+
+// corruptComponentLinkRelease rewrites the manifest's one pinned
+// productRelease -> component link ("productReleases[0].components[0].release")
+// to a well-formed but nonexistent UUID, via a targeted decode/mutate/re-encode
+// of manifest.json rather than a raw string replace, since the same UUID also
+// appears (correctly) as the referenced component release's own "uuid" field
+// elsewhere in the document. The rest of the manifest -- including that
+// component release's real identity -- is left untouched, so Import proceeds
+// normally until it reaches LinkComponent, whose FK insert then fails.
+func corruptComponentLinkRelease(t *testing.T, zipBytes []byte) []byte {
+	t.Helper()
+	zr, err := zip.NewReader(bytes.NewReader(zipBytes), int64(len(zipBytes)))
+	if err != nil {
+		t.Fatalf("zip.NewReader: %v", err)
+	}
+
+	var out bytes.Buffer
+	zw := zip.NewWriter(&out)
+	replaced := false
+	for _, f := range zr.File {
+		w, err := zw.Create(f.Name)
+		if err != nil {
+			t.Fatalf("zw.Create(%s): %v", f.Name, err)
+		}
+		rc, err := f.Open()
+		if err != nil {
+			t.Fatalf("open %s: %v", f.Name, err)
+		}
+		if f.Name == "manifest.json" {
+			raw, err := io.ReadAll(rc)
+			if err != nil {
+				t.Fatalf("read manifest.json: %v", err)
+			}
+			var doc map[string]any
+			if err := json.Unmarshal(raw, &doc); err != nil {
+				t.Fatalf("unmarshal manifest.json: %v", err)
+			}
+			releases, ok := doc["productReleases"].([]any)
+			if !ok || len(releases) == 0 {
+				t.Fatal("test bug: manifest has no productReleases")
+			}
+			pr, ok := releases[0].(map[string]any)
+			if !ok {
+				t.Fatal("test bug: productReleases[0] not an object")
+			}
+			comps, ok := pr["components"].([]any)
+			if !ok || len(comps) == 0 {
+				t.Fatal("test bug: productReleases[0] has no components")
+			}
+			comp, ok := comps[0].(map[string]any)
+			if !ok {
+				t.Fatal("test bug: components[0] not an object")
+			}
+			if _, ok := comp["release"]; !ok {
+				t.Fatal("test bug: components[0] has no pinned release")
+			}
+			comp["release"] = "00000000-0000-0000-0000-000000000000"
+
+			mutated, err := json.Marshal(doc)
+			if err != nil {
+				t.Fatalf("marshal mutated manifest.json: %v", err)
+			}
+			if _, err := w.Write(mutated); err != nil {
+				t.Fatalf("write mutated manifest.json: %v", err)
+			}
+			replaced = true
+		} else {
+			if _, err := io.Copy(w, rc); err != nil {
+				t.Fatalf("copy %s: %v", f.Name, err)
+			}
+		}
+		_ = rc.Close()
+	}
+	if !replaced {
+		t.Fatal("test bug: no manifest.json entry found")
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("close zip: %v", err)
+	}
+	return out.Bytes()
+}
+
+// TestImportIsAtomicOnFailure is the regression test for the non-atomicity
+// bug reported in TODO.md: a bundle that fails partway through Import's DB
+// writes must leave nothing behind, not a partially-imported product tree.
+// The failure is injected late in the write sequence (LinkComponent, which
+// runs after the product, its release, the component, and the component
+// release have all already been written within the same transaction), so a
+// correct rollback must undo all of those earlier writes too, not just the
+// one that actually errored.
+func TestImportIsAtomicOnFailure(t *testing.T) {
+	ctx := context.Background()
+	srcRepo := newTestRepo(t)
+	srcStore := newTestStore(t)
+
+	product, err := srcRepo.CreateProduct(ctx, "Atomic Test Product", nil)
+	if err != nil {
+		t.Fatalf("CreateProduct: %v", err)
+	}
+	release, err := srcRepo.CreateProductRelease(ctx, product.UUID, repo.ProductReleaseInput{Version: "1.0.0", CreatedDate: fixedTime()})
+	if err != nil {
+		t.Fatalf("CreateProductRelease: %v", err)
+	}
+	component, err := srcRepo.CreateComponent(ctx, "libfoo", nil)
+	if err != nil {
+		t.Fatalf("CreateComponent: %v", err)
+	}
+	componentRelease, err := srcRepo.CreateComponentRelease(ctx, component.UUID, repo.ComponentReleaseInput{Version: "9.9.9", CreatedDate: fixedTime()})
+	if err != nil {
+		t.Fatalf("CreateComponentRelease: %v", err)
+	}
+	releaseUUID := componentRelease.UUID
+	if _, err := srcRepo.LinkComponent(ctx, release.UUID, componentRef(component.UUID, &releaseUUID)); err != nil {
+		t.Fatalf("LinkComponent: %v", err)
+	}
+
+	var buf bytes.Buffer
+	if err := Export(ctx, srcRepo, srcStore, product.UUID, &buf); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	corrupted := corruptComponentLinkRelease(t, buf.Bytes())
+
+	zr, err := zip.NewReader(bytes.NewReader(corrupted), int64(len(corrupted)))
+	if err != nil {
+		t.Fatalf("zip.NewReader: %v", err)
+	}
+
+	dstRepo := newTestRepo(t)
+	dstStore := newTestStore(t)
+	if _, err := Import(ctx, dstRepo, dstStore, "http://dest.example", zr); err == nil {
+		t.Fatal("expected Import to fail on the corrupted component link")
+	}
+
+	// Every entity that would have been written before the failure point
+	// must also be gone -- proving the whole import rolled back as a unit,
+	// not just the one write that errored.
+	if _, err := dstRepo.GetProduct(ctx, product.UUID); !errors.Is(err, repo.ErrNotFound) {
+		t.Errorf("GetProduct after failed import: err = %v, want ErrNotFound", err)
+	}
+	if _, err := dstRepo.GetComponent(ctx, component.UUID); !errors.Is(err, repo.ErrNotFound) {
+		t.Errorf("GetComponent after failed import: err = %v, want ErrNotFound", err)
+	}
+	if _, err := dstRepo.GetProductRelease(ctx, release.UUID); !errors.Is(err, repo.ErrNotFound) {
+		t.Errorf("GetProductRelease after failed import: err = %v, want ErrNotFound", err)
+	}
+	if _, err := dstRepo.GetComponentRelease(ctx, componentRelease.UUID); !errors.Is(err, repo.ErrNotFound) {
+		t.Errorf("GetComponentRelease after failed import: err = %v, want ErrNotFound", err)
 	}
 }

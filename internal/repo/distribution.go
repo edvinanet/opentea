@@ -50,35 +50,28 @@ type ImportDistributionInput struct {
 // (caller-supplied) DistributionID if it doesn't already exist -- see
 // ImportProduct for the identity/idempotency rationale.
 func (r *Repo) ImportDistribution(ctx context.Context, in ImportDistributionInput) (created bool, err error) {
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return false, err
-	}
-	defer func() { _ = tx.Rollback() }()
+	return runInTx(ctx, r, func(tx dbtx) (bool, error) {
+		var exists int
+		if err := tx.QueryRowContext(ctx, `SELECT 1 FROM release_distribution WHERE distribution_id = ?`, in.DistributionID).Scan(&exists); err == nil {
+			return false, nil
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return false, err
+		}
 
-	var exists int
-	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM release_distribution WHERE distribution_id = ?`, in.DistributionID).Scan(&exists); err == nil {
-		return false, nil
-	} else if !errors.Is(err, sql.ErrNoRows) {
-		return false, err
-	}
-
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO release_distribution (distribution_id, component_release_uuid, description, url, signature_url) VALUES (?, ?, ?, ?, ?)`,
-		in.DistributionID, in.ComponentReleaseUUID, in.Description, nullIfEmpty(in.URL), nullIfEmpty(in.SignatureURL),
-	); err != nil {
-		return false, err
-	}
-	if err := insertIdentifiers(ctx, tx, OwnerDistribution, in.DistributionID, in.Identifiers); err != nil {
-		return false, err
-	}
-	if err := insertChecksums(ctx, tx, OwnerDistribution, in.DistributionID, in.Checksums); err != nil {
-		return false, err
-	}
-	if err := tx.Commit(); err != nil {
-		return false, err
-	}
-	return true, nil
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO release_distribution (distribution_id, component_release_uuid, description, url, signature_url) VALUES (?, ?, ?, ?, ?)`,
+			in.DistributionID, in.ComponentReleaseUUID, in.Description, nullIfEmpty(in.URL), nullIfEmpty(in.SignatureURL),
+		); err != nil {
+			return false, err
+		}
+		if err := insertIdentifiers(ctx, tx, OwnerDistribution, in.DistributionID, in.Identifiers); err != nil {
+			return false, err
+		}
+		if err := insertChecksums(ctx, tx, OwnerDistribution, in.DistributionID, in.Checksums); err != nil {
+			return false, err
+		}
+		return true, nil
+	})
 }
 
 // GetDistribution fetches a distribution by ID. Returns ErrNotFound if id doesn't exist.

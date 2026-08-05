@@ -99,52 +99,45 @@ type ImportArtifactInput struct {
 // the same (uuid, version) is a no-op, but a bundle can still introduce a
 // new version of an artifact the target already has some revisions of.
 func (r *Repo) ImportArtifact(ctx context.Context, in ImportArtifactInput) (created bool, err error) {
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return false, err
-	}
-	defer func() { _ = tx.Rollback() }()
+	return runInTx(ctx, r, func(tx dbtx) (bool, error) {
+		var exists int
+		if err := tx.QueryRowContext(ctx, `SELECT 1 FROM artifact WHERE uuid = ? AND version = ?`, in.UUID, in.Version).Scan(&exists); err == nil {
+			return false, nil
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return false, err
+		}
 
-	var exists int
-	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM artifact WHERE uuid = ? AND version = ?`, in.UUID, in.Version).Scan(&exists); err == nil {
-		return false, nil
-	} else if !errors.Is(err, sql.ErrNoRows) {
-		return false, err
-	}
-
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO artifact (uuid, version, name, type, created_date) VALUES (?, ?, ?, ?, ?)`,
-		in.UUID, in.Version, in.Name, in.Type, formatTimePtr(in.CreatedDate),
-	); err != nil {
-		return false, err
-	}
-
-	for _, distID := range in.DistributionIDs {
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO artifact_distribution (artifact_uuid, artifact_version, distribution_id) VALUES (?, ?, ?)`,
-			in.UUID, in.Version, distID,
+			`INSERT INTO artifact (uuid, version, name, type, created_date) VALUES (?, ?, ?, ?, ?)`,
+			in.UUID, in.Version, in.Name, in.Type, formatTimePtr(in.CreatedDate),
 		); err != nil {
 			return false, err
 		}
-	}
 
-	for _, f := range in.Formats {
-		formatID := idgen.New()
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO artifact_format (id, artifact_uuid, artifact_version, media_type, description, url, signature_url) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			formatID, in.UUID, in.Version, f.MediaType, f.Description, nullIfEmpty(f.URL), nullIfEmpty(f.SignatureURL),
-		); err != nil {
-			return false, err
+		for _, distID := range in.DistributionIDs {
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO artifact_distribution (artifact_uuid, artifact_version, distribution_id) VALUES (?, ?, ?)`,
+				in.UUID, in.Version, distID,
+			); err != nil {
+				return false, err
+			}
 		}
-		if err := insertChecksums(ctx, tx, OwnerArtifactFormat, formatID, f.Checksums); err != nil {
-			return false, err
-		}
-	}
 
-	if err := tx.Commit(); err != nil {
-		return false, err
-	}
-	return true, nil
+		for _, f := range in.Formats {
+			formatID := idgen.New()
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO artifact_format (id, artifact_uuid, artifact_version, media_type, description, url, signature_url) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				formatID, in.UUID, in.Version, f.MediaType, f.Description, nullIfEmpty(f.URL), nullIfEmpty(f.SignatureURL),
+			); err != nil {
+				return false, err
+			}
+			if err := insertChecksums(ctx, tx, OwnerArtifactFormat, formatID, f.Checksums); err != nil {
+				return false, err
+			}
+		}
+
+		return true, nil
+	})
 }
 
 // GetArtifactLatest fetches the highest-versioned revision of artifact

@@ -39,29 +39,22 @@ func (r *Repo) CreateProduct(ctx context.Context, name string, identifiers []tea
 // with this UUID already exists, it's left untouched (created=false) --
 // import is idempotent, not a merge.
 func (r *Repo) ImportProduct(ctx context.Context, uuid, name string, identifiers []tea.Identifier) (created bool, err error) {
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return false, err
-	}
-	defer func() { _ = tx.Rollback() }()
+	return runInTx(ctx, r, func(tx dbtx) (bool, error) {
+		var exists int
+		if err := tx.QueryRowContext(ctx, `SELECT 1 FROM product WHERE uuid = ?`, uuid).Scan(&exists); err == nil {
+			return false, nil
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return false, err
+		}
 
-	var exists int
-	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM product WHERE uuid = ?`, uuid).Scan(&exists); err == nil {
-		return false, nil
-	} else if !errors.Is(err, sql.ErrNoRows) {
-		return false, err
-	}
-
-	if _, err := tx.ExecContext(ctx, `INSERT INTO product (uuid, name) VALUES (?, ?)`, uuid, name); err != nil {
-		return false, err
-	}
-	if err := insertIdentifiers(ctx, tx, OwnerProduct, uuid, identifiers); err != nil {
-		return false, err
-	}
-	if err := tx.Commit(); err != nil {
-		return false, err
-	}
-	return true, nil
+		if _, err := tx.ExecContext(ctx, `INSERT INTO product (uuid, name) VALUES (?, ?)`, uuid, name); err != nil {
+			return false, err
+		}
+		if err := insertIdentifiers(ctx, tx, OwnerProduct, uuid, identifiers); err != nil {
+			return false, err
+		}
+		return true, nil
+	})
 }
 
 // GetProduct fetches a product by UUID. Returns ErrNotFound if uuid doesn't exist.

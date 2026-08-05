@@ -16,6 +16,7 @@ import (
 //go:embed templates/*.html
 var templatesFS embed.FS
 
+// Server holds the dependencies for the /admin/ui browser GUI handlers.
 type Server struct {
 	repo      *repo.Repo
 	cfg       config.Config

@@ -14,6 +14,7 @@ import (
 	"github.com/oej/opentea/internal/storage"
 )
 
+// Server holds the dependencies for the /admin/v1 API handlers.
 type Server struct {
 	repo      *repo.Repo
 	storage   storage.Storage
@@ -34,6 +35,6 @@ func NewRouter(r *repo.Repo, s storage.Storage, cfg config.Config, startedAt tim
 const maxJSONBody = 10 << 20 // 10 MiB, generous for metadata payloads
 
 func decodeJSON(r *http.Request, v any) error {
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	return json.NewDecoder(io.LimitReader(r.Body, maxJSONBody)).Decode(v)
 }

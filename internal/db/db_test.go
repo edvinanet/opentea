@@ -19,12 +19,12 @@ func TestOpenAppliesMigrationsIdempotently(t *testing.T) {
 	if tableCount != 1 {
 		t.Fatalf("expected product table to exist, got count=%d", tableCount)
 	}
-	sqlDB.Close()
+	_ = sqlDB.Close()
 
 	// Re-open against the same file: migrations must be idempotent.
 	sqlDB2, err := Open(path)
 	if err != nil {
 		t.Fatalf("second open (idempotency): %v", err)
 	}
-	defer sqlDB2.Close()
+	defer func() { _ = sqlDB2.Close() }()
 }

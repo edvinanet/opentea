@@ -18,7 +18,7 @@ func newTestRepo(t *testing.T) *repo.Repo {
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
-	t.Cleanup(func() { sqlDB.Close() })
+	t.Cleanup(func() { _ = sqlDB.Close() })
 	return repo.New(sqlDB)
 }
 

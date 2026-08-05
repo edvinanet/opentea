@@ -26,7 +26,7 @@ func newTestServer(t *testing.T) (*httptest.Server, *repo.Repo) {
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
-	t.Cleanup(func() { sqlDB.Close() })
+	t.Cleanup(func() { _ = sqlDB.Close() })
 
 	r := repo.New(sqlDB)
 	srv := httptest.NewServer(NewRouter(r, config.Config{RootURL: "http://example.test"}))
@@ -123,7 +123,7 @@ func TestPagesRenderWithoutError(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GET %s: %v", path, err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		body, _ := io.ReadAll(resp.Body)
 		return resp.StatusCode, string(body)
 	}
@@ -144,7 +144,7 @@ func TestPagesRenderWithoutError(t *testing.T) {
 		if err != nil {
 			t.Fatalf("POST %s: %v", path, err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		body, _ := io.ReadAll(resp.Body)
 		return resp.StatusCode, string(body)
 	}

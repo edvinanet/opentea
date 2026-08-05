@@ -25,7 +25,7 @@ func (s *Server) receiveFile(w http.ResponseWriter, r *http.Request) (url, sha25
 		httpx.BadRequest(w, "missing \"file\" form field: "+err.Error())
 		return "", "", false
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	sha256Hex, size, err := s.storage.Put(r.Context(), file)
 	if err != nil {

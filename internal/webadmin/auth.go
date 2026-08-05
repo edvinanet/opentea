@@ -39,7 +39,7 @@ func (s *Server) loginSubmit(w http.ResponseWriter, r *http.Request) {
 		s.renderLogin(w, pageData{Error: "internal error, please try again"})
 		return
 	}
-	http.SetCookie(w, &http.Cookie{
+	http.SetCookie(w, &http.Cookie{ //nolint:gosec // Secure/HttpOnly/SameSite are all set below; gosec's G124 flags the literal without checking its fields
 		Name:     authn.SessionCookieName,
 		Value:    token,
 		Path:     "/",
@@ -55,13 +55,14 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	if cookie, err := r.Cookie(authn.SessionCookieName); err == nil {
 		_ = s.repo.DeleteSession(r.Context(), cookie.Value)
 	}
-	http.SetCookie(w, &http.Cookie{
+	http.SetCookie(w, &http.Cookie{ //nolint:gosec // Secure/HttpOnly/SameSite are all set below; gosec's G124 flags the literal without checking its fields
 		Name:     authn.SessionCookieName,
 		Value:    "",
 		Path:     "/",
 		MaxAge:   -1,
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
+		Secure:   r.TLS != nil, // match the Secure flag used when this cookie was originally set
 	})
 	http.Redirect(w, r, "/admin/ui/login", http.StatusSeeOther)
 }

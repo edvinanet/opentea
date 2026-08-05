@@ -7,6 +7,8 @@ package model
 
 import "time"
 
+// The two admin-domain roles: RoleAdmin satisfies both RoleAdmin- and
+// RoleConsumer-gated routes; RoleConsumer only satisfies RoleConsumer ones.
 const (
 	RoleAdmin    = "admin"
 	RoleConsumer = "consumer"

@@ -10,6 +10,7 @@ import (
 	"strings"
 )
 
+// Config holds the server's runtime configuration, built by Load.
 type Config struct {
 	ListenAddr string
 	DBPath     string
@@ -93,14 +94,14 @@ func splitCSV(s string) []string {
 // split on the first "=" with surrounding whitespace trimmed. There's no
 // quoting -- values are taken verbatim after trimming.
 func loadConfigFile(path string, required bool) (map[string]string, error) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) //nolint:gosec // path is either the fixed default config path or the operator's own TEA_CONFIG_FILE env var, not remote input
 	if err != nil {
 		if os.IsNotExist(err) && !required {
 			return map[string]string{}, nil
 		}
 		return nil, fmt.Errorf("open config file %q: %w", path, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	values := map[string]string{}
 	scanner := bufio.NewScanner(f)

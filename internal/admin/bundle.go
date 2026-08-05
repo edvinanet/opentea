@@ -60,7 +60,7 @@ func (s *Server) importProduct(w http.ResponseWriter, r *http.Request) {
 		httpx.BadRequest(w, `missing "bundle" form field: `+err.Error())
 		return
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	raw, err := io.ReadAll(file)
 	if err != nil {

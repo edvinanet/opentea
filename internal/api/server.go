@@ -9,6 +9,7 @@ import (
 	"github.com/oej/opentea/internal/repo"
 )
 
+// Server holds the dependencies for the /tea/v1 consumer read API handlers.
 type Server struct {
 	repo *repo.Repo
 	cfg  config.Config

@@ -32,7 +32,7 @@ func TestFSStoragePutOpenDelete(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	got, err := io.ReadAll(rc)
-	rc.Close()
+	_ = rc.Close()
 	if err != nil {
 		t.Fatalf("ReadAll: %v", err)
 	}

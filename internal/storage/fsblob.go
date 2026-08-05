@@ -17,8 +17,10 @@ type FSStorage struct {
 	dir string
 }
 
+// NewFSStorage creates the storage directory (if needed) and returns a
+// Storage backed by it.
 func NewFSStorage(dir string) (*FSStorage, error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return nil, fmt.Errorf("create blob dir: %w", err)
 	}
 	return &FSStorage{dir: dir}, nil
@@ -28,13 +30,16 @@ func (s *FSStorage) pathFor(sha256Hex string) string {
 	return filepath.Join(s.dir, sha256Hex[:2], sha256Hex)
 }
 
+// Put implements Storage by writing to a temp file first, then renaming it
+// into place under its computed hash once fully written -- so a reader
+// never observes a partially-written blob.
 func (s *FSStorage) Put(ctx context.Context, r io.Reader) (string, int64, error) {
 	tmp, err := os.CreateTemp(s.dir, "upload-*")
 	if err != nil {
 		return "", 0, fmt.Errorf("create temp file: %w", err)
 	}
 	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath) // no-op once successfully renamed
+	defer func() { _ = os.Remove(tmpPath) }() // no-op once successfully renamed
 
 	h := sha256.New()
 	size, err := io.Copy(io.MultiWriter(tmp, h), r)
@@ -48,7 +53,7 @@ func (s *FSStorage) Put(ctx context.Context, r io.Reader) (string, int64, error)
 
 	sum := hex.EncodeToString(h.Sum(nil))
 	finalPath := s.pathFor(sum)
-	if err := os.MkdirAll(filepath.Dir(finalPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(finalPath), 0o750); err != nil {
 		return "", 0, fmt.Errorf("create blob subdir: %w", err)
 	}
 	if err := os.Rename(tmpPath, finalPath); err != nil {
@@ -57,6 +62,7 @@ func (s *FSStorage) Put(ctx context.Context, r io.Reader) (string, int64, error)
 	return sum, size, nil
 }
 
+// Open implements Storage.
 func (s *FSStorage) Open(ctx context.Context, sha256Hex string) (io.ReadCloser, error) {
 	f, err := os.Open(s.pathFor(sha256Hex))
 	if err != nil {
@@ -65,6 +71,7 @@ func (s *FSStorage) Open(ctx context.Context, sha256Hex string) (io.ReadCloser, 
 	return f, nil
 }
 
+// Delete implements Storage.
 func (s *FSStorage) Delete(ctx context.Context, sha256Hex string) error {
 	err := os.Remove(s.pathFor(sha256Hex))
 	if os.IsNotExist(err) {

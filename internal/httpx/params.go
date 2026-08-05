@@ -9,6 +9,8 @@ import (
 	"github.com/oej/opentea/internal/idgen"
 )
 
+// ErrInvalidParam is returned by the Path*/Page*/SortField/IDFilter helpers
+// below when a request parameter fails validation.
 var ErrInvalidParam = errors.New("httpx: invalid parameter")
 
 // PathUUID reads and validates a UUID path parameter (registered via

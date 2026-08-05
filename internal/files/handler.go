@@ -12,11 +12,13 @@ import (
 	"github.com/oej/opentea/internal/storage"
 )
 
+// Handler serves stored blobs back out over HTTP.
 type Handler struct {
 	repo    *repo.Repo
 	storage storage.Storage
 }
 
+// NewHandler builds the /files/{sha256} mux.
 func NewHandler(r *repo.Repo, s storage.Storage) http.Handler {
 	h := &Handler{repo: r, storage: s}
 	mux := http.NewServeMux()
@@ -42,7 +44,7 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	if mediaType != "" {
 		w.Header().Set("Content-Type", mediaType)

@@ -22,7 +22,7 @@ var migrationsFS embed.FS
 // id-assignment race-free without extra application locking).
 func Open(path string) (*sql.DB, error) {
 	if dir := filepath.Dir(path); dir != "." {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
 			return nil, fmt.Errorf("create db dir: %w", err)
 		}
 	}
@@ -42,7 +42,7 @@ func Open(path string) (*sql.DB, error) {
 	sqlDB.SetMaxOpenConns(1)
 
 	if err := migrate(sqlDB); err != nil {
-		sqlDB.Close()
+		_ = sqlDB.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
 	return sqlDB, nil

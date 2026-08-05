@@ -17,8 +17,10 @@ import (
 )
 
 const (
+	// SessionCookieName is the cookie name used for /admin/ui browser sessions.
 	SessionCookieName = "opentea_session"
-	SessionTTL        = 24 * time.Hour
+	// SessionTTL is how long a session stays valid after login.
+	SessionTTL = 24 * time.Hour
 )
 
 // RoleSatisfies reports whether userRole grants access requiring minRole.

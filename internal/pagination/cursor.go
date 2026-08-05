@@ -21,6 +21,7 @@ type Cursor struct {
 	LastUUID  string `json:"u"`
 }
 
+// Encode serializes c into an opaque page token.
 func Encode(c Cursor) string {
 	b, err := json.Marshal(c)
 	if err != nil {
@@ -30,6 +31,8 @@ func Encode(c Cursor) string {
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
+// Decode parses a page token produced by Encode. Returns ErrInvalidToken if
+// token is malformed.
 func Decode(token string) (Cursor, error) {
 	var c Cursor
 	b, err := base64.RawURLEncoding.DecodeString(token)

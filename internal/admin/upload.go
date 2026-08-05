@@ -49,6 +49,20 @@ func (s *Server) uploadDistributionFile(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Confirm the target exists before receiveFile persists anything --
+	// otherwise an upload to a bad id always stores (and permanently
+	// orphans, since nothing then references it) a blob whose attach step
+	// was never going to succeed. See TODO.md for the remaining, harder
+	// to close window (a real error/disconnect between receiveFile and
+	// SetDistributionFile below).
+	if _, err := s.repo.GetDistribution(r.Context(), id); errors.Is(err, repo.ErrNotFound) {
+		httpx.NotFound(w)
+		return
+	} else if err != nil {
+		httpx.InternalError(w, r, err)
+		return
+	}
+
 	url, sha256Hex, ok := s.receiveFile(w, r)
 	if !ok {
 		return
@@ -84,6 +98,23 @@ func (s *Server) uploadArtifactFormatFile(w http.ResponseWriter, r *http.Request
 			httpx.BadRequest(w, "invalid formatIndex")
 			return
 		}
+	}
+
+	// Confirm the target artifact revision and formatIndex exist before
+	// receiveFile persists anything -- same reasoning as
+	// uploadDistributionFile above.
+	artifact, err := s.repo.GetArtifactByVersion(r.Context(), uuid, version)
+	if errors.Is(err, repo.ErrNotFound) {
+		httpx.NotFound(w)
+		return
+	}
+	if err != nil {
+		httpx.InternalError(w, r, err)
+		return
+	}
+	if formatIndex >= len(artifact.Formats) {
+		httpx.NotFound(w)
+		return
 	}
 
 	url, sha256Hex, ok := s.receiveFile(w, r)

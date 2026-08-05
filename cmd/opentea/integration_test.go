@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"mime/multipart"
@@ -401,6 +403,59 @@ func TestErrorResponses(t *testing.T) {
 	if status, _ := jsonRequest(t, srv, http.MethodGet, "/tea/v1/products?sortField=bogus", nil); status != http.StatusBadRequest {
 		t.Fatalf("invalid sortField: status = %d, want 400", status)
 	}
+}
+
+// TestUploadToInvalidTargetDoesNotOrphanBlob is the regression test for the
+// finding that receiveFile persisted a blob before uploadDistributionFile/
+// uploadArtifactFormatFile confirmed the target they'd attach it to even
+// exists -- an upload to a bad id always stored a blob nothing would ever
+// reference. Each case below uploads distinguishable content to a target
+// that can't possibly accept it, then confirms via the public /files/{sha256}
+// endpoint (itself proof the DB bookkeeping row -- and, since receiveFile
+// writes both together, the file on disk -- was never created) that nothing
+// was stored.
+func TestUploadToInvalidTargetDoesNotOrphanBlob(t *testing.T) {
+	srv := newTestServer(t)
+
+	assertNeverStored := func(t *testing.T, path string, content []byte) {
+		t.Helper()
+		status, _ := uploadFile(t, srv, path, "f.bin", content, "application/octet-stream")
+		if status != http.StatusNotFound {
+			t.Fatalf("upload to %s: status=%d, want 404", path, status)
+		}
+		sum := sha256.Sum256(content)
+		sha256Hex := hex.EncodeToString(sum[:])
+		fileStatus, _ := jsonRequest(t, srv, http.MethodGet, "/files/"+sha256Hex, nil)
+		if fileStatus != http.StatusNotFound {
+			t.Fatalf("GET /files/%s after rejected upload to %s: status=%d, want 404 (blob was orphaned)", sha256Hex, path, fileStatus)
+		}
+	}
+
+	t.Run("nonexistent distribution id", func(t *testing.T) {
+		assertNeverStored(t, "/admin/v1/distributions/00000000-0000-0000-0000-000000000000/files", []byte("orphan candidate 1"))
+	})
+
+	// A real artifact, to exercise "wrong version" and "formatIndex out of
+	// range" against a target that otherwise genuinely exists.
+	status, raw := jsonRequest(t, srv, http.MethodPost, "/admin/v1/artifacts", map[string]any{
+		"type":    "BOM",
+		"formats": []map[string]any{{"mediaType": "application/json"}},
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("create artifact: status=%d body=%s", status, raw)
+	}
+	var artifact tea.Artifact
+	decodeInto(t, raw, &artifact)
+
+	t.Run("nonexistent artifact uuid", func(t *testing.T) {
+		assertNeverStored(t, "/admin/v1/artifacts/00000000-0000-0000-0000-000000000000/1/files", []byte("orphan candidate 2"))
+	})
+	t.Run("wrong artifact version", func(t *testing.T) {
+		assertNeverStored(t, "/admin/v1/artifacts/"+artifact.UUID+"/99/files", []byte("orphan candidate 3"))
+	})
+	t.Run("formatIndex out of range", func(t *testing.T) {
+		assertNeverStored(t, "/admin/v1/artifacts/"+artifact.UUID+"/1/files?formatIndex=5", []byte("orphan candidate 4"))
+	})
 }
 
 // TestPaginationAcrossPages creates more products than one page holds and

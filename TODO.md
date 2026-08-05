@@ -147,6 +147,18 @@ they don't get lost.
       this way (or orphaned by other means, e.g. a deleted product/artifact leaving its blob
       behind). Needs a GC pass (e.g. sweep `internal/storage` for blobs with no referencing row
       in `blob`/checksum tables) rather than being handled at import time.
+      `internal/admin/upload.go`'s `receiveFile` had the same root problem, called out separately
+      by external review (2026-08-05): it persisted a blob (file + `UpsertBlob` DB row) *before*
+      `uploadDistributionFile`/`uploadArtifactFormatFile` confirmed the target distribution/
+      artifact/formatIndex even existed, so an upload to a bad id always orphaned a blob, not just
+      on rare failures. Fixed the deterministic case: both handlers now check the target exists
+      (`GetDistribution`/`GetArtifactByVersion`, plus a `formatIndex` range check) *before* calling
+      `receiveFile` -- see `TestUploadToInvalidTargetDoesNotOrphanBlob`
+      (`cmd/opentea/integration_test.go`), which proves via `GET /files/{sha256}` that a rejected
+      upload never gets stored at all. Not fully closed: a real error, disconnect, or context
+      cancellation between `receiveFile` (blob written) and `SetDistributionFile`/
+      `SetArtifactFormatFile` (attach) can still orphan a blob -- that residual window, like
+      `importBlobs`'s, needs the same GC pass rather than more upfront checks.
 - [ ] Bundle-level signing/hashing (noted 2026-08-05, not yet designed): today only individual
       `files/<sha256>` entries are checksum-verified (see the two done items above) -- there's
       no signature or hash covering the *bundle zip as a whole* (manifest + files together), so

@@ -28,7 +28,7 @@ func TestGetProduct(t *testing.T) {
 			t.Errorf("method = %q", r.Method)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(tea.Product{UUID: "abc-123", Name: "Acme Widget", Identifiers: []tea.Identifier{}})
+		_ = json.NewEncoder(w).Encode(tea.Product{UUID: "abc-123", Name: "Acme Widget", Identifiers: []tea.Identifier{}})
 	})
 
 	p, err := client.GetProduct(context.Background(), "abc-123")
@@ -43,7 +43,7 @@ func TestGetProduct(t *testing.T) {
 func TestGetProductNotFound(t *testing.T) {
 	client, _ := newFakeServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(tea.ErrorResponse{Error: tea.ErrorObjectUnknown})
+		_ = json.NewEncoder(w).Encode(tea.ErrorResponse{Error: tea.ErrorObjectUnknown})
 	})
 
 	_, err := client.GetProduct(context.Background(), "nonexistent")
@@ -59,7 +59,7 @@ func TestBearerTokenAttached(t *testing.T) {
 	var gotHeader string
 	_, srv := newFakeServer(t, func(w http.ResponseWriter, r *http.Request) {
 		gotHeader = r.Header.Get("Authorization")
-		json.NewEncoder(w).Encode(tea.PaginatedProducts{Results: []tea.Product{}})
+		_ = json.NewEncoder(w).Encode(tea.PaginatedProducts{Results: []tea.Product{}})
 	})
 
 	client := NewClient(srv.URL, WithBearerToken("my-token"))
@@ -78,13 +78,13 @@ func TestQueryProductsPagination(t *testing.T) {
 			t.Errorf("pageSize = %q", q.Get("pageSize"))
 		}
 		if q.Get("pageToken") == "" {
-			json.NewEncoder(w).Encode(tea.PaginatedProducts{
+			_ = json.NewEncoder(w).Encode(tea.PaginatedProducts{
 				PaginationDetails: tea.PaginationDetails{HasNext: true, NextPageToken: "page2"},
 				Results:           []tea.Product{{UUID: "1", Name: "a"}, {UUID: "2", Name: "b"}},
 			})
 			return
 		}
-		json.NewEncoder(w).Encode(tea.PaginatedProducts{
+		_ = json.NewEncoder(w).Encode(tea.PaginatedProducts{
 			PaginationDetails: tea.PaginationDetails{HasNext: false},
 			Results:           []tea.Product{{UUID: "3", Name: "c"}},
 		})
@@ -108,7 +108,7 @@ func TestDownloadAndVerifyChecksumOK(t *testing.T) {
 	hexSum := hex.EncodeToString(sum[:])
 
 	client, srv := newFakeServer(t, func(w http.ResponseWriter, r *http.Request) {
-		w.Write(content)
+		_, _ = w.Write(content)
 	})
 
 	format := tea.ArtifactFormat{
@@ -126,7 +126,7 @@ func TestDownloadAndVerifyChecksumOK(t *testing.T) {
 
 func TestDownloadAndVerifyChecksumMismatch(t *testing.T) {
 	client, srv := newFakeServer(t, func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("tampered content"))
+		_, _ = w.Write([]byte("tampered content"))
 	})
 
 	format := tea.ArtifactFormat{
@@ -143,7 +143,7 @@ func TestDiscover(t *testing.T) {
 		if r.URL.Query().Get("tei") != "urn:tei:example" {
 			t.Errorf("tei = %q", r.URL.Query().Get("tei"))
 		}
-		json.NewEncoder(w).Encode([]tea.DiscoveryInfo{{ProductReleaseUUID: "pr-1"}})
+		_ = json.NewEncoder(w).Encode([]tea.DiscoveryInfo{{ProductReleaseUUID: "pr-1"}})
 	})
 
 	results, err := client.Discover(context.Background(), "urn:tei:example")

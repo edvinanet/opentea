@@ -21,6 +21,7 @@ type Client struct {
 	bearerToken string
 }
 
+// Option configures a Client at construction time; see WithHTTPClient and WithBearerToken.
 type Option func(*Client)
 
 // WithHTTPClient overrides the default *http.Client (e.g. for custom TLS config).
@@ -74,7 +75,7 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {

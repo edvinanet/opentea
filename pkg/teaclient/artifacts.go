@@ -2,9 +2,10 @@ package teaclient
 
 import (
 	"context"
-	"crypto/md5"
-	"crypto/sha1"
+	"crypto/md5"  //nolint:gosec // MD5 is a spec-defined checksum type (tea.ChecksumTypeMD5) a conformant client must be able to verify against, not a security choice
+	"crypto/sha1" //nolint:gosec // SHA-1 is a spec-defined checksum type (tea.ChecksumTypeSHA1) a conformant client must be able to verify against, not a security choice
 	"crypto/sha256"
+	"crypto/sha3"
 	"crypto/sha512"
 	"encoding/hex"
 	"errors"
@@ -15,17 +16,19 @@ import (
 	"strings"
 
 	"golang.org/x/crypto/blake2b"
-	"golang.org/x/crypto/sha3"
 
 	"github.com/oej/opentea/pkg/tea"
 )
 
+// GetLatestArtifact fetches the newest revision of artifact uuid (GET /artifact/{uuid}/latest).
 func (c *Client) GetLatestArtifact(ctx context.Context, uuid string) (tea.Artifact, error) {
 	var a tea.Artifact
 	err := c.do(ctx, "GET", "/artifact/"+uuid+"/latest", nil, &a)
 	return a, err
 }
 
+// GetArtifactByVersion fetches one specific revision of artifact uuid
+// (GET /artifact/{uuid}/{version}).
 func (c *Client) GetArtifactByVersion(ctx context.Context, uuid string, version int) (tea.Artifact, error) {
 	var a tea.Artifact
 	err := c.do(ctx, "GET", "/artifact/"+uuid+"/"+strconv.Itoa(version), nil, &a)
@@ -52,7 +55,7 @@ func (c *Client) DownloadAndVerify(ctx context.Context, format tea.ArtifactForma
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -74,10 +77,10 @@ func verifyChecksum(data []byte, cksum tea.Checksum) error {
 	var sum []byte
 	switch cksum.AlgType {
 	case tea.ChecksumTypeMD5:
-		h := md5.Sum(data)
+		h := md5.Sum(data) //nolint:gosec // verifying a spec-defined checksum type, not using MD5 for security
 		sum = h[:]
 	case tea.ChecksumTypeSHA1:
-		h := sha1.Sum(data)
+		h := sha1.Sum(data) //nolint:gosec // verifying a spec-defined checksum type, not using SHA-1 for security
 		sum = h[:]
 	case tea.ChecksumTypeSHA256:
 		h := sha256.Sum256(data)

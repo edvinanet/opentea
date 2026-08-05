@@ -7,22 +7,30 @@ package tea
 
 import "time"
 
+// Identifier is a single external identifier (e.g. a CPE, PURL, or TEI)
+// attached to a product, release, component, or distribution.
 type Identifier struct {
 	IDType  string `json:"idType"`
 	IDValue string `json:"idValue"`
 }
 
+// Product is a top-level product entity: the thing a vendor ships, tracked
+// independently of any specific release.
 type Product struct {
 	UUID        string       `json:"uuid"`
 	Name        string       `json:"name"`
 	Identifiers []Identifier `json:"identifiers"`
 }
 
+// ComponentRef links a ProductRelease to a Component it depends on,
+// optionally pinned to one specific ComponentRelease via Release.
 type ComponentRef struct {
 	UUID    string  `json:"uuid"`
 	Release *string `json:"release,omitempty"`
 }
 
+// ProductRelease is one versioned release of a Product, along with the
+// components it's built from (see Components).
 type ProductRelease struct {
 	UUID        string         `json:"uuid"`
 	Product     *string        `json:"product,omitempty"`
@@ -35,17 +43,26 @@ type ProductRelease struct {
 	Components  []ComponentRef `json:"components"`
 }
 
+// Component is a reusable piece of software (e.g. a library or package)
+// that can be shared across many products' releases, tracked independently
+// of any specific release.
 type Component struct {
 	UUID        string       `json:"uuid"`
 	Name        string       `json:"name"`
 	Identifiers []Identifier `json:"identifiers"`
 }
 
+// Checksum is a single algorithm/value pair used to verify a downloaded
+// file (a ReleaseDistribution or ArtifactFormat).
 type Checksum struct {
 	AlgType  string `json:"algType"`
 	AlgValue string `json:"algValue"`
 }
 
+// ReleaseDistribution is one downloadable artifact (a binary, installer,
+// etc.) belonging to a ComponentRelease -- distinct from an Artifact, which
+// is a security-related document (SBOM, VEX, ...) rather than the software
+// itself.
 type ReleaseDistribution struct {
 	DistributionID string       `json:"distributionId"`
 	Description    string       `json:"description,omitempty"`
@@ -68,16 +85,25 @@ type ComponentRelease struct {
 	Distributions []ReleaseDistribution `json:"distributions,omitempty"`
 }
 
+// ComponentReleaseWithCollection bundles a ComponentRelease with its most
+// recent Collection, matching the shape GET .../componentRelease/{uuid}
+// returns in one call.
 type ComponentReleaseWithCollection struct {
 	Release          ComponentRelease `json:"release"`
 	LatestCollection Collection       `json:"latestCollection"`
 }
 
+// UpdateReason explains why a new Collection version was published (e.g.
+// an artifact was added or a VEX status changed).
 type UpdateReason struct {
 	Type    string `json:"type"`
 	Comment string `json:"comment,omitempty"`
 }
 
+// Collection is one version of the set of Artifacts published for a
+// product release or component release (BelongsTo distinguishes which).
+// Collections are append-only: a new version is published whenever the
+// artifact set changes, never overwritten in place.
 type Collection struct {
 	UUID         string        `json:"uuid"`
 	Version      int           `json:"version"`
@@ -87,6 +113,8 @@ type Collection struct {
 	Artifacts    []Artifact    `json:"artifacts"`
 }
 
+// ArtifactFormat is one downloadable representation of an Artifact (e.g.
+// the same SBOM offered as both CycloneDX XML and JSON).
 type ArtifactFormat struct {
 	MediaType    string     `json:"mediaType"`
 	Description  string     `json:"description,omitempty"`
@@ -95,6 +123,10 @@ type ArtifactFormat struct {
 	Checksums    []Checksum `json:"checksums,omitempty"`
 }
 
+// Artifact is a security-related document (SBOM, VEX, attestation, license,
+// etc. -- see the ArtifactType* constants in enums.go) attached to a
+// Collection. Distinct from a ReleaseDistribution, which is the software
+// itself rather than a document about it.
 type Artifact struct {
 	UUID            string           `json:"uuid"`
 	Version         int              `json:"version"`
@@ -105,31 +137,45 @@ type Artifact struct {
 	Formats         []ArtifactFormat `json:"formats"`
 }
 
+// ErrorResponse is the spec's standard error body, with Error set to one of
+// the ErrorObject* constants below.
 type ErrorResponse struct {
 	Error string `json:"error"` // "OBJECT_UNKNOWN" | "OBJECT_NOT_SHAREABLE"
 }
 
 const (
-	ErrorObjectUnknown      = "OBJECT_UNKNOWN"
+	// ErrorObjectUnknown means the requested object doesn't exist on this server.
+	ErrorObjectUnknown = "OBJECT_UNKNOWN"
+	// ErrorObjectNotShareable means the object exists but this server won't return it.
 	ErrorObjectNotShareable = "OBJECT_NOT_SHAREABLE"
 )
 
-type TeaServerInfo struct {
+// ServerInfo identifies one server that hosts a given product release,
+// as returned by discovery.
+type ServerInfo struct {
 	RootURL  string   `json:"rootUrl"`
 	Versions []string `json:"versions"`
 	Priority *float64 `json:"priority,omitempty"`
 }
 
+// DiscoveryInfo is one result of GET /tea/v1/discovery: which server(s)
+// host the product release identified by a given TEI.
 type DiscoveryInfo struct {
-	ProductReleaseUUID string          `json:"productReleaseUuid"`
-	Servers            []TeaServerInfo `json:"servers"`
+	ProductReleaseUUID string       `json:"productReleaseUuid"`
+	Servers            []ServerInfo `json:"servers"`
 }
 
+// CLEVersionSpecifier names either a single version or a version range a
+// CLEEvent applies to.
 type CLEVersionSpecifier struct {
 	Version string `json:"version,omitempty"`
 	Range   string `json:"range,omitempty"`
 }
 
+// CLEEvent is one lifecycle event (ECMA-428 Common Lifecycle Enumeration)
+// for a product, release, component, or component release -- e.g. a
+// release, end-of-support, or end-of-life date. See the CLEEventType*
+// constants in enums.go for the possible Type values.
 type CLEEvent struct {
 	ID                  int                   `json:"id"`
 	Type                string                `json:"type"`
@@ -147,46 +193,60 @@ type CLEEvent struct {
 	References          []string              `json:"references,omitempty"`
 }
 
+// CLESupportDefinition names a support policy (e.g. "LTS") that CLEEvents
+// can reference by ID via their SupportID field.
 type CLESupportDefinition struct {
 	ID          string `json:"id"`
 	Description string `json:"description"`
 	URL         string `json:"url,omitempty"`
 }
 
+// CLEDefinitions holds the support policy definitions referenced by a CLE's events.
 type CLEDefinitions struct {
 	Support []CLESupportDefinition `json:"support,omitempty"`
 }
 
+// CLE is the full lifecycle history for one owner (product, release,
+// component, or component release): every CLEEvent recorded for it, plus
+// any support policy definitions those events reference.
 type CLE struct {
 	Events      []CLEEvent      `json:"events"`
 	Definitions *CLEDefinitions `json:"definitions,omitempty"`
 }
 
+// PaginationDetails is embedded in every paginated list response, carrying
+// the cursor needed to fetch the next page.
 type PaginationDetails struct {
 	HasNext       bool   `json:"hasNext"`
 	NextPageToken string `json:"nextPageToken"`
 }
 
+// PaginatedProducts is the response shape for GET /tea/v1/products.
 type PaginatedProducts struct {
 	PaginationDetails
 	Results []Product `json:"results"`
 }
 
+// PaginatedProductReleases is the response shape for GET /tea/v1/productReleases.
 type PaginatedProductReleases struct {
 	PaginationDetails
 	Results []ProductRelease `json:"results"`
 }
 
+// PaginatedComponents is the response shape for GET /tea/v1/components.
 type PaginatedComponents struct {
 	PaginationDetails
 	Results []Component `json:"results"`
 }
 
+// PaginatedComponentReleases is the response shape for GET /tea/v1/componentReleases.
 type PaginatedComponentReleases struct {
 	PaginationDetails
 	Results []ComponentRelease `json:"results"`
 }
 
+// PaginatedCollections is the response shape for a collection-list endpoint
+// (GET .../productRelease/{uuid}/collections or .../componentRelease/{uuid}/collections).
 type PaginatedCollections struct {
 	PaginationDetails
 	Results []Collection `json:"results"`

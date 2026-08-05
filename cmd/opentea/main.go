@@ -6,10 +6,14 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"log"
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/oej/opentea/internal/admin"
@@ -21,6 +25,11 @@ import (
 	"github.com/oej/opentea/internal/storage"
 	"github.com/oej/opentea/internal/webadmin"
 )
+
+// shutdownGrace bounds how long a SIGINT/SIGTERM shutdown waits for
+// in-flight requests (including large blob uploads/downloads, see the
+// http.Server comment below) to finish before forcing connections closed.
+const shutdownGrace = 30 * time.Second
 
 func main() {
 	startedAt := time.Now()
@@ -68,13 +77,33 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
-	if tlsEnabled {
-		err = srv.ListenAndServeTLS(cfg.TLSCertFile, cfg.TLSKeyFile)
-	} else {
-		err = srv.ListenAndServe()
-	}
-	if err != nil {
-		log.Fatalf("server stopped: %v", err)
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	serveErr := make(chan error, 1)
+	go func() {
+		if tlsEnabled {
+			serveErr <- srv.ListenAndServeTLS(cfg.TLSCertFile, cfg.TLSKeyFile)
+		} else {
+			serveErr <- srv.ListenAndServe()
+		}
+	}()
+
+	select {
+	case err := <-serveErr:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("server stopped: %v", err)
+		}
+	case <-ctx.Done():
+		stop()
+		slog.Info("shutdown signal received, waiting for in-flight requests", "grace", shutdownGrace)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			log.Fatalf("graceful shutdown failed: %v", err)
+		}
+		slog.Info("server stopped cleanly")
 	}
 }
 

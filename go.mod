@@ -1,6 +1,6 @@
 module github.com/oej/opentea
 
-go 1.26.4
+go 1.26.5
 
 require (
 	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1

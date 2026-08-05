@@ -153,7 +153,7 @@ func TestExportProducesValidZip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open manifest.json: %v", err)
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 	var m Manifest
 	if err := json.NewDecoder(rc).Decode(&m); err != nil {
 		t.Fatalf("decode manifest: %v", err)
@@ -238,7 +238,7 @@ func TestExportUnpinnedComponentRefOmitsReleaseData(t *testing.T) {
 	for _, f := range zr.File {
 		if f.Name == "manifest.json" {
 			rc, _ := f.Open()
-			defer rc.Close()
+			defer func() { _ = rc.Close() }()
 			if err := json.NewDecoder(rc).Decode(&m); err != nil {
 				t.Fatalf("decode manifest: %v", err)
 			}

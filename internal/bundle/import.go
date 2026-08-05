@@ -12,6 +12,17 @@ import (
 	"github.com/oej/opentea/pkg/tea"
 )
 
+// maxZipEntrySize bounds how much of any single zip entry (a files/<sha256>
+// blob, checked here and in check.go) is read from a bundle -- guards
+// against a maliciously crafted, highly-compressed entry expanding to
+// unbounded size when decompressed (a "zip bomb"). Matches the whole-bundle
+// upload cap already used at internal/admin/bundle.go's maxImportBundleSize.
+// A var (not const) so tests can temporarily lower it rather than needing a
+// multi-gigabyte fixture to exercise the oversized-entry path; this
+// package's tests never run in parallel, so mutating it in one test and
+// restoring via t.Cleanup is safe.
+var maxZipEntrySize int64 = 1 << 30 // 1 GiB
+
 // ImportResult summarizes what an Import call actually did, broken down by
 // entity kind, so callers (and the admin API's JSON response) can tell a
 // fresh import from a no-op re-import of already-present data.
@@ -75,6 +86,29 @@ func Import(ctx context.Context, r *repo.Repo, store storage.Storage, rootURL st
 		return nil, err
 	}
 
+	if err := importProductReleases(ctx, r, m, res); err != nil {
+		return nil, err
+	}
+	if err := importComponents(ctx, r, m, res); err != nil {
+		return nil, err
+	}
+	if err := importComponentReleases(ctx, r, m, sha256ToURL, res); err != nil {
+		return nil, err
+	}
+	// Component links are made only now, after every component release they
+	// might pin has been imported -- product_release_component's FK on
+	// component_release_uuid would otherwise fail for a pinned ref.
+	if err := importComponentLinks(ctx, r, m); err != nil {
+		return nil, err
+	}
+	if err := importCollections(ctx, r, m, sha256ToURL, res); err != nil {
+		return nil, err
+	}
+
+	return res, nil
+}
+
+func importProductReleases(ctx context.Context, r *repo.Repo, m Manifest, res *ImportResult) error {
 	for _, pr := range m.ProductReleases {
 		preRelease := pr.PreRelease != nil && *pr.PreRelease
 		created, err := r.ImportProductRelease(ctx, repo.ImportProductReleaseInput{
@@ -88,25 +122,31 @@ func Import(ctx context.Context, r *repo.Repo, store storage.Storage, rootURL st
 			Identifiers: pr.Identifiers,
 		})
 		if err != nil {
-			return nil, fmt.Errorf("import product release %s: %w", pr.UUID, err)
+			return fmt.Errorf("import product release %s: %w", pr.UUID, err)
 		}
 		res.record("productRelease", created)
 		if err := importCLE(ctx, r, repo.OwnerProductRelease, pr.UUID, pr.CLE, res); err != nil {
-			return nil, err
+			return err
 		}
 	}
+	return nil
+}
 
+func importComponents(ctx context.Context, r *repo.Repo, m Manifest, res *ImportResult) error {
 	for _, c := range m.Components {
 		created, err := r.ImportComponent(ctx, c.UUID, c.Name, c.Identifiers)
 		if err != nil {
-			return nil, fmt.Errorf("import component %s: %w", c.UUID, err)
+			return fmt.Errorf("import component %s: %w", c.UUID, err)
 		}
 		res.record("component", created)
 		if err := importCLE(ctx, r, repo.OwnerComponent, c.UUID, c.CLE, res); err != nil {
-			return nil, err
+			return err
 		}
 	}
+	return nil
+}
 
+func importComponentReleases(ctx context.Context, r *repo.Repo, m Manifest, sha256ToURL map[string]string, res *ImportResult) error {
 	for _, cr := range m.ComponentReleases {
 		preRelease := cr.PreRelease != nil && *cr.PreRelease
 		created, err := r.ImportComponentRelease(ctx, repo.ImportComponentReleaseInput{
@@ -120,34 +160,37 @@ func Import(ctx context.Context, r *repo.Repo, store storage.Storage, rootURL st
 			Identifiers:   cr.Identifiers,
 		})
 		if err != nil {
-			return nil, fmt.Errorf("import component release %s: %w", cr.UUID, err)
+			return fmt.Errorf("import component release %s: %w", cr.UUID, err)
 		}
 		res.record("componentRelease", created)
 		if err := importCLE(ctx, r, repo.OwnerComponentRelease, cr.UUID, cr.CLE, res); err != nil {
-			return nil, err
+			return err
 		}
 		for _, d := range cr.Distributions {
 			if err := importDistribution(ctx, r, cr.UUID, d, sha256ToURL, res); err != nil {
-				return nil, err
+				return err
 			}
 		}
 	}
+	return nil
+}
 
-	// Component links are made only now, after every component release they
-	// might pin has been imported -- product_release_component's FK on
-	// component_release_uuid would otherwise fail for a pinned ref.
+func importComponentLinks(ctx context.Context, r *repo.Repo, m Manifest) error {
 	for _, pr := range m.ProductReleases {
 		for _, ref := range pr.Components {
 			if _, err := r.LinkComponent(ctx, pr.UUID, ref); err != nil {
-				return nil, fmt.Errorf("link component %s to product release %s: %w", ref.UUID, pr.UUID, err)
+				return fmt.Errorf("link component %s to product release %s: %w", ref.UUID, pr.UUID, err)
 			}
 		}
 	}
+	return nil
+}
 
+func importCollections(ctx context.Context, r *repo.Repo, m Manifest, sha256ToURL map[string]string, res *ImportResult) error {
 	for _, col := range m.Collections {
 		for _, a := range col.Artifacts {
 			if err := importArtifact(ctx, r, a, sha256ToURL, res); err != nil {
-				return nil, err
+				return err
 			}
 		}
 		artifactRefs := make([]repo.ArtifactRef, 0, len(col.Artifacts))
@@ -163,12 +206,11 @@ func Import(ctx context.Context, r *repo.Repo, store storage.Storage, rootURL st
 			Artifacts:    artifactRefs,
 		})
 		if err != nil {
-			return nil, fmt.Errorf("import collection %s v%d: %w", col.UUID, col.Version, err)
+			return fmt.Errorf("import collection %s v%d: %w", col.UUID, col.Version, err)
 		}
 		res.record("collection", created)
 	}
-
-	return res, nil
+	return nil
 }
 
 func importCLE(ctx context.Context, r *repo.Repo, ownerType, ownerUUID string, cle *tea.CLE, res *ImportResult) error {
@@ -295,10 +337,13 @@ func importBlobs(ctx context.Context, r *repo.Repo, store storage.Storage, zr *z
 		if err != nil {
 			return nil, fmt.Errorf("open bundle entry %s: %w", f.Name, err)
 		}
-		actualSHA256, size, err := store.Put(ctx, rc)
-		rc.Close()
+		actualSHA256, size, err := store.Put(ctx, io.LimitReader(rc, maxZipEntrySize+1))
+		_ = rc.Close()
 		if err != nil {
 			return nil, fmt.Errorf("store bundle entry %s: %w", f.Name, err)
+		}
+		if size > maxZipEntrySize {
+			return nil, fmt.Errorf("bundle entry %s exceeds %d byte limit", f.Name, maxZipEntrySize)
 		}
 		if actualSHA256 != expectedSHA256 {
 			return nil, fmt.Errorf("bundle entry %s is corrupt: actual content hash %s does not match", f.Name, actualSHA256)
@@ -317,7 +362,7 @@ func readZipFile(zr *zip.Reader, name string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("bundle is missing %s: %w", name, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	raw, err := io.ReadAll(f)
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", name, err)

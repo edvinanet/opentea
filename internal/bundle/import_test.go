@@ -54,7 +54,7 @@ func corruptFirstFileEntry(t *testing.T, zipBytes []byte) []byte {
 				t.Fatalf("copy %s: %v", f.Name, err)
 			}
 		}
-		rc.Close()
+		_ = rc.Close()
 	}
 	if !corrupted {
 		t.Fatal("test bug: no files/ entry found to corrupt")
@@ -254,6 +254,105 @@ func TestImportRejectsCorruptBundle(t *testing.T) {
 	if _, err := Import(ctx, dstRepo, dstStore, "http://dest.example", zr); err == nil {
 		t.Fatal("expected Import to reject a bundle whose file content doesn't match its claimed hash")
 	}
+}
+
+// oversizeFirstFileEntry rewrites the first files/<sha256> entry's content
+// in a bundle zip to be n bytes, without touching the manifest -- used to
+// exercise the maxZipEntrySize bound without needing a real multi-gigabyte
+// fixture.
+func oversizeFirstFileEntry(t *testing.T, zipBytes []byte, n int) []byte {
+	t.Helper()
+	zr, err := zip.NewReader(bytes.NewReader(zipBytes), int64(len(zipBytes)))
+	if err != nil {
+		t.Fatalf("zip.NewReader: %v", err)
+	}
+
+	var out bytes.Buffer
+	zw := zip.NewWriter(&out)
+	resized := false
+	for _, f := range zr.File {
+		w, err := zw.Create(f.Name)
+		if err != nil {
+			t.Fatalf("zw.Create(%s): %v", f.Name, err)
+		}
+		rc, err := f.Open()
+		if err != nil {
+			t.Fatalf("open %s: %v", f.Name, err)
+		}
+		if !resized && strings.HasPrefix(f.Name, "files/") {
+			if _, err := io.CopyN(w, zeroReader{}, int64(n)); err != nil {
+				t.Fatalf("write oversized %s: %v", f.Name, err)
+			}
+			resized = true
+		} else {
+			if _, err := io.Copy(w, rc); err != nil {
+				t.Fatalf("copy %s: %v", f.Name, err)
+			}
+		}
+		_ = rc.Close()
+	}
+	if !resized {
+		t.Fatal("test bug: no files/ entry found to resize")
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("close zip: %v", err)
+	}
+	return out.Bytes()
+}
+
+// zeroReader is an infinite source of zero bytes, for cheaply generating
+// large test content without allocating it all in memory up front.
+type zeroReader struct{}
+
+func (zeroReader) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = 0
+	}
+	return len(p), nil
+}
+
+func TestOversizedZipEntryIsRejected(t *testing.T) {
+	ctx := context.Background()
+	srcRepo := newTestRepo(t)
+	srcStore := newTestStore(t)
+	productUUID := seedProduct(t, srcRepo, srcStore)
+
+	var buf bytes.Buffer
+	if err := Export(ctx, srcRepo, srcStore, productUUID, &buf); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+
+	// Temporarily lower the bound so this test doesn't need a real
+	// multi-gigabyte fixture -- this package's tests never run in
+	// parallel, so mutating the shared var is safe as long as it's
+	// restored before this test returns.
+	original := maxZipEntrySize
+	maxZipEntrySize = 1024
+	t.Cleanup(func() { maxZipEntrySize = original })
+
+	oversized := oversizeFirstFileEntry(t, buf.Bytes(), 2048)
+
+	t.Run("Check", func(t *testing.T) {
+		zr, err := zip.NewReader(bytes.NewReader(oversized), int64(len(oversized)))
+		if err != nil {
+			t.Fatalf("zip.NewReader: %v", err)
+		}
+		if _, err := Check(zr); err == nil {
+			t.Fatal("expected Check to reject a zip entry exceeding maxZipEntrySize")
+		}
+	})
+
+	t.Run("Import", func(t *testing.T) {
+		zr, err := zip.NewReader(bytes.NewReader(oversized), int64(len(oversized)))
+		if err != nil {
+			t.Fatalf("zip.NewReader: %v", err)
+		}
+		dstRepo := newTestRepo(t)
+		dstStore := newTestStore(t)
+		if _, err := Import(ctx, dstRepo, dstStore, "http://dest.example", zr); err == nil {
+			t.Fatal("expected Import to reject a zip entry exceeding maxZipEntrySize")
+		}
+	})
 }
 
 func TestImportRejectsBadManifest(t *testing.T) {

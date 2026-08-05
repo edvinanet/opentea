@@ -39,21 +39,25 @@ type Manifest struct {
 // spec), so the *Entry types add it as an additive field rather than
 // changing the reused pkg/tea types themselves.
 
+// ProductEntry is a manifest's Product plus its CLE lifecycle history.
 type ProductEntry struct {
 	tea.Product
 	CLE *tea.CLE `json:"cle,omitempty"`
 }
 
+// ProductReleaseEntry is a manifest's ProductRelease plus its CLE lifecycle history.
 type ProductReleaseEntry struct {
 	tea.ProductRelease
 	CLE *tea.CLE `json:"cle,omitempty"`
 }
 
+// ComponentEntry is a manifest's Component plus its CLE lifecycle history.
 type ComponentEntry struct {
 	tea.Component
 	CLE *tea.CLE `json:"cle,omitempty"`
 }
 
+// ComponentReleaseEntry is a manifest's ComponentRelease plus its CLE lifecycle history.
 type ComponentReleaseEntry struct {
 	tea.ComponentRelease          // already embeds Distributions
 	CLE                  *tea.CLE `json:"cle,omitempty"`

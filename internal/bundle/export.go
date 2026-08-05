@@ -55,7 +55,7 @@ func copyBlobIntoZip(ctx context.Context, zw *zip.Writer, store storage.Storage,
 	if err != nil {
 		return fmt.Errorf("open blob %s: %w", sha256Hex, err)
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 
 	fw, err := zw.Create("files/" + sha256Hex)
 	if err != nil {

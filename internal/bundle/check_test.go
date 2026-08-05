@@ -147,7 +147,7 @@ func removeFirstFileEntry(t *testing.T, zipBytes []byte) []byte {
 		if _, err := io.Copy(w, rc); err != nil {
 			t.Fatalf("copy %s: %v", f.Name, err)
 		}
-		rc.Close()
+		_ = rc.Close()
 	}
 	if !removed {
 		t.Fatal("test bug: no files/ entry found to remove")

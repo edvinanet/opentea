@@ -107,11 +107,15 @@ func sha256OfZipEntry(f *zip.File) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 
 	h := sha256.New()
-	if _, err := io.Copy(h, rc); err != nil {
+	n, err := io.Copy(h, io.LimitReader(rc, maxZipEntrySize+1))
+	if err != nil {
 		return "", err
+	}
+	if n > maxZipEntrySize {
+		return "", fmt.Errorf("zip entry %s exceeds %d byte limit", f.Name, maxZipEntrySize)
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }

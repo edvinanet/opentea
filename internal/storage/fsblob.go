@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 )
 
 // FSStorage is a Storage implementation backed by a local filesystem
@@ -26,8 +27,27 @@ func NewFSStorage(dir string) (*FSStorage, error) {
 	return &FSStorage{dir: dir}, nil
 }
 
-func (s *FSStorage) pathFor(sha256Hex string) string {
-	return filepath.Join(s.dir, sha256Hex[:2], sha256Hex)
+// sha256Pattern matches the only well-formed shape a blob's sha256 can be.
+var sha256Pattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+// pathFor validates sha256Hex before building the on-disk path for it.
+// Every caller-supplied sha256 (Open, Delete) must go through this, not
+// straight to filepath.Join -- callers don't necessarily control where
+// their sha256 came from originally. In particular, internal/bundle's
+// Export reads SHA-256 checksum values straight out of the DB to decide
+// what to open, and those values can originate from a bundle *import*'s
+// manifest -- attacker-controlled if importing from an untrusted TEA
+// server, and never validated to actually correspond to an uploaded blob
+// (a checksum with no matching blob is a legitimate "reference-only"
+// import, so import can't reject it). Without this check, a crafted
+// checksum value like "../../../../etc/passwd" stored via import would
+// later be read and included in a re-export's zip -- an information leak,
+// not just an availability failure -- rather than failing cleanly here.
+func (s *FSStorage) pathFor(sha256Hex string) (string, error) {
+	if !sha256Pattern.MatchString(sha256Hex) {
+		return "", fmt.Errorf("storage: invalid sha256 %q", sha256Hex)
+	}
+	return filepath.Join(s.dir, sha256Hex[:2], sha256Hex), nil
 }
 
 // Put implements Storage by writing to a temp file first, then renaming it
@@ -52,7 +72,10 @@ func (s *FSStorage) Put(ctx context.Context, r io.Reader) (string, int64, error)
 	}
 
 	sum := hex.EncodeToString(h.Sum(nil))
-	finalPath := s.pathFor(sum)
+	finalPath, err := s.pathFor(sum) // sum is our own sha256.New() output, so this can't actually fail
+	if err != nil {
+		return "", 0, err
+	}
 	if err := os.MkdirAll(filepath.Dir(finalPath), 0o750); err != nil {
 		return "", 0, fmt.Errorf("create blob subdir: %w", err)
 	}
@@ -64,7 +87,11 @@ func (s *FSStorage) Put(ctx context.Context, r io.Reader) (string, int64, error)
 
 // Open implements Storage.
 func (s *FSStorage) Open(ctx context.Context, sha256Hex string) (io.ReadCloser, error) {
-	f, err := os.Open(s.pathFor(sha256Hex))
+	path, err := s.pathFor(sha256Hex)
+	if err != nil {
+		return nil, err
+	}
+	f, err := os.Open(path) //nolint:gosec // path is built from pathFor, which rejects anything but a well-formed sha256 before this point
 	if err != nil {
 		return nil, err
 	}
@@ -73,9 +100,12 @@ func (s *FSStorage) Open(ctx context.Context, sha256Hex string) (io.ReadCloser, 
 
 // Delete implements Storage.
 func (s *FSStorage) Delete(ctx context.Context, sha256Hex string) error {
-	err := os.Remove(s.pathFor(sha256Hex))
-	if os.IsNotExist(err) {
-		return nil
+	path, err := s.pathFor(sha256Hex)
+	if err != nil {
+		return err
 	}
-	return err
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }

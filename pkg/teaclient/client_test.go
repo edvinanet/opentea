@@ -1,10 +1,13 @@
 package teaclient
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -135,6 +138,81 @@ func TestDownloadAndVerifyChecksumMismatch(t *testing.T) {
 	}
 	if _, err := client.DownloadAndVerify(context.Background(), format); err == nil {
 		t.Fatal("expected a checksum mismatch error")
+	}
+}
+
+// TestDownloadAndVerifyToStreamsWithoutBuffering is the regression test for
+// the "artifact downloads are unbounded in memory" finding: dst receives
+// the content and the checksum still verifies, proving DownloadAndVerifyTo
+// actually writes through to the caller-supplied destination while hashing,
+// rather than accumulating its own internal buffer the caller never sees.
+func TestDownloadAndVerifyToStreamsWithoutBuffering(t *testing.T) {
+	content := []byte("hello, streaming tea client")
+	sum := sha256.Sum256(content)
+	hexSum := hex.EncodeToString(sum[:])
+
+	client, srv := newFakeServer(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(content)
+	})
+
+	format := tea.ArtifactFormat{
+		URL:       srv.URL + "/files/whatever",
+		Checksums: []tea.Checksum{{AlgType: tea.ChecksumTypeSHA256, AlgValue: hexSum}},
+	}
+	var dst bytes.Buffer
+	if err := client.DownloadAndVerifyTo(context.Background(), format, &dst); err != nil {
+		t.Fatalf("DownloadAndVerifyTo: %v", err)
+	}
+	if dst.String() != string(content) {
+		t.Fatalf("dst = %q, want %q", dst.String(), content)
+	}
+}
+
+// TestDownloadAndVerifyToDiscardsWithoutDownloadingWhenUnsupported checks
+// that an unsupported checksum algorithm is caught before any HTTP request
+// is made -- verifying that io.Discard is a genuinely safe, zero-buffering
+// way to call this for verification only (the whole point of adding it).
+func TestDownloadAndVerifyToDiscardsWithoutDownloadingWhenUnsupported(t *testing.T) {
+	requested := false
+	client, srv := newFakeServer(t, func(w http.ResponseWriter, r *http.Request) {
+		requested = true
+		_, _ = w.Write([]byte("should never be fetched"))
+	})
+
+	format := tea.ArtifactFormat{
+		URL:       srv.URL + "/files/whatever",
+		Checksums: []tea.Checksum{{AlgType: "BLAKE3", AlgValue: "deadbeef"}},
+	}
+	err := client.DownloadAndVerifyTo(context.Background(), format, io.Discard)
+	if err == nil {
+		t.Fatal("expected an unsupported-algorithm error")
+	}
+	if requested {
+		t.Fatal("expected the unsupported algorithm to be caught before any request was made")
+	}
+}
+
+func TestDoRejectsOversizedResponse(t *testing.T) {
+	client, _ := newFakeServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Otherwise-valid JSON, padded past maxResponseBody with a long
+		// "name" string value -- must be rejected purely for being too
+		// large. (Using invalid/non-JSON padding here would make this test
+		// pass for the wrong reason: json.Unmarshal failing on malformed
+		// input, not the size guard actually triggering.)
+		padding := bytes.Repeat([]byte("a"), maxResponseBody+1)
+		_, _ = w.Write([]byte(`{"uuid":"abc-123","name":"`))
+		_, _ = w.Write(padding)
+		_, _ = w.Write([]byte(`"}`))
+	})
+
+	_, err := client.GetProduct(context.Background(), "abc-123")
+	if err == nil {
+		t.Fatal("expected an error for a response exceeding maxResponseBody")
+	}
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		t.Fatalf("err = %v (*APIError), want a body-too-large error instead", err)
 	}
 }
 

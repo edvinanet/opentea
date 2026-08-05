@@ -1,6 +1,7 @@
 package teaclient
 
 import (
+	"bytes"
 	"context"
 	"crypto/md5"  //nolint:gosec // MD5 is a spec-defined checksum type (tea.ChecksumTypeMD5) a conformant client must be able to verify against, not a security choice
 	"crypto/sha1" //nolint:gosec // SHA-1 is a spec-defined checksum type (tea.ChecksumTypeSHA1) a conformant client must be able to verify against, not a security choice
@@ -10,6 +11,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"net/http"
 	"strconv"
@@ -35,86 +37,122 @@ func (c *Client) GetArtifactByVersion(ctx context.Context, uuid string, version 
 	return a, err
 }
 
-// DownloadAndVerify fetches format.URL and checks the downloaded bytes
-// against every checksum format declares, returning the bytes plus an error
-// naming the first algorithm/mismatch found (nil error if all declared
-// checksums match, or if none are declared -- an artifact-format with no
-// checksums is spec-valid, just unverifiable). BLAKE3 is not yet supported
-// (no stdlib or golang.org/x/crypto implementation without adding a new
-// dependency) and is reported as an explicit "unsupported" error rather than
-// silently skipped.
+// DownloadAndVerify fetches format.URL, verifies it against every checksum
+// format declares, and returns the full downloaded bytes. It's a thin
+// wrapper around DownloadAndVerifyTo for callers that want the content in
+// memory; callers that only need verification (or want to stream to disk)
+// should call DownloadAndVerifyTo directly with io.Discard (or a file) as
+// dst instead, which never buffers the download at all -- this wrapper's
+// bytes.Buffer is itself unbounded against a malicious or oversized
+// response, same as the pre-streaming implementation.
 func (c *Client) DownloadAndVerify(ctx context.Context, format tea.ArtifactFormat) ([]byte, error) {
+	var buf bytes.Buffer
+	err := c.DownloadAndVerifyTo(ctx, format, &buf)
+	return buf.Bytes(), err
+}
+
+// DownloadAndVerifyTo streams format.URL's content into dst while checking
+// it against every checksum format declares -- unlike DownloadAndVerify,
+// the download is never buffered in memory (pass io.Discard as dst to
+// verify without keeping the content at all, bounding a CLI or embedding
+// application's memory use regardless of how large a malicious or
+// malfunctioning remote server's response is). Returns an error naming the
+// first unsupported algorithm or mismatch found (checked in format.Checksums
+// order, once the whole body has been read and hashed), nil if all declared
+// checksums match, or if none are declared -- an artifact-format with no
+// checksums is spec-valid, just unverifiable. BLAKE3 is not yet supported
+// (no stdlib or golang.org/x/crypto implementation without adding a new
+// dependency); an unsupported algorithm is caught before the download
+// starts, not after.
+func (c *Client) DownloadAndVerifyTo(ctx context.Context, format tea.ArtifactFormat, dst io.Writer) error {
 	if format.URL == "" {
-		return nil, errors.New("teaclient: artifact format has no URL")
+		return errors.New("teaclient: artifact format has no URL")
 	}
+	hashers, err := newChecksumHashers(format.Checksums)
+	if err != nil {
+		return err
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, format.URL, nil)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, &APIError{StatusCode: resp.StatusCode, Body: data}
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody))
+		return &APIError{StatusCode: resp.StatusCode, Body: body}
 	}
 
-	for _, cksum := range format.Checksums {
-		if err := verifyChecksum(data, cksum); err != nil {
-			return data, err
+	writers := make([]io.Writer, 0, len(hashers)+1)
+	for _, h := range hashers {
+		writers = append(writers, h.hash)
+	}
+	writers = append(writers, dst)
+	if _, err := io.Copy(io.MultiWriter(writers...), resp.Body); err != nil {
+		return err
+	}
+
+	for _, h := range hashers {
+		got := hex.EncodeToString(h.hash.Sum(nil))
+		if !strings.EqualFold(got, h.cksum.AlgValue) {
+			return fmt.Errorf("teaclient: %s checksum mismatch: got %s, want %s", h.cksum.AlgType, got, h.cksum.AlgValue)
 		}
 	}
-	return data, nil
+	return nil
 }
 
-func verifyChecksum(data []byte, cksum tea.Checksum) error {
-	var sum []byte
-	switch cksum.AlgType {
+// checksumHasher pairs a declared checksum with the running hash.Hash that
+// will verify it, so DownloadAndVerifyTo can write the download through all
+// of them at once via io.MultiWriter and check each afterward.
+type checksumHasher struct {
+	cksum tea.Checksum
+	hash  hash.Hash
+}
+
+// newChecksumHashers builds one checksumHasher per checksum, failing fast
+// (before any download starts) if any algorithm isn't supported.
+func newChecksumHashers(checksums []tea.Checksum) ([]checksumHasher, error) {
+	out := make([]checksumHasher, 0, len(checksums))
+	for _, cksum := range checksums {
+		h, err := newHasher(cksum.AlgType)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, checksumHasher{cksum: cksum, hash: h})
+	}
+	return out, nil
+}
+
+func newHasher(algType string) (hash.Hash, error) {
+	switch algType {
 	case tea.ChecksumTypeMD5:
-		h := md5.Sum(data) //nolint:gosec // verifying a spec-defined checksum type, not using MD5 for security
-		sum = h[:]
+		return md5.New(), nil //nolint:gosec // verifying a spec-defined checksum type, not using MD5 for security
 	case tea.ChecksumTypeSHA1:
-		h := sha1.Sum(data) //nolint:gosec // verifying a spec-defined checksum type, not using SHA-1 for security
-		sum = h[:]
+		return sha1.New(), nil //nolint:gosec // verifying a spec-defined checksum type, not using SHA-1 for security
 	case tea.ChecksumTypeSHA256:
-		h := sha256.Sum256(data)
-		sum = h[:]
+		return sha256.New(), nil
 	case tea.ChecksumTypeSHA384:
-		h := sha512.Sum384(data)
-		sum = h[:]
+		return sha512.New384(), nil
 	case tea.ChecksumTypeSHA512:
-		h := sha512.Sum512(data)
-		sum = h[:]
+		return sha512.New(), nil
 	case tea.ChecksumTypeSHA3_256:
-		h := sha3.Sum256(data)
-		sum = h[:]
+		return sha3.New256(), nil
 	case tea.ChecksumTypeSHA3_384:
-		h := sha3.Sum384(data)
-		sum = h[:]
+		return sha3.New384(), nil
 	case tea.ChecksumTypeSHA3_512:
-		h := sha3.Sum512(data)
-		sum = h[:]
+		return sha3.New512(), nil
 	case tea.ChecksumTypeBLAKE2b256:
-		h := blake2b.Sum256(data)
-		sum = h[:]
+		return blake2b.New256(nil)
 	case tea.ChecksumTypeBLAKE2b384:
-		h := blake2b.Sum384(data)
-		sum = h[:]
+		return blake2b.New384(nil)
 	case tea.ChecksumTypeBLAKE2b512:
-		h := blake2b.Sum512(data)
-		sum = h[:]
+		return blake2b.New512(nil)
 	default:
-		return fmt.Errorf("teaclient: unsupported checksum algorithm %q (cannot verify)", cksum.AlgType)
+		return nil, fmt.Errorf("teaclient: unsupported checksum algorithm %q (cannot verify)", algType)
 	}
-	got := hex.EncodeToString(sum)
-	if !strings.EqualFold(got, cksum.AlgValue) {
-		return fmt.Errorf("teaclient: %s checksum mismatch: got %s, want %s", cksum.AlgType, got, cksum.AlgValue)
-	}
-	return nil
 }

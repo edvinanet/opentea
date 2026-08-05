@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 
 	"github.com/oej/opentea/pkg/tea"
 	"github.com/oej/opentea/pkg/teaclient"
@@ -38,7 +39,11 @@ func runVerify(args []string) error {
 	results := make([]formatVerifyResult, len(art.Formats))
 	anyFail := false
 	for i, format := range art.Formats {
-		_, verr := client.DownloadAndVerify(ctx, format)
+		// Verification only, so stream straight to io.Discard rather than
+		// buffering the whole download -- this command's memory use should
+		// stay bounded no matter how large a malicious or malfunctioning
+		// server's response is.
+		verr := client.DownloadAndVerifyTo(ctx, format, io.Discard)
 		results[i] = formatVerifyResult{FormatIndex: i, MediaType: format.MediaType, OK: verr == nil}
 		if verr != nil {
 			anyFail = true

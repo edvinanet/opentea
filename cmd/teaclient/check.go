@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 
 	"github.com/oej/opentea/pkg/tea"
 	"github.com/oej/opentea/pkg/teaclient"
@@ -126,7 +127,9 @@ func verifyArtifactSample(ctx context.Context, client *teaclient.Client, compone
 				if len(format.Checksums) == 0 {
 					continue
 				}
-				if _, err := client.DownloadAndVerify(ctx, format); err != nil {
+				// Verification only -- stream to io.Discard rather than
+				// buffering the whole download, same reasoning as verify.go.
+				if err := client.DownloadAndVerifyTo(ctx, format, io.Discard); err != nil {
 					report.fail("verify artifact %s format[%d]: %v", artifact.UUID, i, err)
 				}
 				verified++

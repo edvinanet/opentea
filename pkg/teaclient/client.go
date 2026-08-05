@@ -7,12 +7,22 @@ package teaclient
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 )
+
+// maxResponseBody bounds how much of any single HTTP response body this
+// package reads into memory (a JSON API response in do, or an error body in
+// DownloadAndVerifyTo) -- guards a CLI or embedding application against a
+// malicious or malfunctioning remote TEA server sending an unbounded
+// response and exhausting memory. Matches internal/admin/server.go's
+// maxJSONBody on this project's own server side; other TEA servers this
+// client talks to aren't bound by that, hence checking here too.
+const maxResponseBody = 10 << 20 // 10 MiB
 
 // Client talks to a single TEA server's consumer read API.
 type Client struct {
@@ -77,9 +87,12 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody+1))
 	if err != nil {
 		return err
+	}
+	if len(body) > maxResponseBody {
+		return fmt.Errorf("teaclient: response body for %s %s exceeds %d byte limit", method, path, maxResponseBody)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return &APIError{StatusCode: resp.StatusCode, Body: body}

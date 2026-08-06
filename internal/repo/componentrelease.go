@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/oej/opentea/internal/idgen"
@@ -69,19 +70,23 @@ type ImportComponentReleaseInput struct {
 }
 
 // ImportComponentRelease creates a component release preserving its source
-// identity (in.UUID), or leaves an existing one with that UUID untouched --
-// see ImportComponentReleaseInput and internal/bundle for the idempotency
-// rationale.
+// identity (in.UUID), or leaves an existing one with that UUID untouched if
+// its content matches -- see ImportComponentReleaseInput and internal/bundle
+// for the idempotency rationale. Returns ErrImportIdentityConflict if a
+// release with this UUID already exists with different content.
 func (r *Repo) ImportComponentRelease(ctx context.Context, in ImportComponentReleaseInput) (created bool, err error) {
 	return runInTx(ctx, r, func(tx dbtx) (bool, error) {
-		var exists int
-		if err := tx.QueryRowContext(ctx, `SELECT 1 FROM component_release WHERE uuid = ?`, in.UUID).Scan(&exists); err == nil {
+		existing, err := getComponentReleaseTx(ctx, tx, in.UUID)
+		if err == nil {
+			if componentReleaseConflicts(existing, in) {
+				return false, fmt.Errorf("%w: component release %s", ErrImportIdentityConflict, in.UUID)
+			}
 			return false, nil
-		} else if !errors.Is(err, sql.ErrNoRows) {
+		} else if !errors.Is(err, ErrNotFound) {
 			return false, err
 		}
 
-		_, err := tx.ExecContext(ctx,
+		_, err = tx.ExecContext(ctx,
 			`INSERT INTO component_release (uuid, component_uuid, component_name, version, created_date, release_date, pre_release) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 			in.UUID, in.ComponentUUID, in.ComponentName, in.Version, formatTime(in.CreatedDate), formatTimePtr(in.ReleaseDate), boolToInt(in.PreRelease),
 		)
@@ -95,9 +100,38 @@ func (r *Repo) ImportComponentRelease(ctx context.Context, in ImportComponentRel
 	})
 }
 
+// componentReleaseConflicts mirrors productReleaseConflicts -- see there for
+// why ComponentName is excluded (denormalized cache, can legitimately
+// drift).
+func componentReleaseConflicts(existing tea.ComponentRelease, in ImportComponentReleaseInput) bool {
+	if existing.Component != in.ComponentUUID {
+		return true
+	}
+	if existing.Version != in.Version {
+		return true
+	}
+	if !existing.CreatedDate.Equal(in.CreatedDate) {
+		return true
+	}
+	if !timePtrEqual(existing.ReleaseDate, in.ReleaseDate) {
+		return true
+	}
+	existingPreRelease := existing.PreRelease != nil && *existing.PreRelease
+	if existingPreRelease != in.PreRelease {
+		return true
+	}
+	return !setEqual(existing.Identifiers, in.Identifiers)
+}
+
 // GetComponentRelease fetches a component release by UUID, including its
 // identifiers and distributions. Returns ErrNotFound if uuid doesn't exist.
 func (r *Repo) GetComponentRelease(ctx context.Context, uuid string) (tea.ComponentRelease, error) {
+	return getComponentReleaseTx(ctx, r.conn(), uuid)
+}
+
+// getComponentReleaseTx is GetComponentRelease's logic parameterized over a
+// dbtx -- see product.go's getProductTx doc comment for why this exists.
+func getComponentReleaseTx(ctx context.Context, q dbtx, uuid string) (tea.ComponentRelease, error) {
 	var (
 		componentUUID sql.NullString
 		componentName sql.NullString
@@ -106,7 +140,7 @@ func (r *Repo) GetComponentRelease(ctx context.Context, uuid string) (tea.Compon
 		releaseDate   sql.NullString
 		preRelease    int
 	)
-	err := r.db.QueryRowContext(ctx,
+	err := q.QueryRowContext(ctx,
 		`SELECT component_uuid, component_name, version, created_date, release_date, pre_release FROM component_release WHERE uuid = ?`, uuid,
 	).Scan(&componentUUID, &componentName, &version, &createdDate, &releaseDate, &preRelease)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -125,11 +159,11 @@ func (r *Repo) GetComponentRelease(ctx context.Context, uuid string) (tea.Compon
 		return tea.ComponentRelease{}, err
 	}
 
-	ids, err := listIdentifiers(ctx, r.db, OwnerComponentRelease, uuid)
+	ids, err := listIdentifiers(ctx, q, OwnerComponentRelease, uuid)
 	if err != nil {
 		return tea.ComponentRelease{}, err
 	}
-	distributions, err := listDistributionsForRelease(ctx, r.db, uuid)
+	distributions, err := listDistributionsForRelease(ctx, q, uuid)
 	if err != nil {
 		return tea.ComponentRelease{}, err
 	}

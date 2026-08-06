@@ -96,6 +96,57 @@ they don't get lost.
       assigned in strict per-owner creation order) instead of fixing the substitution engine.
 
 ## Product import/export bundle (this feature)
+- [x] ~~`bundle.Import` silently aliases content from two different, unrelated source servers
+      that happen to reuse the same UUID~~ -- fixed (2026-08-06): a source server's UUID is only
+      meaningful *within* that source server, but every `repo.Import*` method (and
+      `LinkComponent`, when reached via bundle import) did a bare check-then-insert on the key --
+      if it already existed locally, the call silently no-opped with no comparison of the
+      incoming content, so a second bundle from an unrelated server reusing the same UUID/
+      `(uuid, version)` would be treated as "already imported" and its real content dropped with
+      no trace. All 9 `Import*` methods (`ImportProduct`, `ImportComponent`,
+      `ImportProductRelease`, `ImportComponentRelease`, `ImportDistribution`, `ImportArtifact`,
+      `ImportCollection`, `ImportCLEEvent`, `ImportCLESupportDefinition`) now fetch the existing
+      row and compare content before treating a same-key match as idempotent, returning the new
+      `repo.ErrImportIdentityConflict` sentinel on a genuine mismatch instead of silently
+      succeeding (which the existing `WithTx`-based atomicity fix above then rolls back for
+      free). Added `ImportComponentLink` (`internal/repo/productrelease.go`) as a stricter
+      sibling to `LinkComponent` for the same reason -- `LinkComponent` itself is unchanged and
+      keeps its permissive UPSERT-on-conflict re-pin behavior for the regular admin API, where
+      re-pinning a component to a different release is a deliberate, correct action; bundle
+      import now calls `ImportComponentLink` instead. Found along the way and fixed as a
+      prerequisite: most `Get*` methods queried via `r.db` directly instead of `r.conn()`, which
+      is a latent deadlock hazard (not just staleness) given `internal/db/db.go` pins the
+      connection pool to a single connection -- code running inside `Repo.WithTx`/`runInTx`
+      holding that one connection would self-deadlock calling a `r.db`-routed `Get*`, not get a
+      stale read. Found a second, subtler layer of the same hazard while implementing the fix
+      (not caught by review beforehand): even `r.conn()`-based `Get*` methods aren't safe to call
+      *from inside* a `runInTx` closure when `runInTx` opens its own standalone transaction (the
+      common case when an `Import*` method is called directly, e.g. from a unit test, rather than
+      composed into an outer `Repo.WithTx` as `bundle.Import` always does) -- `r.conn()` evaluated
+      from inside such a closure still resolves to `r.db`, not the closure's own open `tx`. Fixed
+      by extracting every `Get*`'s query logic into a `dbtx`-parameterized twin (`getProductTx`,
+      `getComponentTx`, etc., mirroring the pre-existing `getDistributionTx` pattern) that the
+      conflict checks call directly with the closure's own `tx`, while the public `Get*` methods
+      become thin `r.conn()`-based wrappers. Regression test:
+      `TestImportArtifactConflictFailsFast` (`internal/repo/import_test.go`) calls
+      `ImportArtifact` directly on a fresh `*Repo` (forcing the standalone-transaction path) with
+      a short `context.WithTimeout`, and was verified to actually hang until timeout (not fail
+      fast) when the dbtx-twin fix is reverted -- the equivalent scenario exercised through
+      `bundle.Import` (`internal/bundle/import_test.go`'s `TestImportConflictDetection/artifact`)
+      does *not* reproduce this, since `bundle.Import` always calls through an outer `WithTx`
+      where `r.tx` is already set, which is exactly why the bug needed its own repo-level test.
+- [ ] Deliberately out of scope for the fix above (larger initiatives, not designed yet): (1)
+      full content-based deduplication across *different* source UUIDs -- e.g. reusing an
+      existing local artifact when its checksums match even though it arrived under a different
+      source UUID, which would need a new source-to-local identity mapping table extended across
+      all 7 entity types, plus a reuse-vs-import policy; a future version of this would run
+      *before* falling through to the collision check added above, not replace it. (2)
+      Signed-collection provenance preservation -- collection signing isn't implemented in this
+      project yet (see **Trust architecture overlay** above), so there's nothing to preserve
+      through import yet either.
+- [ ] CLE `EventID`/`SupersededByVersion` cross-references aren't validated for dangling
+      references on import either way (pre-existing gap, not touched or made worse by the
+      identity-conflict fix above).
 - [x] ~~Validate manifest.json against the bundle JSON Schema before writing anything to the
       repository~~ -- done: `bundle.Import` calls `ValidateManifest` on the raw bytes before
       `json.Unmarshal`, before any repo writes.

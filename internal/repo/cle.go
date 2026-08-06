@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/oej/opentea/pkg/tea"
@@ -83,24 +84,30 @@ func (r *Repo) CreateCLEEvent(ctx context.Context, ownerType, ownerUUID string, 
 	if err := tx.Commit(); err != nil {
 		return tea.CLEEvent{}, err
 	}
-	return r.getCLEEvent(ctx, ownerType, ownerUUID, id)
+	return getCLEEventTx(ctx, r.conn(), ownerType, ownerUUID, id)
 }
 
 // ImportCLEEvent creates the event at its exact source id if it doesn't
-// already exist -- preserving the literal id (rather than assigning the next
+// already exist, or leaves an existing one untouched if its content
+// matches -- preserving the literal id (rather than assigning the next
 // sequential one, as CreateCLEEvent does) is required so eventId
 // cross-references within the same bundle keep resolving correctly. See
-// ImportProduct for the identity/idempotency rationale.
+// ImportProduct for the identity/idempotency rationale. Returns
+// ErrImportIdentityConflict if (ownerType, ownerUUID, id) already exists
+// with different content.
 func (r *Repo) ImportCLEEvent(ctx context.Context, ownerType, ownerUUID string, e tea.CLEEvent) (created bool, err error) {
 	return runInTx(ctx, r, func(tx dbtx) (bool, error) {
-		var exists int
-		if err := tx.QueryRowContext(ctx, `SELECT 1 FROM cle_event WHERE owner_type = ? AND owner_uuid = ? AND id = ?`, ownerType, ownerUUID, e.ID).Scan(&exists); err == nil {
+		existing, err := getCLEEventTx(ctx, tx, ownerType, ownerUUID, e.ID)
+		if err == nil {
+			if cleEventConflicts(existing, e) {
+				return false, fmt.Errorf("%w: CLE event %s/%s/%d", ErrImportIdentityConflict, ownerType, ownerUUID, e.ID)
+			}
 			return false, nil
-		} else if !errors.Is(err, sql.ErrNoRows) {
+		} else if !errors.Is(err, ErrNotFound) {
 			return false, err
 		}
 
-		_, err := tx.ExecContext(ctx,
+		_, err = tx.ExecContext(ctx,
 			`INSERT INTO cle_event (owner_type, owner_uuid, id, type, effective, published, version, support_id, license, superseded_by_version, event_id_ref, reason, description)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			ownerType, ownerUUID, e.ID, e.Type, formatTime(e.Effective), formatTime(e.Published),
@@ -140,14 +147,72 @@ func (r *Repo) ImportCLEEvent(ctx context.Context, ownerType, ownerUUID string, 
 	})
 }
 
+// cleEventConflicts reports whether existing (already stored) differs from
+// e (being imported) in a way that means they're not the same event.
+// Unlike most other entities' conflict checks, there's no
+// denormalized/cached field to exclude here -- everything is the source's
+// own assertion.
+func cleEventConflicts(existing, e tea.CLEEvent) bool {
+	if existing.Type != e.Type {
+		return true
+	}
+	if !existing.Effective.Equal(e.Effective) {
+		return true
+	}
+	if !existing.Published.Equal(e.Published) {
+		return true
+	}
+	if existing.Version != e.Version {
+		return true
+	}
+	if !setEqual(existing.Versions, e.Versions) {
+		return true
+	}
+	if existing.SupportID != e.SupportID {
+		return true
+	}
+	if existing.License != e.License {
+		return true
+	}
+	if existing.SupersededByVersion != e.SupersededByVersion {
+		return true
+	}
+	if !setEqual(existing.Identifiers, e.Identifiers) {
+		return true
+	}
+	if !ptrEqual(existing.EventID, e.EventID) {
+		return true
+	}
+	if existing.Reason != e.Reason {
+		return true
+	}
+	if existing.Description != e.Description {
+		return true
+	}
+	return !setEqual(existing.References, e.References)
+}
+
 // ImportCLESupportDefinition creates the support definition if one with this
-// (ownerType, ownerUUID, id) doesn't already exist.
+// (ownerType, ownerUUID, id) doesn't already exist, or leaves an existing
+// one untouched if its content matches. Returns ErrImportIdentityConflict
+// if a definition with this (ownerType, ownerUUID, id) already exists with
+// different content. Unlike artifact/distribution URLs, URL here points to
+// an external support-policy document that's never rewritten at import
+// time, so it's real identity and is compared.
 func (r *Repo) ImportCLESupportDefinition(ctx context.Context, ownerType, ownerUUID string, def tea.CLESupportDefinition) (created bool, err error) {
 	return runInTx(ctx, r, func(tx dbtx) (bool, error) {
-		var exists int
-		if err := tx.QueryRowContext(ctx, `SELECT 1 FROM cle_support_definition WHERE owner_type = ? AND owner_uuid = ? AND id = ?`, ownerType, ownerUUID, def.ID).Scan(&exists); err == nil {
+		var description string
+		var url sql.NullString
+		err := tx.QueryRowContext(ctx, `SELECT description, url FROM cle_support_definition WHERE owner_type = ? AND owner_uuid = ? AND id = ?`,
+			ownerType, ownerUUID, def.ID,
+		).Scan(&description, &url)
+		switch {
+		case err == nil:
+			if description != def.Description || url.String != def.URL {
+				return false, fmt.Errorf("%w: CLE support definition %s/%s/%s", ErrImportIdentityConflict, ownerType, ownerUUID, def.ID)
+			}
 			return false, nil
-		} else if !errors.Is(err, sql.ErrNoRows) {
+		case !errors.Is(err, sql.ErrNoRows):
 			return false, err
 		}
 
@@ -179,7 +244,13 @@ func (r *Repo) CreateCLESupportDefinition(ctx context.Context, ownerType, ownerU
 // has no events yet, matching "GET .../cle" being a valid call on any
 // existing product/release even before any lifecycle events are recorded.
 func (r *Repo) GetCLE(ctx context.Context, ownerType, ownerUUID string) (tea.CLE, error) {
-	rows, err := r.db.QueryContext(ctx,
+	return getCLETx(ctx, r.conn(), ownerType, ownerUUID)
+}
+
+// getCLETx is GetCLE's logic parameterized over a dbtx -- see product.go's
+// getProductTx doc comment for why this exists.
+func getCLETx(ctx context.Context, q dbtx, ownerType, ownerUUID string) (tea.CLE, error) {
+	rows, err := q.QueryContext(ctx,
 		`SELECT id FROM cle_event WHERE owner_type = ? AND owner_uuid = ? ORDER BY id DESC`, ownerType, ownerUUID)
 	if err != nil {
 		return tea.CLE{}, err
@@ -201,14 +272,14 @@ func (r *Repo) GetCLE(ctx context.Context, ownerType, ownerUUID string) (tea.CLE
 
 	events := []tea.CLEEvent{}
 	for _, id := range ids {
-		e, err := r.getCLEEvent(ctx, ownerType, ownerUUID, id)
+		e, err := getCLEEventTx(ctx, q, ownerType, ownerUUID, id)
 		if err != nil {
 			return tea.CLE{}, err
 		}
 		events = append(events, e)
 	}
 
-	defs, err := r.listCLESupportDefinitions(ctx, ownerType, ownerUUID)
+	defs, err := listCLESupportDefinitions(ctx, q, ownerType, ownerUUID)
 	if err != nil {
 		return tea.CLE{}, err
 	}
@@ -220,18 +291,23 @@ func (r *Repo) GetCLE(ctx context.Context, ownerType, ownerUUID string) (tea.CLE
 	return cle, nil
 }
 
-func (r *Repo) getCLEEvent(ctx context.Context, ownerType, ownerUUID string, id int) (tea.CLEEvent, error) {
+// getCLEEventTx fetches one CLE event by its exact (ownerType, ownerUUID,
+// id) key. Returns ErrNotFound if it doesn't exist.
+func getCLEEventTx(ctx context.Context, q dbtx, ownerType, ownerUUID string, id int) (tea.CLEEvent, error) {
 	var (
 		eventType                                                      string
 		effective, published                                           string
 		version, supportID, license, supersededByVersion, reason, desc sql.NullString
 		eventIDRef                                                     sql.NullInt64
 	)
-	err := r.db.QueryRowContext(ctx,
+	err := q.QueryRowContext(ctx,
 		`SELECT type, effective, published, version, support_id, license, superseded_by_version, event_id_ref, reason, description
 		 FROM cle_event WHERE owner_type = ? AND owner_uuid = ? AND id = ?`,
 		ownerType, ownerUUID, id,
 	).Scan(&eventType, &effective, &published, &version, &supportID, &license, &supersededByVersion, &eventIDRef, &reason, &desc)
+	if errors.Is(err, sql.ErrNoRows) {
+		return tea.CLEEvent{}, ErrNotFound
+	}
 	if err != nil {
 		return tea.CLEEvent{}, err
 	}
@@ -245,15 +321,15 @@ func (r *Repo) getCLEEvent(ctx context.Context, ownerType, ownerUUID string, id 
 		return tea.CLEEvent{}, err
 	}
 
-	versions, err := r.listCLEEventVersions(ctx, ownerType, ownerUUID, id)
+	versions, err := listCLEEventVersions(ctx, q, ownerType, ownerUUID, id)
 	if err != nil {
 		return tea.CLEEvent{}, err
 	}
-	identifiers, err := r.listCLEEventIdentifiers(ctx, ownerType, ownerUUID, id)
+	identifiers, err := listCLEEventIdentifiers(ctx, q, ownerType, ownerUUID, id)
 	if err != nil {
 		return tea.CLEEvent{}, err
 	}
-	references, err := r.listCLEEventReferences(ctx, ownerType, ownerUUID, id)
+	references, err := listCLEEventReferences(ctx, q, ownerType, ownerUUID, id)
 	if err != nil {
 		return tea.CLEEvent{}, err
 	}
@@ -280,8 +356,8 @@ func (r *Repo) getCLEEvent(ctx context.Context, ownerType, ownerUUID string, id 
 	return e, nil
 }
 
-func (r *Repo) listCLEEventVersions(ctx context.Context, ownerType, ownerUUID string, eventID int) ([]tea.CLEVersionSpecifier, error) {
-	rows, err := r.db.QueryContext(ctx,
+func listCLEEventVersions(ctx context.Context, q dbtx, ownerType, ownerUUID string, eventID int) ([]tea.CLEVersionSpecifier, error) {
+	rows, err := q.QueryContext(ctx,
 		`SELECT version, version_range FROM cle_event_version WHERE owner_type = ? AND owner_uuid = ? AND event_id = ?`,
 		ownerType, ownerUUID, eventID)
 	if err != nil {
@@ -300,8 +376,8 @@ func (r *Repo) listCLEEventVersions(ctx context.Context, ownerType, ownerUUID st
 	return out, rows.Err()
 }
 
-func (r *Repo) listCLEEventIdentifiers(ctx context.Context, ownerType, ownerUUID string, eventID int) ([]tea.Identifier, error) {
-	rows, err := r.db.QueryContext(ctx,
+func listCLEEventIdentifiers(ctx context.Context, q dbtx, ownerType, ownerUUID string, eventID int) ([]tea.Identifier, error) {
+	rows, err := q.QueryContext(ctx,
 		`SELECT id_type, id_value FROM cle_event_identifier WHERE owner_type = ? AND owner_uuid = ? AND event_id = ?`,
 		ownerType, ownerUUID, eventID)
 	if err != nil {
@@ -320,8 +396,8 @@ func (r *Repo) listCLEEventIdentifiers(ctx context.Context, ownerType, ownerUUID
 	return out, rows.Err()
 }
 
-func (r *Repo) listCLEEventReferences(ctx context.Context, ownerType, ownerUUID string, eventID int) ([]string, error) {
-	rows, err := r.db.QueryContext(ctx,
+func listCLEEventReferences(ctx context.Context, q dbtx, ownerType, ownerUUID string, eventID int) ([]string, error) {
+	rows, err := q.QueryContext(ctx,
 		`SELECT uri FROM cle_event_reference WHERE owner_type = ? AND owner_uuid = ? AND event_id = ?`,
 		ownerType, ownerUUID, eventID)
 	if err != nil {
@@ -340,8 +416,8 @@ func (r *Repo) listCLEEventReferences(ctx context.Context, ownerType, ownerUUID 
 	return out, rows.Err()
 }
 
-func (r *Repo) listCLESupportDefinitions(ctx context.Context, ownerType, ownerUUID string) ([]tea.CLESupportDefinition, error) {
-	rows, err := r.db.QueryContext(ctx,
+func listCLESupportDefinitions(ctx context.Context, q dbtx, ownerType, ownerUUID string) ([]tea.CLESupportDefinition, error) {
+	rows, err := q.QueryContext(ctx,
 		`SELECT id, description, url FROM cle_support_definition WHERE owner_type = ? AND owner_uuid = ?`, ownerType, ownerUUID)
 	if err != nil {
 		return nil, err

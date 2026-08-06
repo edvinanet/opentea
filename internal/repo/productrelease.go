@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/oej/opentea/internal/idgen"
@@ -71,19 +72,24 @@ type ImportProductReleaseInput struct {
 }
 
 // ImportProductRelease creates the release with an explicit UUID if it
-// doesn't already exist; a second import of the same UUID is a no-op
-// (created=false), not a merge. Component links are handled separately via
-// the existing idempotent LinkComponent.
+// doesn't already exist; a second import of the same UUID with matching
+// content is a no-op (created=false), not a merge. Component links are
+// handled separately via ImportComponentLink. Returns
+// ErrImportIdentityConflict if a release with this UUID already exists
+// with different content -- see ErrImportIdentityConflict's doc comment.
 func (r *Repo) ImportProductRelease(ctx context.Context, in ImportProductReleaseInput) (created bool, err error) {
 	return runInTx(ctx, r, func(tx dbtx) (bool, error) {
-		var exists int
-		if err := tx.QueryRowContext(ctx, `SELECT 1 FROM product_release WHERE uuid = ?`, in.UUID).Scan(&exists); err == nil {
+		existing, err := getProductReleaseTx(ctx, tx, in.UUID)
+		if err == nil {
+			if productReleaseConflicts(existing, in) {
+				return false, fmt.Errorf("%w: product release %s", ErrImportIdentityConflict, in.UUID)
+			}
 			return false, nil
-		} else if !errors.Is(err, sql.ErrNoRows) {
+		} else if !errors.Is(err, ErrNotFound) {
 			return false, err
 		}
 
-		_, err := tx.ExecContext(ctx,
+		_, err = tx.ExecContext(ctx,
 			`INSERT INTO product_release (uuid, product_uuid, product_name, version, created_date, release_date, pre_release) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 			in.UUID, in.ProductUUID, in.ProductName, in.Version, formatTime(in.CreatedDate), formatTimePtr(in.ReleaseDate), boolToInt(in.PreRelease),
 		)
@@ -97,9 +103,46 @@ func (r *Repo) ImportProductRelease(ctx context.Context, in ImportProductRelease
 	})
 }
 
+// productReleaseConflicts reports whether existing (already stored) differs
+// from in (being imported) in a way that means they're not the same
+// release. ProductName is deliberately excluded: it's a denormalized cache
+// of the product's name at export time, which can legitimately drift if
+// the source product was renamed between two otherwise-unrelated exports
+// of the same release -- not a real identity signal (see
+// ImportProductReleaseInput's doc comment). Components (the release's
+// linked components) is also excluded: that's owned by
+// ImportComponentLink's own conflict check, not this one -- comparing it
+// here would conflate two different conflict sources under one confusing
+// error.
+func productReleaseConflicts(existing tea.ProductRelease, in ImportProductReleaseInput) bool {
+	if existing.Product == nil || *existing.Product != in.ProductUUID {
+		return true
+	}
+	if existing.Version != in.Version {
+		return true
+	}
+	if !existing.CreatedDate.Equal(in.CreatedDate) {
+		return true
+	}
+	if !timePtrEqual(existing.ReleaseDate, in.ReleaseDate) {
+		return true
+	}
+	existingPreRelease := existing.PreRelease != nil && *existing.PreRelease
+	if existingPreRelease != in.PreRelease {
+		return true
+	}
+	return !setEqual(existing.Identifiers, in.Identifiers)
+}
+
 // GetProductRelease fetches a product release by UUID, including its
 // identifiers and linked components. Returns ErrNotFound if uuid doesn't exist.
 func (r *Repo) GetProductRelease(ctx context.Context, uuid string) (tea.ProductRelease, error) {
+	return getProductReleaseTx(ctx, r.conn(), uuid)
+}
+
+// getProductReleaseTx is GetProductRelease's logic parameterized over a
+// dbtx -- see product.go's getProductTx doc comment for why this exists.
+func getProductReleaseTx(ctx context.Context, q dbtx, uuid string) (tea.ProductRelease, error) {
 	var (
 		productUUID sql.NullString
 		productName sql.NullString
@@ -108,7 +151,7 @@ func (r *Repo) GetProductRelease(ctx context.Context, uuid string) (tea.ProductR
 		releaseDate sql.NullString
 		preRelease  int
 	)
-	err := r.conn().QueryRowContext(ctx,
+	err := q.QueryRowContext(ctx,
 		`SELECT product_uuid, product_name, version, created_date, release_date, pre_release FROM product_release WHERE uuid = ?`, uuid,
 	).Scan(&productUUID, &productName, &version, &createdDate, &releaseDate, &preRelease)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -127,11 +170,11 @@ func (r *Repo) GetProductRelease(ctx context.Context, uuid string) (tea.ProductR
 		return tea.ProductRelease{}, err
 	}
 
-	ids, err := listIdentifiers(ctx, r.conn(), OwnerProductRelease, uuid)
+	ids, err := listIdentifiers(ctx, q, OwnerProductRelease, uuid)
 	if err != nil {
 		return tea.ProductRelease{}, err
 	}
-	components, err := listProductReleaseComponents(ctx, r.conn(), uuid)
+	components, err := listProductReleaseComponents(ctx, q, uuid)
 	if err != nil {
 		return tea.ProductRelease{}, err
 	}
@@ -180,6 +223,9 @@ func listProductReleaseComponents(ctx context.Context, q dbtx, productReleaseUUI
 
 // LinkComponent adds (or replaces the pin for) a component reference on a
 // product release -- the admin-API stand-in for productRelease.components[].
+// Deliberately permissive (UPSERT-on-conflict): an admin re-pinning a
+// component to a different release is a normal, correct action here. Bundle
+// import uses the stricter ImportComponentLink instead -- see there.
 func (r *Repo) LinkComponent(ctx context.Context, productReleaseUUID string, ref tea.ComponentRef) (tea.ProductRelease, error) {
 	if _, err := r.conn().ExecContext(ctx,
 		`INSERT INTO product_release_component (product_release_uuid, component_uuid, component_release_uuid) VALUES (?, ?, ?)
@@ -189,6 +235,47 @@ func (r *Repo) LinkComponent(ctx context.Context, productReleaseUUID string, ref
 		return tea.ProductRelease{}, err
 	}
 	return r.GetProductRelease(ctx, productReleaseUUID)
+}
+
+// ImportComponentLink adds a component reference on a product release
+// during bundle import, or leaves an existing link untouched if it already
+// points at the same release -- unlike LinkComponent, this does NOT
+// silently re-pin on conflict: a source server's (productReleaseUUID,
+// componentUUID) pair is only meaningful within that source server, so a
+// same-pair collision pinning a *different* release means two unrelated
+// links, not the same one re-imported (same rationale as
+// ErrImportIdentityConflict generally -- see its doc comment). Returns
+// ErrImportIdentityConflict in that case.
+func (r *Repo) ImportComponentLink(ctx context.Context, productReleaseUUID string, ref tea.ComponentRef) error {
+	_, err := runInTx(ctx, r, func(tx dbtx) (bool, error) {
+		var existingRelease sql.NullString
+		err := tx.QueryRowContext(ctx,
+			`SELECT component_release_uuid FROM product_release_component WHERE product_release_uuid = ? AND component_uuid = ?`,
+			productReleaseUUID, ref.UUID,
+		).Scan(&existingRelease)
+		switch {
+		case err == nil:
+			var existing *string
+			if existingRelease.Valid {
+				existing = &existingRelease.String
+			}
+			if !ptrEqual(existing, ref.Release) {
+				return false, fmt.Errorf("%w: component link %s/%s", ErrImportIdentityConflict, productReleaseUUID, ref.UUID)
+			}
+			return false, nil
+		case !errors.Is(err, sql.ErrNoRows):
+			return false, err
+		}
+
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO product_release_component (product_release_uuid, component_uuid, component_release_uuid) VALUES (?, ?, ?)`,
+			productReleaseUUID, ref.UUID, ref.Release,
+		); err != nil {
+			return false, err
+		}
+		return true, nil
+	})
+	return err
 }
 
 func productReleaseSortColumn(sortField string) (string, error) {

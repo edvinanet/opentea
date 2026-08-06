@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/oej/opentea/internal/pagination"
@@ -110,15 +111,21 @@ type ImportCollectionInput struct {
 }
 
 // ImportCollection creates the collection version if it doesn't already
-// exist -- see ImportProduct for the identity/idempotency rationale. Like
-// artifacts, collections are versioned, so a bundle can introduce a new
-// version of a collection the target already has earlier versions of.
+// exist, or leaves an existing one untouched if its content matches -- see
+// ImportProduct for the identity/idempotency rationale. Like artifacts,
+// collections are versioned, so a bundle can introduce a new version of a
+// collection the target already has earlier versions of. Returns
+// ErrImportIdentityConflict if (uuid, version) already exists with
+// different content.
 func (r *Repo) ImportCollection(ctx context.Context, in ImportCollectionInput) (created bool, err error) {
 	return runInTx(ctx, r, func(tx dbtx) (bool, error) {
-		var exists int
-		if err := tx.QueryRowContext(ctx, `SELECT 1 FROM collection WHERE uuid = ? AND version = ?`, in.UUID, in.Version).Scan(&exists); err == nil {
+		existing, err := getCollectionByVersionTx(ctx, tx, in.UUID, in.Version)
+		if err == nil {
+			if collectionConflicts(existing, in) {
+				return false, fmt.Errorf("%w: collection %s version %d", ErrImportIdentityConflict, in.UUID, in.Version)
+			}
 			return false, nil
-		} else if !errors.Is(err, sql.ErrNoRows) {
+		} else if !errors.Is(err, ErrNotFound) {
 			return false, err
 		}
 
@@ -150,11 +157,36 @@ func (r *Repo) ImportCollection(ctx context.Context, in ImportCollectionInput) (
 	})
 }
 
+// collectionConflicts reports whether existing (already stored) differs
+// from in (being imported) in a way that means they're not the same
+// collection version. Artifacts is reduced to a set of {UUID,Version}
+// pairs rather than compared by full artifact body: an artifact-content
+// conflict is already caught by ImportArtifact itself, which runs before
+// ImportCollection in internal/bundle/import.go's import order --
+// comparing full bodies here would double-report the same conflict under
+// a confusing "collection conflict" label.
+func collectionConflicts(existing tea.Collection, in ImportCollectionInput) bool {
+	if existing.BelongsTo != in.BelongsTo {
+		return true
+	}
+	if !existing.Date.Equal(in.Date) {
+		return true
+	}
+	if !ptrEqual(existing.UpdateReason, in.UpdateReason) {
+		return true
+	}
+	existingRefs := make([]ArtifactRef, len(existing.Artifacts))
+	for i, a := range existing.Artifacts {
+		existingRefs[i] = ArtifactRef{UUID: a.UUID, Version: a.Version}
+	}
+	return !setEqual(existingRefs, in.Artifacts)
+}
+
 // GetLatestCollection fetches the highest-versioned collection for
 // ownerUUID. Returns ErrNotFound if ownerUUID has no collections yet.
 func (r *Repo) GetLatestCollection(ctx context.Context, ownerUUID string) (tea.Collection, error) {
 	var version sql.NullInt64
-	if err := r.db.QueryRowContext(ctx, `SELECT MAX(version) FROM collection WHERE uuid = ?`, ownerUUID).Scan(&version); err != nil {
+	if err := r.conn().QueryRowContext(ctx, `SELECT MAX(version) FROM collection WHERE uuid = ?`, ownerUUID).Scan(&version); err != nil {
 		return tea.Collection{}, err
 	}
 	if !version.Valid {
@@ -167,12 +199,19 @@ func (r *Repo) GetLatestCollection(ctx context.Context, ownerUUID string) (tea.C
 // ownerUUID, including its artifacts. Returns ErrNotFound if that
 // (ownerUUID, version) pair doesn't exist.
 func (r *Repo) GetCollectionByVersion(ctx context.Context, ownerUUID string, version int) (tea.Collection, error) {
+	return getCollectionByVersionTx(ctx, r.conn(), ownerUUID, version)
+}
+
+// getCollectionByVersionTx is GetCollectionByVersion's logic parameterized
+// over a dbtx -- see product.go's getProductTx doc comment for why this
+// exists.
+func getCollectionByVersionTx(ctx context.Context, q dbtx, ownerUUID string, version int) (tea.Collection, error) {
 	var (
 		date                  string
 		belongsTo             string
 		reasonType, reasonCmt sql.NullString
 	)
-	err := r.db.QueryRowContext(ctx,
+	err := q.QueryRowContext(ctx,
 		`SELECT date, belongs_to, update_reason_type, update_reason_comment FROM collection WHERE uuid = ? AND version = ?`, ownerUUID, version,
 	).Scan(&date, &belongsTo, &reasonType, &reasonCmt)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -187,7 +226,7 @@ func (r *Repo) GetCollectionByVersion(ctx context.Context, ownerUUID string, ver
 		return tea.Collection{}, err
 	}
 
-	artifacts, err := r.listCollectionArtifacts(ctx, ownerUUID, version)
+	artifacts, err := listCollectionArtifacts(ctx, q, ownerUUID, version)
 	if err != nil {
 		return tea.Collection{}, err
 	}
@@ -205,8 +244,8 @@ func (r *Repo) GetCollectionByVersion(ctx context.Context, ownerUUID string, ver
 	return c, nil
 }
 
-func (r *Repo) listCollectionArtifacts(ctx context.Context, ownerUUID string, version int) ([]tea.Artifact, error) {
-	rows, err := r.db.QueryContext(ctx,
+func listCollectionArtifacts(ctx context.Context, q dbtx, ownerUUID string, version int) ([]tea.Artifact, error) {
+	rows, err := q.QueryContext(ctx,
 		`SELECT artifact_uuid, artifact_version FROM collection_artifact WHERE collection_uuid = ? AND collection_version = ? ORDER BY rowid`,
 		ownerUUID, version)
 	if err != nil {
@@ -233,7 +272,7 @@ func (r *Repo) listCollectionArtifacts(ctx context.Context, ownerUUID string, ve
 
 	out := []tea.Artifact{}
 	for _, rf := range refs {
-		a, err := r.GetArtifactByVersion(ctx, rf.uuid, rf.version)
+		a, err := getArtifactByVersionTx(ctx, q, rf.uuid, rf.version)
 		if err != nil {
 			return nil, err
 		}

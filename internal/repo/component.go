@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 
 	"github.com/oej/opentea/internal/idgen"
 	"github.com/oej/opentea/internal/pagination"
@@ -34,13 +35,16 @@ func (r *Repo) CreateComponent(ctx context.Context, name string, identifiers []t
 }
 
 // ImportComponent mirrors ImportProduct -- see there for the identity/
-// idempotency rationale.
+// idempotency/ErrImportIdentityConflict rationale.
 func (r *Repo) ImportComponent(ctx context.Context, uuid, name string, identifiers []tea.Identifier) (created bool, err error) {
 	return runInTx(ctx, r, func(tx dbtx) (bool, error) {
-		var exists int
-		if err := tx.QueryRowContext(ctx, `SELECT 1 FROM component WHERE uuid = ?`, uuid).Scan(&exists); err == nil {
+		existing, err := getComponentTx(ctx, tx, uuid)
+		if err == nil {
+			if existing.Name != name || !setEqual(existing.Identifiers, identifiers) {
+				return false, fmt.Errorf("%w: component %s", ErrImportIdentityConflict, uuid)
+			}
 			return false, nil
-		} else if !errors.Is(err, sql.ErrNoRows) {
+		} else if !errors.Is(err, ErrNotFound) {
 			return false, err
 		}
 
@@ -56,8 +60,14 @@ func (r *Repo) ImportComponent(ctx context.Context, uuid, name string, identifie
 
 // GetComponent fetches a component by UUID. Returns ErrNotFound if uuid doesn't exist.
 func (r *Repo) GetComponent(ctx context.Context, uuid string) (tea.Component, error) {
+	return getComponentTx(ctx, r.conn(), uuid)
+}
+
+// getComponentTx is GetComponent's logic parameterized over a dbtx --
+// see product.go's getProductTx doc comment for why this exists.
+func getComponentTx(ctx context.Context, q dbtx, uuid string) (tea.Component, error) {
 	var name string
-	err := r.db.QueryRowContext(ctx, `SELECT name FROM component WHERE uuid = ?`, uuid).Scan(&name)
+	err := q.QueryRowContext(ctx, `SELECT name FROM component WHERE uuid = ?`, uuid).Scan(&name)
 	if errors.Is(err, sql.ErrNoRows) {
 		return tea.Component{}, ErrNotFound
 	}
@@ -65,7 +75,7 @@ func (r *Repo) GetComponent(ctx context.Context, uuid string) (tea.Component, er
 		return tea.Component{}, err
 	}
 
-	ids, err := listIdentifiers(ctx, r.db, OwnerComponent, uuid)
+	ids, err := listIdentifiers(ctx, q, OwnerComponent, uuid)
 	if err != nil {
 		return tea.Component{}, err
 	}

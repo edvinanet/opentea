@@ -4,6 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/oej/opentea/internal/idgen"
@@ -94,16 +97,22 @@ type ImportArtifactInput struct {
 }
 
 // ImportArtifact creates the artifact revision at the explicit (uuid,
-// version) if it doesn't already exist -- see ImportProduct for the
-// identity/idempotency rationale. Artifacts are versioned, so re-importing
-// the same (uuid, version) is a no-op, but a bundle can still introduce a
-// new version of an artifact the target already has some revisions of.
+// version) if it doesn't already exist, or leaves an existing one untouched
+// if its content matches -- see ImportProduct for the identity/idempotency
+// rationale. Artifacts are versioned, so re-importing the same (uuid,
+// version) is a no-op, but a bundle can still introduce a new version of an
+// artifact the target already has some revisions of. Returns
+// ErrImportIdentityConflict if (uuid, version) already exists with
+// different content.
 func (r *Repo) ImportArtifact(ctx context.Context, in ImportArtifactInput) (created bool, err error) {
 	return runInTx(ctx, r, func(tx dbtx) (bool, error) {
-		var exists int
-		if err := tx.QueryRowContext(ctx, `SELECT 1 FROM artifact WHERE uuid = ? AND version = ?`, in.UUID, in.Version).Scan(&exists); err == nil {
+		existing, err := getArtifactByVersionTx(ctx, tx, in.UUID, in.Version)
+		if err == nil {
+			if artifactConflicts(existing, in) {
+				return false, fmt.Errorf("%w: artifact %s version %d", ErrImportIdentityConflict, in.UUID, in.Version)
+			}
 			return false, nil
-		} else if !errors.Is(err, sql.ErrNoRows) {
+		} else if !errors.Is(err, ErrNotFound) {
 			return false, err
 		}
 
@@ -140,11 +149,54 @@ func (r *Repo) ImportArtifact(ctx context.Context, in ImportArtifactInput) (crea
 	})
 }
 
+// artifactConflicts reports whether existing (already stored) differs from
+// in (being imported) in a way that means they're not the same artifact
+// revision. Formats' URL/SignatureURL are excluded from the comparison --
+// same rewritten-URL reasoning as distribution.go's ImportDistribution.
+func artifactConflicts(existing tea.Artifact, in ImportArtifactInput) bool {
+	if existing.Name != in.Name {
+		return true
+	}
+	if existing.Type != in.Type {
+		return true
+	}
+	if !timePtrEqual(existing.CreatedDate, in.CreatedDate) {
+		return true
+	}
+	if !setEqual(existing.DistributionIDs, in.DistributionIDs) {
+		return true
+	}
+	existingKeys := make([]string, len(existing.Formats))
+	for i, f := range existing.Formats {
+		existingKeys[i] = artifactFormatKey(f.MediaType, f.Description, f.Checksums)
+	}
+	inKeys := make([]string, len(in.Formats))
+	for i, f := range in.Formats {
+		inKeys[i] = artifactFormatKey(f.MediaType, f.Description, f.Checksums)
+	}
+	return !setEqual(existingKeys, inKeys)
+}
+
+// artifactFormatKey builds a canonical, order-independent string identity
+// for one artifact format's content -- formats have a randomly-generated
+// surrogate id, not a content-derived one, so there's no stable "same
+// format" identity across two different bundles' artifact definitions to
+// compare positionally; this key lets setEqual compare them as a set
+// instead.
+func artifactFormatKey(mediaType, description string, checksums []tea.Checksum) string {
+	keys := make([]string, len(checksums))
+	for i, c := range checksums {
+		keys[i] = c.AlgType + "=" + c.AlgValue
+	}
+	sort.Strings(keys)
+	return mediaType + "\x00" + description + "\x00" + strings.Join(keys, "\x01")
+}
+
 // GetArtifactLatest fetches the highest-versioned revision of artifact
 // uuid. Returns ErrNotFound if uuid has no revisions.
 func (r *Repo) GetArtifactLatest(ctx context.Context, uuid string) (tea.Artifact, error) {
 	var version sql.NullInt64
-	if err := r.db.QueryRowContext(ctx, `SELECT MAX(version) FROM artifact WHERE uuid = ?`, uuid).Scan(&version); err != nil {
+	if err := r.conn().QueryRowContext(ctx, `SELECT MAX(version) FROM artifact WHERE uuid = ?`, uuid).Scan(&version); err != nil {
 		return tea.Artifact{}, err
 	}
 	if !version.Valid {
@@ -156,10 +208,17 @@ func (r *Repo) GetArtifactLatest(ctx context.Context, uuid string) (tea.Artifact
 // GetArtifactByVersion fetches one specific revision of artifact uuid.
 // Returns ErrNotFound if that (uuid, version) pair doesn't exist.
 func (r *Repo) GetArtifactByVersion(ctx context.Context, uuid string, version int) (tea.Artifact, error) {
+	return getArtifactByVersionTx(ctx, r.conn(), uuid, version)
+}
+
+// getArtifactByVersionTx is GetArtifactByVersion's logic parameterized
+// over a dbtx -- see product.go's getProductTx doc comment for why this
+// exists.
+func getArtifactByVersionTx(ctx context.Context, q dbtx, uuid string, version int) (tea.Artifact, error) {
 	var name sql.NullString
 	var artifactType string
 	var createdDate sql.NullString
-	err := r.db.QueryRowContext(ctx,
+	err := q.QueryRowContext(ctx,
 		`SELECT name, type, created_date FROM artifact WHERE uuid = ? AND version = ?`, uuid, version,
 	).Scan(&name, &artifactType, &createdDate)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -174,11 +233,11 @@ func (r *Repo) GetArtifactByVersion(ctx context.Context, uuid string, version in
 		return tea.Artifact{}, err
 	}
 
-	distIDs, err := listArtifactDistributionIDs(ctx, r.db, uuid, version)
+	distIDs, err := listArtifactDistributionIDs(ctx, q, uuid, version)
 	if err != nil {
 		return tea.Artifact{}, err
 	}
-	formats, err := listArtifactFormats(ctx, r.db, uuid, version)
+	formats, err := listArtifactFormats(ctx, q, uuid, version)
 	if err != nil {
 		return tea.Artifact{}, err
 	}

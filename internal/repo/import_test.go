@@ -2,6 +2,7 @@ package repo
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -19,7 +20,7 @@ func TestImportProductIdempotent(t *testing.T) {
 	if err != nil || !created {
 		t.Fatalf("first ImportProduct: created=%v err=%v", created, err)
 	}
-	created, err = r.ImportProduct(ctx, uuid, "Foo (renamed elsewhere)", nil)
+	created, err = r.ImportProduct(ctx, uuid, "Foo", ids)
 	if err != nil || created {
 		t.Fatalf("second ImportProduct: created=%v err=%v, want created=false", created, err)
 	}
@@ -29,10 +30,42 @@ func TestImportProductIdempotent(t *testing.T) {
 		t.Fatalf("GetProduct: %v", err)
 	}
 	if got.Name != "Foo" {
-		t.Fatalf("Name = %q, want original %q (second import must not overwrite)", got.Name, "Foo")
+		t.Fatalf("Name = %q, want original %q", got.Name, "Foo")
 	}
 	if len(got.Identifiers) != 1 {
 		t.Fatalf("Identifiers = %+v, want the original single identifier (no duplication)", got.Identifiers)
+	}
+}
+
+// TestImportProductConflict asserts the fix this session's redesign is
+// about: a source server's UUID is only meaningful within that source
+// server, so re-importing the same UUID with genuinely different content
+// (as would happen if two unrelated source servers independently assigned
+// the same UUID) must be rejected, not silently ignored -- see
+// ErrImportIdentityConflict's doc comment.
+func TestImportProductConflict(t *testing.T) {
+	ctx := context.Background()
+	r := newTestRepo(t)
+	uuid := idgen.New()
+
+	created, err := r.ImportProduct(ctx, uuid, "Foo", []tea.Identifier{{IDType: "PURL", IDValue: "pkg:generic/foo"}})
+	if err != nil || !created {
+		t.Fatalf("first ImportProduct: created=%v err=%v", created, err)
+	}
+	created, err = r.ImportProduct(ctx, uuid, "Foo (renamed elsewhere)", nil)
+	if !errors.Is(err, ErrImportIdentityConflict) {
+		t.Fatalf("second ImportProduct: err=%v, want ErrImportIdentityConflict", err)
+	}
+	if created {
+		t.Fatalf("second ImportProduct: created=%v, want false on conflict", created)
+	}
+
+	got, err := r.GetProduct(ctx, uuid)
+	if err != nil {
+		t.Fatalf("GetProduct: %v", err)
+	}
+	if got.Name != "Foo" {
+		t.Fatalf("Name = %q, want original %q (rejected import must not overwrite)", got.Name, "Foo")
 	}
 }
 
@@ -265,6 +298,52 @@ func TestImportCLEEventIdempotent(t *testing.T) {
 	}
 	if cle.Events[0].ID != 5 {
 		t.Fatalf("Events[0].ID = %d, want the preserved source id 5", cle.Events[0].ID)
+	}
+}
+
+// TestImportArtifactConflictFailsFast is the regression test for this
+// session's r.conn()/dbtx-twin deadlock fix: internal/db/db.go pins the
+// connection pool to a single connection, so a conflict check that wrongly
+// called back through an r.conn()-routed Get* method (rather than a dbtx-
+// parameterized twin) from inside runInTx's own standalone transaction
+// would try to check out a second connection while the first is still held
+// -- a self-deadlock, not a stale read. This only reproduces when
+// ImportArtifact is called directly on a fresh *Repo (r.tx == nil), which
+// makes runInTx open its own standalone transaction; called from inside an
+// outer Repo.WithTx (as internal/bundle.Import always does), r.tx is
+// already set and runInTx reuses it, masking the bug -- see
+// internal/bundle/import_test.go's TestImportConflictDetection/artifact,
+// which exercises the same conflict logic but would NOT catch this
+// particular regression. A short context.WithTimeout is used because
+// context.Background() would just hang forever, not fail, if this
+// regressed.
+func TestImportArtifactConflictFailsFast(t *testing.T) {
+	ctx := context.Background()
+	r := newTestRepo(t)
+	uuid := idgen.New()
+	in := ImportArtifactInput{
+		UUID:    uuid,
+		Version: 1,
+		Type:    "BOM",
+		Formats: []ImportArtifactFormatInput{
+			{MediaType: "application/json", Checksums: []tea.Checksum{{AlgType: "SHA-256", AlgValue: "xyz789"}}},
+		},
+	}
+	if _, err := r.ImportArtifact(ctx, in); err != nil {
+		t.Fatalf("first ImportArtifact: %v", err)
+	}
+
+	conflicting := in
+	conflicting.Type = "VULNERABILITIES"
+
+	shortCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	_, err := r.ImportArtifact(shortCtx, conflicting)
+	if errors.Is(err, context.DeadlineExceeded) {
+		t.Fatal("ImportArtifact hung until context deadline instead of failing fast -- likely a regression of the r.conn()/dbtx-twin deadlock fix")
+	}
+	if !errors.Is(err, ErrImportIdentityConflict) {
+		t.Fatalf("second ImportArtifact: err = %v, want ErrImportIdentityConflict", err)
 	}
 }
 

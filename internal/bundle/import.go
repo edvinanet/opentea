@@ -193,7 +193,7 @@ func importComponentReleases(ctx context.Context, r *repo.Repo, m Manifest, sha2
 func importComponentLinks(ctx context.Context, r *repo.Repo, m Manifest) error {
 	for _, pr := range m.ProductReleases {
 		for _, ref := range pr.Components {
-			if _, err := r.LinkComponent(ctx, pr.UUID, ref); err != nil {
+			if err := r.ImportComponentLink(ctx, pr.UUID, ref); err != nil {
 				return fmt.Errorf("link component %s to product release %s: %w", ref.UUID, pr.UUID, err)
 			}
 		}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 
 	"github.com/oej/opentea/internal/idgen"
 	"github.com/oej/opentea/internal/pagination"
@@ -36,14 +37,22 @@ func (r *Repo) CreateProduct(ctx context.Context, name string, identifiers []tea
 // ImportProduct creates the product with an explicit (caller-supplied) UUID
 // if it doesn't already exist, preserving the source's identity so
 // cross-references in an imported bundle resolve correctly. If a product
-// with this UUID already exists, it's left untouched (created=false) --
-// import is idempotent, not a merge.
+// with this UUID already exists and its content matches, it's left
+// untouched (created=false) -- import is idempotent, not a merge. If a
+// product with this UUID exists with *different* content, returns
+// ErrImportIdentityConflict: the UUID is only meaningful within its
+// source server, so a same-UUID collision with different content means
+// two unrelated products, not the same one re-imported -- see
+// ErrImportIdentityConflict's doc comment.
 func (r *Repo) ImportProduct(ctx context.Context, uuid, name string, identifiers []tea.Identifier) (created bool, err error) {
 	return runInTx(ctx, r, func(tx dbtx) (bool, error) {
-		var exists int
-		if err := tx.QueryRowContext(ctx, `SELECT 1 FROM product WHERE uuid = ?`, uuid).Scan(&exists); err == nil {
+		existing, err := getProductTx(ctx, tx, uuid)
+		if err == nil {
+			if existing.Name != name || !setEqual(existing.Identifiers, identifiers) {
+				return false, fmt.Errorf("%w: product %s", ErrImportIdentityConflict, uuid)
+			}
 			return false, nil
-		} else if !errors.Is(err, sql.ErrNoRows) {
+		} else if !errors.Is(err, ErrNotFound) {
 			return false, err
 		}
 
@@ -59,8 +68,20 @@ func (r *Repo) ImportProduct(ctx context.Context, uuid, name string, identifiers
 
 // GetProduct fetches a product by UUID. Returns ErrNotFound if uuid doesn't exist.
 func (r *Repo) GetProduct(ctx context.Context, uuid string) (tea.Product, error) {
+	return getProductTx(ctx, r.conn(), uuid)
+}
+
+// getProductTx is GetProduct's logic parameterized over a dbtx instead of
+// going through r.conn() -- needed by ImportProduct's conflict check, which
+// runs inside a runInTx closure holding a *sql.Tx that isn't necessarily
+// r.tx (runInTx opens its own transaction when r.tx is nil). Calling the
+// r.conn()-based GetProduct from in there would try to check out a second
+// connection from the pool while the closure's own tx already holds the
+// only one (internal/db/db.go pins the pool to a single connection) --
+// a self-deadlock, not a stale read.
+func getProductTx(ctx context.Context, q dbtx, uuid string) (tea.Product, error) {
 	var name string
-	err := r.db.QueryRowContext(ctx, `SELECT name FROM product WHERE uuid = ?`, uuid).Scan(&name)
+	err := q.QueryRowContext(ctx, `SELECT name FROM product WHERE uuid = ?`, uuid).Scan(&name)
 	if errors.Is(err, sql.ErrNoRows) {
 		return tea.Product{}, ErrNotFound
 	}
@@ -68,7 +89,7 @@ func (r *Repo) GetProduct(ctx context.Context, uuid string) (tea.Product, error)
 		return tea.Product{}, err
 	}
 
-	ids, err := listIdentifiers(ctx, r.db, OwnerProduct, uuid)
+	ids, err := listIdentifiers(ctx, q, OwnerProduct, uuid)
 	if err != nil {
 		return tea.Product{}, err
 	}

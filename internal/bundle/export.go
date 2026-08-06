@@ -100,7 +100,7 @@ func buildManifest(ctx context.Context, r *repo.Repo, productUUID string) (Manif
 		}
 		releaseEntries = append(releaseEntries, ProductReleaseEntry{ProductRelease: release, CLE: &releaseCLE})
 
-		ownCollections, err := r.ListCollections(ctx, release.UUID, "asc", nil, exportFetchLimit)
+		ownCollections, err := r.ListCollections(ctx, release.UUID, "asc", nil, exportFetchLimit, repo.BelongsToProductRelease)
 		if err != nil {
 			return Manifest{}, nil, fmt.Errorf("list collections for product release %s: %w", release.UUID, err)
 		}
@@ -139,7 +139,7 @@ func buildManifest(ctx context.Context, r *repo.Repo, productUUID string) (Manif
 			}
 			componentReleaseEntries = append(componentReleaseEntries, ComponentReleaseEntry{ComponentRelease: componentRelease, CLE: &componentReleaseCLE})
 
-			releaseCollections, err := r.ListCollections(ctx, componentReleaseUUID, "asc", nil, exportFetchLimit)
+			releaseCollections, err := r.ListCollections(ctx, componentReleaseUUID, "asc", nil, exportFetchLimit, repo.BelongsToComponentRelease)
 			if err != nil {
 				return Manifest{}, nil, fmt.Errorf("list collections for component release %s: %w", componentReleaseUUID, err)
 			}

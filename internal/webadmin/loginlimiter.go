@@ -3,6 +3,7 @@ package webadmin
 import (
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -31,13 +32,13 @@ const (
 // be used to lock a legitimate user out of their own account -- it only
 // throttles whoever is making the requests.
 //
-// This only helps the standalone deployment path (no reverse proxy in
-// front, so r.RemoteAddr is the real client IP). A rate-limiting proxy
-// should handle this upstream instead, where it can see the real client IP
-// through whatever proxy layers sit in front of it -- this makes no attempt
-// to parse X-Forwarded-For or similar, since those headers are
-// attacker-controlled unless a specific trusted-proxy configuration strips
-// and re-sets them, which this project doesn't have.
+// Behind a reverse proxy, every client shares the proxy's one RemoteAddr
+// unless config.Config.TrustProxyHeaders is set, in which case clientIP
+// reads the real client IP from X-Forwarded-For instead -- see clientIP's
+// doc comment for the trust model. With that flag off (the default),
+// r.RemoteAddr is used directly, correct for a standalone deployment but
+// collapsing every client behind an untrusted/unconfigured proxy into one
+// shared budget.
 //
 // State is in-memory only and resets on restart -- an accepted tradeoff for
 // a simple, self-hosted admin tool, not a durable security control.
@@ -88,11 +89,26 @@ func (l *loginLimiter) allow(ip string) bool {
 	return true
 }
 
-// clientIP extracts the host portion of r.RemoteAddr (which net/http
-// guarantees is set, in "IP:port" form, for every request it hands to a
-// handler) -- see loginLimiter's doc comment for why this deliberately
-// doesn't look at any client-supplied header.
-func clientIP(r *http.Request) string {
+// clientIP extracts the request's client IP for rate-limiting purposes:
+// RemoteAddr's host by default, or (when trustProxyHeaders is set) the
+// right-most entry of X-Forwarded-For if present -- the standard safe
+// pattern for exactly one trusted reverse-proxy hop that appends (not
+// replaces) the real client IP as it forwards, matching the same
+// single-hop-trust model as httpx.IsSecure's X-Forwarded-Proto handling.
+// See config.Config.TrustProxyHeaders's doc comment for why this is opt-in:
+// the header is exactly as spoofable as any other client-supplied header
+// otherwise, so with trustProxyHeaders false (the default), this falls
+// back to RemoteAddr, which net/http guarantees is set (in "IP:port" form)
+// for every request it hands to a handler.
+func clientIP(r *http.Request, trustProxyHeaders bool) string {
+	if trustProxyHeaders {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			parts := strings.Split(xff, ",")
+			if candidate := strings.TrimSpace(parts[len(parts)-1]); candidate != "" {
+				return candidate
+			}
+		}
+	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr

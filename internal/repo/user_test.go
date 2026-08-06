@@ -3,6 +3,7 @@ package repo
 import (
 	"context"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 
@@ -35,6 +36,43 @@ func TestCreateUserAndVerifyLogin(t *testing.T) {
 	if _, err := r.VerifyLogin(ctx, "nobody", "hunter22"); err != ErrInvalidCredentials {
 		t.Fatalf("VerifyLogin (unknown user): err = %v, want ErrInvalidCredentials (not ErrNotFound, to avoid username enumeration)", err)
 	}
+}
+
+// TestVerifyLoginTimingDoesNotRevealUsernameExistence guards against a
+// timing oracle: an unknown username used to return immediately (skipping
+// bcrypt entirely) while a known username with a wrong password always
+// paid bcrypt's ~100ms cost, letting a remote attacker enumerate valid
+// usernames purely from response latency despite both paths returning the
+// identical ErrInvalidCredentials. Timing assertions are inherently noisy,
+// so this uses several iterations and a generous ratio bound (2x) rather
+// than a tight one -- loose enough to avoid flaking under CI scheduler
+// jitter, but tight enough that the fix being absent (unknown-username
+// path near-instant, known-username path ~100ms per call) would still
+// fail it by a wide margin.
+func TestVerifyLoginTimingDoesNotRevealUsernameExistence(t *testing.T) {
+	ctx := context.Background()
+	r := newTestRepo(t)
+	if _, err := r.CreateUser(ctx, "alice", "hunter22", model.RoleAdmin); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	const iterations = 5
+	knownUserElapsed := timeVerifyLoginAttempts(ctx, r, "alice", "wrong-password", iterations)
+	unknownUserElapsed := timeVerifyLoginAttempts(ctx, r, "nobody", "wrong-password", iterations)
+
+	ratio := float64(unknownUserElapsed) / float64(knownUserElapsed)
+	if ratio < 0.5 || ratio > 2.0 {
+		t.Fatalf("unknown-username path took %v, known-username-wrong-password path took %v (ratio %.2f) -- want them within 2x of each other; a large gap suggests the dummy-hash comparison isn't running",
+			unknownUserElapsed, knownUserElapsed, ratio)
+	}
+}
+
+func timeVerifyLoginAttempts(ctx context.Context, r *Repo, username, password string, n int) time.Duration {
+	start := time.Now()
+	for i := 0; i < n; i++ {
+		_, _ = r.VerifyLogin(ctx, username, password)
+	}
+	return time.Since(start)
 }
 
 func TestCreateUserRejectsShortPassword(t *testing.T) {

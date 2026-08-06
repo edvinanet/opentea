@@ -22,6 +22,14 @@ import (
 
 func newTestServer(t *testing.T) (*httptest.Server, *repo.Repo) {
 	t.Helper()
+	return newTestServerWithConfig(t, config.Config{RootURL: "http://example.test"})
+}
+
+// newTestServerWithConfig is newTestServer with a caller-chosen config --
+// e.g. TrustProxyHeaders, for tests exercising proxy-aware behavior that
+// depends on it.
+func newTestServerWithConfig(t *testing.T, cfg config.Config) (*httptest.Server, *repo.Repo) {
+	t.Helper()
 	sqlDB, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
@@ -29,7 +37,7 @@ func newTestServer(t *testing.T) (*httptest.Server, *repo.Repo) {
 	t.Cleanup(func() { _ = sqlDB.Close() })
 
 	r := repo.New(sqlDB)
-	srv := httptest.NewServer(NewRouter(r, config.Config{RootURL: "http://example.test"}))
+	srv := httptest.NewServer(NewRouter(r, cfg))
 	t.Cleanup(srv.Close)
 	return srv, r
 }

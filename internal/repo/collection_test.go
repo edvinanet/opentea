@@ -39,7 +39,7 @@ func TestCollectionVersioningAndArtifactReuse(t *testing.T) {
 	if c1.Version != 1 {
 		t.Fatalf("Version = %d, want 1", c1.Version)
 	}
-	if c1.BelongsTo != "COMPONENT_RELEASE" {
+	if c1.BelongsTo != BelongsToComponentRelease {
 		t.Fatalf("BelongsTo = %q", c1.BelongsTo)
 	}
 	if len(c1.Artifacts) != 1 || c1.Artifacts[0].UUID != sbom.UUID {
@@ -64,7 +64,7 @@ func TestCollectionVersioningAndArtifactReuse(t *testing.T) {
 		t.Fatalf("Artifacts = %+v, want sbom reused + vex added", c2.Artifacts)
 	}
 
-	latest, err := r.GetLatestCollection(ctx, cr.UUID)
+	latest, err := r.GetLatestCollection(ctx, cr.UUID, BelongsToComponentRelease)
 	if err != nil {
 		t.Fatalf("GetLatestCollection: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestCollectionVersioningAndArtifactReuse(t *testing.T) {
 		t.Fatalf("latest.Version = %d, want 2", latest.Version)
 	}
 
-	v1, err := r.GetCollectionByVersion(ctx, cr.UUID, 1)
+	v1, err := r.GetCollectionByVersion(ctx, cr.UUID, 1, BelongsToComponentRelease)
 	if err != nil {
 		t.Fatalf("GetCollectionByVersion(1): %v", err)
 	}
@@ -80,7 +80,7 @@ func TestCollectionVersioningAndArtifactReuse(t *testing.T) {
 		t.Fatalf("v1.Artifacts = %+v, want unaffected by v2's addition", v1.Artifacts)
 	}
 
-	all, err := r.ListCollections(ctx, cr.UUID, "desc", nil, 10)
+	all, err := r.ListCollections(ctx, cr.UUID, "desc", nil, 10, BelongsToComponentRelease)
 	if err != nil {
 		t.Fatalf("ListCollections: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestGetLatestCollectionNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateComponentRelease: %v", err)
 	}
-	if _, err := r.GetLatestCollection(ctx, cr.UUID); err != ErrNotFound {
+	if _, err := r.GetLatestCollection(ctx, cr.UUID, BelongsToComponentRelease); err != ErrNotFound {
 		t.Fatalf("err = %v, want ErrNotFound", err)
 	}
 }

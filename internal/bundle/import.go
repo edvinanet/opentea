@@ -23,6 +23,57 @@ import (
 // restoring via t.Cleanup is safe.
 var maxZipEntrySize int64 = 1 << 30 // 1 GiB
 
+// maxManifestSize bounds manifest.json specifically -- generous for a real
+// bundle's metadata (a JSON document describing one product's entities),
+// far below maxZipEntrySize since a manifest is never itself a large binary
+// blob like a files/ entry can legitimately be.
+var maxManifestSize int64 = 10 << 20 // 10 MiB
+
+// maxZipEntries and maxZipTotalUncompressed bound a bundle zip's aggregate
+// shape -- not any single entry's real bytes (maxZipEntrySize already
+// bounds that via streaming, unchanged by these) -- rejecting an absurd
+// entry count or declared total size outright, before opening or reading a
+// single entry. Real bundles are per-product exports with a handful of
+// files, so both are set with a wide margin for legitimate use while still
+// bounding an archive engineered to be expensive to even enumerate.
+//
+// f.UncompressedSize64 comes from the zip's own central directory and is
+// attacker-controlled, exactly like any other entry metadata -- this is an
+// advisory, cheap pre-filter only, NOT a substitute for the streaming
+// io.LimitReader checks in importBlobs/sha256OfZipEntry, which independently
+// bound each entry's real decompressed byte count regardless of what this
+// field claims. A crafted zip can understate UncompressedSize64 to sail
+// through this check while a maliciously-crafted deflate stream still
+// expands past maxZipEntrySize on actual read -- the streaming check is
+// what catches that case, and removing it in favor of this one would
+// reopen the zip-bomb hole this pair of checks is meant to close.
+var (
+	maxZipEntries                  = 1_000
+	maxZipTotalUncompressed uint64 = 4 << 30 // 4 GiB
+)
+
+// checkZipResourceLimits rejects a bundle zip whose aggregate shape (entry
+// count or declared total uncompressed size) is implausible for a real
+// bundle, before any entry is opened or read. The entry-count check runs
+// first and returns immediately if it fails: len(zr.File) is O(1) (the
+// central directory is already fully parsed into that slice by the time a
+// *zip.Reader exists), while summing UncompressedSize64 is O(n) -- bounding
+// entry count first keeps that second pass itself cheap even against a zip
+// crafted with an excessive number of entries.
+func checkZipResourceLimits(zr *zip.Reader) error {
+	if len(zr.File) > maxZipEntries {
+		return fmt.Errorf("bundle: %d entries exceeds %d entry limit", len(zr.File), maxZipEntries)
+	}
+	var total uint64
+	for _, f := range zr.File {
+		total += f.UncompressedSize64
+		if total > maxZipTotalUncompressed {
+			return fmt.Errorf("bundle: declared uncompressed size exceeds %d byte limit", maxZipTotalUncompressed)
+		}
+	}
+	return nil
+}
+
 // ImportResult summarizes what an Import call actually did, broken down by
 // entity kind, so callers (and the admin API's JSON response) can tell a
 // fresh import from a no-op re-import of already-present data.
@@ -51,7 +102,11 @@ func (res *ImportResult) record(kind string, created bool) {
 // (destination) server's own root URL, used to rebuild file URLs; the
 // source server's original URLs in the manifest are never reused directly.
 func Import(ctx context.Context, r *repo.Repo, store storage.Storage, rootURL string, zr *zip.Reader) (*ImportResult, error) {
-	manifestRaw, err := readZipFile(zr, "manifest.json")
+	if err := checkZipResourceLimits(zr); err != nil {
+		return nil, err
+	}
+
+	manifestRaw, err := readZipFile(zr, "manifest.json", maxManifestSize)
 	if err != nil {
 		return nil, err
 	}
@@ -372,15 +427,23 @@ func importBlobs(ctx context.Context, r *repo.Repo, store storage.Storage, zr *z
 	return sha256ToURL, nil
 }
 
-func readZipFile(zr *zip.Reader, name string) ([]byte, error) {
+// readZipFile reads the named zip entry in full, rejecting it if it exceeds
+// maxSize -- the same io.LimitReader(+1)/length-check pattern used
+// elsewhere in this package for maxZipEntrySize, applied here so callers
+// can bound a specific entry (manifest.json, via maxManifestSize) without
+// an unbounded io.ReadAll.
+func readZipFile(zr *zip.Reader, name string, maxSize int64) ([]byte, error) {
 	f, err := zr.Open(name)
 	if err != nil {
 		return nil, fmt.Errorf("bundle is missing %s: %w", name, err)
 	}
 	defer func() { _ = f.Close() }()
-	raw, err := io.ReadAll(f)
+	raw, err := io.ReadAll(io.LimitReader(f, maxSize+1))
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", name, err)
+	}
+	if int64(len(raw)) > maxSize {
+		return nil, fmt.Errorf("%s exceeds %d byte limit", name, maxSize)
 	}
 	return raw, nil
 }

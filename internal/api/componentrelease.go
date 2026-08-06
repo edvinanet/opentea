@@ -28,7 +28,7 @@ func (s *Server) getComponentReleaseWithCollection(w http.ResponseWriter, r *htt
 		return
 	}
 
-	latest, err := s.repo.GetLatestCollection(r.Context(), uuid)
+	latest, err := s.repo.GetLatestCollection(r.Context(), uuid, repo.BelongsToComponentRelease)
 	if errors.Is(err, repo.ErrNotFound) {
 		httpx.NotFound(w)
 		return

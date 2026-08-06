@@ -29,6 +29,25 @@ const minPasswordLength = 8
 // newly created hashes, no migration needed.
 const bcryptCost = 12
 
+// dummyBcryptHash is a valid bcrypt hash (at bcryptCost, matching every
+// real user's) of a fixed, unused, non-secret plaintext -- VerifyLogin
+// compares against this on an unknown-username attempt so that path costs
+// the same as a known-username/wrong-password attempt (which always runs a
+// real bcrypt.CompareHashAndPassword). Without this, an unknown username
+// returns immediately after a single failed SELECT while a known one pays
+// bcrypt's ~100ms, a remotely observable timing oracle for username
+// enumeration despite both paths returning the identical
+// ErrInvalidCredentials response body.
+var dummyBcryptHash = mustGenerateDummyHash()
+
+func mustGenerateDummyHash() []byte {
+	hash, err := bcrypt.GenerateFromPassword([]byte("opentea-dummy-password-never-used-for-login"), bcryptCost)
+	if err != nil {
+		panic("repo: failed to generate dummy bcrypt hash: " + err.Error())
+	}
+	return hash
+}
+
 var (
 	// ErrInvalidCredentials is returned by VerifyLogin on any mismatch --
 	// deliberately the same error whether the username or the password was
@@ -127,6 +146,7 @@ func (r *Repo) VerifyLogin(ctx context.Context, username, plaintextPassword stri
 		`SELECT uuid, username, role, password_hash, created_at FROM user WHERE username = ?`, username,
 	).Scan(&u.UUID, &u.Username, &u.Role, &passwordHash, &createdAt)
 	if errors.Is(err, sql.ErrNoRows) {
+		_ = bcrypt.CompareHashAndPassword(dummyBcryptHash, []byte(plaintextPassword))
 		return model.User{}, ErrInvalidCredentials
 	}
 	if err != nil {

@@ -8,8 +8,8 @@ import (
 
 func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /admin/ui/login", s.loginForm)
-	mux.HandleFunc("POST /admin/ui/login", s.loginSubmit)
-	mux.HandleFunc("POST /admin/ui/logout", s.logout)
+	mux.HandleFunc("POST /admin/ui/login", s.requireSameOrigin(s.loginSubmit))
+	mux.HandleFunc("POST /admin/ui/logout", s.requireSameOrigin(s.logout))
 
 	// {$} restricts this to an exact match on /admin/ui/ -- otherwise, as a
 	// prefix pattern, it would also catch unknown sub-paths as a side effect.

@@ -21,12 +21,21 @@ func (s *Server) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	// Checked before touching the form body or calling VerifyLogin at all,
 	// so a throttled client can't burn CPU on bcrypt (or anything else) by
 	// retrying -- see loginLimiter's doc comment.
-	if !s.loginLimiter.allow(clientIP(r)) {
+	if !s.loginLimiter.allow(clientIP(r, s.cfg.TrustProxyHeaders)) {
 		s.renderLogin(w, pageData{Error: "too many login attempts, please wait a moment and try again"})
 		return
 	}
 
 	if err := r.ParseForm(); err != nil {
+		// A body rejected by limitBody's MaxBytesReader surfaces here as a
+		// *http.MaxBytesError -- worth a real 4xx (not the generic re-render
+		// below, which returns 200) since it's a distinct, controlled
+		// rejection rather than a malformed submission.
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		s.renderLogin(w, pageData{Error: "invalid form submission"})
 		return
 	}

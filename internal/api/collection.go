@@ -12,20 +12,25 @@ import (
 var collectionSortFields = []string{"version"}
 
 func (s *Server) latestCollectionForComponentRelease(w http.ResponseWriter, r *http.Request) {
-	s.latestCollection(w, r)
+	s.latestCollection(w, r, repo.BelongsToComponentRelease)
 }
 
 func (s *Server) latestCollectionForProductRelease(w http.ResponseWriter, r *http.Request) {
-	s.latestCollection(w, r)
+	s.latestCollection(w, r, repo.BelongsToProductRelease)
 }
 
-func (s *Server) latestCollection(w http.ResponseWriter, r *http.Request) {
+// latestCollection is shared by both route variants above, each passing the
+// release type its own route is scoped to -- so a collection belonging to
+// the *other* type is never resolvable through the wrong route, even if its
+// uuid happens to collide with one that does belong to this route's type
+// (see repo.GetLatestCollection's doc comment).
+func (s *Server) latestCollection(w http.ResponseWriter, r *http.Request, belongsTo string) {
 	uuid, err := httpx.PathUUID(r, "uuid")
 	if err != nil {
 		httpx.BadRequest(w, "invalid uuid")
 		return
 	}
-	c, err := s.repo.GetLatestCollection(r.Context(), uuid)
+	c, err := s.repo.GetLatestCollection(r.Context(), uuid, belongsTo)
 	if errors.Is(err, repo.ErrNotFound) {
 		httpx.NotFound(w)
 		return
@@ -38,14 +43,14 @@ func (s *Server) latestCollection(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getCollectionForComponentRelease(w http.ResponseWriter, r *http.Request) {
-	s.getCollectionByVersion(w, r)
+	s.getCollectionByVersion(w, r, repo.BelongsToComponentRelease)
 }
 
 func (s *Server) getCollectionForProductRelease(w http.ResponseWriter, r *http.Request) {
-	s.getCollectionByVersion(w, r)
+	s.getCollectionByVersion(w, r, repo.BelongsToProductRelease)
 }
 
-func (s *Server) getCollectionByVersion(w http.ResponseWriter, r *http.Request) {
+func (s *Server) getCollectionByVersion(w http.ResponseWriter, r *http.Request, belongsTo string) {
 	uuid, err := httpx.PathUUID(r, "uuid")
 	if err != nil {
 		httpx.BadRequest(w, "invalid uuid")
@@ -56,7 +61,7 @@ func (s *Server) getCollectionByVersion(w http.ResponseWriter, r *http.Request) 
 		httpx.BadRequest(w, "invalid collectionVersion")
 		return
 	}
-	c, err := s.repo.GetCollectionByVersion(r.Context(), uuid, version)
+	c, err := s.repo.GetCollectionByVersion(r.Context(), uuid, version, belongsTo)
 	if errors.Is(err, repo.ErrNotFound) {
 		httpx.NotFound(w)
 		return
@@ -69,14 +74,14 @@ func (s *Server) getCollectionByVersion(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) listCollectionsForComponentRelease(w http.ResponseWriter, r *http.Request) {
-	s.listCollections(w, r)
+	s.listCollections(w, r, repo.BelongsToComponentRelease)
 }
 
 func (s *Server) listCollectionsForProductRelease(w http.ResponseWriter, r *http.Request) {
-	s.listCollections(w, r)
+	s.listCollections(w, r, repo.BelongsToProductRelease)
 }
 
-func (s *Server) listCollections(w http.ResponseWriter, r *http.Request) {
+func (s *Server) listCollections(w http.ResponseWriter, r *http.Request, belongsTo string) {
 	uuid, err := httpx.PathUUID(r, "uuid")
 	if err != nil {
 		httpx.BadRequest(w, "invalid uuid")
@@ -87,7 +92,7 @@ func (s *Server) listCollections(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := s.repo.ListCollections(r.Context(), uuid, pp.SortOrder, pp.Cursor, pp.PageSize+1)
+	rows, err := s.repo.ListCollections(r.Context(), uuid, pp.SortOrder, pp.Cursor, pp.PageSize+1, belongsTo)
 	if err != nil {
 		httpx.InternalError(w, r, err)
 		return

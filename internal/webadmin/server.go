@@ -8,10 +8,44 @@ import (
 	"embed"
 	"html/template"
 	"net/http"
+	"time"
 
 	"github.com/oej/opentea/internal/config"
 	"github.com/oej/opentea/internal/repo"
 )
+
+// maxWebadminBody bounds every /admin/ui request body -- generous for the
+// small HTML forms this package actually has (login, logout, create-user,
+// delete-user, generate-token), far below the 1 GiB upload/import caps
+// internal/admin uses for its own, unrelated large-file routes. A var (not
+// const), matching internal/bundle's maxZipEntrySize convention, so tests
+// can temporarily lower it instead of generating a 64 KiB request body.
+var maxWebadminBody int64 = 64 << 10 // 64 KiB
+
+// webadminBodyReadTimeout bounds how long reading a request body may take
+// -- cmd/opentea/main.go's top-level http.Server deliberately leaves
+// ReadTimeout at zero (needed for /admin/v1's large uploads, a fully
+// separate handler tree from this one), so without this an unauthenticated
+// client could hold a connection open indefinitely via a slow-drip request
+// body (the connection isn't idle, so IdleTimeout doesn't help either). A
+// var so tests can lower it rather than waiting out the real 10s.
+var webadminBodyReadTimeout = 10 * time.Second
+
+// limitBody bounds every /admin/ui request's body size and read time -- see
+// maxWebadminBody/webadminBodyReadTimeout's doc comments for why.
+//
+// NOTE: webadmin has no file-upload routes today -- if one is ever added
+// here, it needs its own larger/slower-body exemption from this wrapper
+// (see internal/admin/upload.go's maxUploadBody for the pattern used on
+// the /admin/v1 side), or it will fail confusingly against these small-form
+// limits.
+func limitBody(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, maxWebadminBody)
+		_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(webadminBodyReadTimeout))
+		next.ServeHTTP(w, r)
+	})
+}
 
 //go:embed templates/*.html
 var templatesFS embed.FS
@@ -29,7 +63,7 @@ func NewRouter(r *repo.Repo, cfg config.Config) http.Handler {
 	srv := &Server{repo: r, cfg: cfg, templates: loadTemplates(), loginLimiter: newLoginLimiter()}
 	mux := http.NewServeMux()
 	srv.registerRoutes(mux)
-	return mux
+	return limitBody(mux)
 }
 
 // templateFuncs are helpers available to every page template.

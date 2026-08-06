@@ -32,3 +32,18 @@ func (s *Server) requireRole(minRole string, next roleHandler) http.HandlerFunc 
 		next(w, r, user)
 	}
 }
+
+// requireSameOrigin applies authn.SameOrigin's CSRF check alone, for routes
+// reachable without a session (login, logout) that requireRole can't cover
+// since it requires an authenticated user first. SameOrigin itself already
+// treats GET/HEAD/OPTIONS as always-allowed, so applying this only to the
+// POST routes (not GET /admin/ui/login) is both correct and sufficient.
+func (s *Server) requireSameOrigin(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !authn.SameOrigin(r, s.cfg.RootURL) {
+			http.Error(w, "Forbidden: cross-origin request rejected.", http.StatusForbidden)
+			return
+		}
+		next(w, r)
+	}
+}

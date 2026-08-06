@@ -141,6 +141,45 @@ func TestDownloadAndVerifyChecksumMismatch(t *testing.T) {
 	}
 }
 
+// TestDownloadAndVerifyRejectsOversizedResponse is the regression test for
+// DownloadAndVerify's unbounded in-memory buffer: a response larger than
+// maxDownloadAndVerifyBody must be rejected with a clear error, not
+// buffered in full regardless of size.
+func TestDownloadAndVerifyRejectsOversizedResponse(t *testing.T) {
+	oversized := bytes.Repeat([]byte("a"), maxDownloadAndVerifyBody+1)
+	client, srv := newFakeServer(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(oversized)
+	})
+
+	format := tea.ArtifactFormat{URL: srv.URL + "/files/whatever"}
+	if _, err := client.DownloadAndVerify(context.Background(), format); err == nil {
+		t.Fatal("expected an error for a response exceeding maxDownloadAndVerifyBody")
+	}
+}
+
+// TestDownloadAndVerifyToIgnoresDownloadAndVerifyLimit confirms
+// DownloadAndVerifyTo's own contract is untouched by the limit added to
+// DownloadAndVerify above: content larger than maxDownloadAndVerifyBody
+// still streams through to io.Discard without error, since
+// DownloadAndVerifyTo never buffers in memory at all.
+func TestDownloadAndVerifyToIgnoresDownloadAndVerifyLimit(t *testing.T) {
+	content := bytes.Repeat([]byte("a"), maxDownloadAndVerifyBody+1)
+	sum := sha256.Sum256(content)
+	hexSum := hex.EncodeToString(sum[:])
+
+	client, srv := newFakeServer(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(content)
+	})
+
+	format := tea.ArtifactFormat{
+		URL:       srv.URL + "/files/whatever",
+		Checksums: []tea.Checksum{{AlgType: tea.ChecksumTypeSHA256, AlgValue: hexSum}},
+	}
+	if err := client.DownloadAndVerifyTo(context.Background(), format, io.Discard); err != nil {
+		t.Fatalf("DownloadAndVerifyTo: %v, want success for content over DownloadAndVerify's (unrelated) limit", err)
+	}
+}
+
 // TestDownloadAndVerifyToStreamsWithoutBuffering is the regression test for
 // the "artifact downloads are unbounded in memory" finding: dst receives
 // the content and the checksum still verifies, proving DownloadAndVerifyTo

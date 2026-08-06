@@ -37,18 +37,50 @@ func (c *Client) GetArtifactByVersion(ctx context.Context, uuid string, version 
 	return a, err
 }
 
+// maxDownloadAndVerifyBody bounds DownloadAndVerify's in-memory buffer --
+// reuses client.go's existing maxResponseBody (10 MiB) rather than
+// inventing a new limit. DownloadAndVerifyTo itself stays unbounded (see
+// its own doc comment): only this convenience method holds the whole
+// response in memory, so only it needs a cap.
+const maxDownloadAndVerifyBody = maxResponseBody
+
 // DownloadAndVerify fetches format.URL, verifies it against every checksum
-// format declares, and returns the full downloaded bytes. It's a thin
-// wrapper around DownloadAndVerifyTo for callers that want the content in
-// memory; callers that only need verification (or want to stream to disk)
-// should call DownloadAndVerifyTo directly with io.Discard (or a file) as
-// dst instead, which never buffers the download at all -- this wrapper's
-// bytes.Buffer is itself unbounded against a malicious or oversized
-// response, same as the pre-streaming implementation.
+// format declares, and returns the full downloaded bytes, capped at
+// maxDownloadAndVerifyBody. It's a thin wrapper around DownloadAndVerifyTo
+// for callers that want the content in memory; callers that only need
+// verification (or want to stream to disk) should call DownloadAndVerifyTo
+// directly with io.Discard (or a file) as dst instead, which never buffers
+// the download at all and isn't subject to this limit -- for artifacts
+// that may exceed it, prefer that instead of this convenience method.
 func (c *Client) DownloadAndVerify(ctx context.Context, format tea.ArtifactFormat) ([]byte, error) {
 	var buf bytes.Buffer
-	err := c.DownloadAndVerifyTo(ctx, format, &buf)
-	return buf.Bytes(), err
+	lw := &limitWriter{w: &buf, remaining: maxDownloadAndVerifyBody}
+	if err := c.DownloadAndVerifyTo(ctx, format, lw); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// limitWriter wraps an io.Writer, erroring once more than remaining bytes
+// have been written -- bounds DownloadAndVerify's buffer without changing
+// DownloadAndVerifyTo's own unbounded-streaming contract (which io.Discard
+// callers specifically rely on). DownloadAndVerifyTo's io.MultiWriter stops
+// at the first writer to error within a single Write call, so this
+// propagates cleanly through io.Copy as soon as the limit is exceeded; a
+// partial hash update on the final over-limit chunk is harmless since the
+// whole call errors out and no checksum is ever claimed as verified.
+type limitWriter struct {
+	w         io.Writer
+	remaining int64
+}
+
+func (lw *limitWriter) Write(p []byte) (int, error) {
+	if int64(len(p)) > lw.remaining {
+		return 0, fmt.Errorf("teaclient: response exceeds %d byte limit", maxDownloadAndVerifyBody)
+	}
+	n, err := lw.w.Write(p)
+	lw.remaining -= int64(n)
+	return n, err
 }
 
 // DownloadAndVerifyTo streams format.URL's content into dst while checking

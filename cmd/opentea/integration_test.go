@@ -567,6 +567,9 @@ func postForm(t *testing.T, srv *testServer, path string, form url.Values, cooki
 		t.Fatalf("new request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	// Matches a real browser's same-origin POST -- requireRole's and
+	// requireSameOrigin's CSRF checks both require this.
+	req.Header.Set("Origin", srv.URL)
 	if cookie != nil {
 		req.AddCookie(cookie)
 	}
@@ -752,6 +755,31 @@ func TestCSRFProtection(t *testing.T) {
 	if status := do(http.MethodPost, "/admin/ui/token/generate", srv.URL, []byte{}); status == http.StatusForbidden {
 		t.Fatalf("GUI POST with matching Origin: status=%d, want non-403", status)
 	}
+
+	// Login and logout are reachable without a session (requireRole can't
+	// cover them), so they need their own, independent requireSameOrigin
+	// check -- confirm it's actually wired in, not just present on the
+	// authenticated routes above.
+	loginBody := []byte(url.Values{"username": {"test-admin"}, "password": {"wrong"}}.Encode())
+	if status := do(http.MethodPost, "/admin/ui/login", "https://evil.example", loginBody); status != http.StatusForbidden {
+		t.Fatalf("login POST with cross-site Origin: status=%d, want 403", status)
+	}
+	if status := do(http.MethodPost, "/admin/ui/login", "", loginBody); status != http.StatusForbidden {
+		t.Fatalf("login POST with no Origin: status=%d, want 403", status)
+	}
+	if status := do(http.MethodPost, "/admin/ui/login", srv.URL, loginBody); status == http.StatusForbidden {
+		t.Fatalf("login POST with matching Origin: status=%d, want non-403", status)
+	}
+
+	if status := do(http.MethodPost, "/admin/ui/logout", "https://evil.example", []byte{}); status != http.StatusForbidden {
+		t.Fatalf("logout POST with cross-site Origin: status=%d, want 403", status)
+	}
+	if status := do(http.MethodPost, "/admin/ui/logout", "", []byte{}); status != http.StatusForbidden {
+		t.Fatalf("logout POST with no Origin: status=%d, want 403", status)
+	}
+	if status := do(http.MethodPost, "/admin/ui/logout", srv.URL, []byte{}); status == http.StatusForbidden {
+		t.Fatalf("logout POST with matching Origin: status=%d, want non-403", status)
+	}
 }
 
 // TestTeaV1BearerToken verifies /tea/v1's additive bearer-token behavior:
@@ -852,4 +880,132 @@ func TestSecurityHeaders(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestCollectionRoutesRespectParentType is the regression test for the
+// collection routes not validating their parent's release type: before this
+// fix, GetLatestCollection/GetCollectionByVersion/ListCollections queried
+// collection.uuid alone, so a component-release collection's UUID resolved
+// through the product-release route (and vice versa) with no 404 -- a real
+// cross-type data-isolation gap, made concretely exploitable by bundle
+// import preserving source-controlled UUIDs verbatim. This creates one
+// collection of each type and confirms each is retrievable only through its
+// own route (latest, versioned, list), 404ing through the other -- proving
+// a real UUID that legitimately exists, just under the other type, is
+// correctly rejected rather than silently returning the wrong data.
+func TestCollectionRoutesRespectParentType(t *testing.T) {
+	srv := newTestServer(t)
+
+	// Product release + its own collection.
+	status, raw := jsonRequest(t, srv, http.MethodPost, "/admin/v1/products", map[string]any{"name": "Parent-Type Product"})
+	if status != http.StatusCreated {
+		t.Fatalf("create product: status=%d body=%s", status, raw)
+	}
+	var product tea.Product
+	decodeInto(t, raw, &product)
+
+	status, raw = jsonRequest(t, srv, http.MethodPost, "/admin/v1/products/"+product.UUID+"/releases", map[string]any{
+		"version": "1.0.0", "createdDate": "2026-07-01T00:00:00Z",
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("create product release: status=%d body=%s", status, raw)
+	}
+	var productRelease tea.ProductRelease
+	decodeInto(t, raw, &productRelease)
+
+	status, raw = jsonRequest(t, srv, http.MethodPost, "/admin/v1/productReleases/"+productRelease.UUID+"/collections", map[string]any{})
+	if status != http.StatusCreated {
+		t.Fatalf("create product-release collection: status=%d body=%s", status, raw)
+	}
+
+	// Component release + its own collection.
+	status, raw = jsonRequest(t, srv, http.MethodPost, "/admin/v1/components", map[string]any{"name": "Parent-Type Component"})
+	if status != http.StatusCreated {
+		t.Fatalf("create component: status=%d body=%s", status, raw)
+	}
+	var component tea.Component
+	decodeInto(t, raw, &component)
+
+	status, raw = jsonRequest(t, srv, http.MethodPost, "/admin/v1/components/"+component.UUID+"/releases", map[string]any{
+		"version": "1.0.0", "createdDate": "2026-07-01T00:00:00Z",
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("create component release: status=%d body=%s", status, raw)
+	}
+	var componentRelease tea.ComponentRelease
+	decodeInto(t, raw, &componentRelease)
+
+	status, raw = jsonRequest(t, srv, http.MethodPost, "/admin/v1/componentReleases/"+componentRelease.UUID+"/collections", map[string]any{})
+	if status != http.StatusCreated {
+		t.Fatalf("create component-release collection: status=%d body=%s", status, raw)
+	}
+
+	// "latest" and "versioned" are single-item lookups: a real UUID that
+	// exists only under the *other* type must 404, not return that other
+	// type's collection.
+	itemCases := []struct {
+		name       string
+		pathSuffix string // appended to "/tea/v1/{productRelease,componentRelease}/{uuid}"
+	}{
+		{"latest", "/collection/latest"},
+		{"versioned", "/collection/1"},
+	}
+	for _, tc := range itemCases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, err := http.Get(srv.URL + "/tea/v1/productRelease/" + productRelease.UUID + tc.pathSuffix) //nolint:gosec // srv.URL is this test's own httptest.Server
+			if err != nil {
+				t.Fatalf("GET productRelease route (own type): %v", err)
+			}
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Errorf("productRelease route on its own productRelease UUID: status=%d, want 200", resp.StatusCode)
+			}
+
+			resp, err = http.Get(srv.URL + "/tea/v1/componentRelease/" + componentRelease.UUID + tc.pathSuffix) //nolint:gosec
+			if err != nil {
+				t.Fatalf("GET componentRelease route (own type): %v", err)
+			}
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Errorf("componentRelease route on its own componentRelease UUID: status=%d, want 200", resp.StatusCode)
+			}
+
+			resp, err = http.Get(srv.URL + "/tea/v1/componentRelease/" + productRelease.UUID + tc.pathSuffix) //nolint:gosec
+			if err != nil {
+				t.Fatalf("GET componentRelease route (wrong type): %v", err)
+			}
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusNotFound {
+				t.Errorf("componentRelease route on a productRelease UUID: status=%d, want 404", resp.StatusCode)
+			}
+
+			resp, err = http.Get(srv.URL + "/tea/v1/productRelease/" + componentRelease.UUID + tc.pathSuffix) //nolint:gosec
+			if err != nil {
+				t.Fatalf("GET productRelease route (wrong type): %v", err)
+			}
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusNotFound {
+				t.Errorf("productRelease route on a componentRelease UUID: status=%d, want 404", resp.StatusCode)
+			}
+		})
+	}
+
+	// "list" never 404s (a list query correctly returns an empty result
+	// rather than not-found) -- what matters here is that querying by the
+	// *other* type's UUID returns zero results, not that type's data.
+	t.Run("list", func(t *testing.T) {
+		status, raw := jsonRequest(t, srv, http.MethodGet, "/tea/v1/productRelease/"+productRelease.UUID+"/collections", nil)
+		var ownList tea.PaginatedCollections
+		decodeInto(t, raw, &ownList)
+		if status != http.StatusOK || len(ownList.Results) != 1 {
+			t.Fatalf("productRelease list (own type): status=%d results=%+v, want 200 with 1 result", status, ownList.Results)
+		}
+
+		status, raw = jsonRequest(t, srv, http.MethodGet, "/tea/v1/componentRelease/"+productRelease.UUID+"/collections", nil)
+		var wrongList tea.PaginatedCollections
+		decodeInto(t, raw, &wrongList)
+		if status != http.StatusOK || len(wrongList.Results) != 0 {
+			t.Fatalf("componentRelease list on a productRelease UUID: status=%d results=%+v, want 200 with 0 results", status, wrongList.Results)
+		}
+	})
 }

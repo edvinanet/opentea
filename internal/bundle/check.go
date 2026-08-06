@@ -43,9 +43,13 @@ type CheckReport struct {
 // checking everything it can even after finding a problem, so a single run
 // reports every issue rather than just the first one.
 func Check(zr *zip.Reader) (*CheckReport, error) {
+	if err := checkZipResourceLimits(zr); err != nil {
+		return nil, err
+	}
+
 	report := &CheckReport{}
 
-	manifestRaw, err := readZipFile(zr, "manifest.json")
+	manifestRaw, err := readZipFile(zr, "manifest.json", maxManifestSize)
 	if err != nil {
 		return nil, err
 	}
@@ -60,6 +64,19 @@ func Check(zr *zip.Reader) (*CheckReport, error) {
 		return report, nil // nothing further can be checked without a decoded manifest
 	}
 
+	if err := checkFileHashes(zr, m, report); err != nil {
+		return nil, err
+	}
+
+	report.Valid = len(report.SchemaErrors) == 0 && len(report.HashMismatches) == 0 && len(report.MissingFiles) == 0
+	return report, nil
+}
+
+// checkFileHashes compares the manifest's declared file references against
+// the zip's actual files/ entries, populating report's HashMismatches,
+// MissingFiles, and OrphanFiles. Split out of Check itself to keep that
+// function's own branching within the project's complexity budget.
+func checkFileHashes(zr *zip.Reader, m Manifest, report *CheckReport) error {
 	expected := map[string]struct{}{}
 	collectFileHashes(expected, m.Collections)
 	for _, cr := range m.ComponentReleases {
@@ -77,7 +94,7 @@ func Check(zr *zip.Reader) (*CheckReport, error) {
 
 		actualSHA256, err := sha256OfZipEntry(f)
 		if err != nil {
-			return nil, fmt.Errorf("read %s: %w", f.Name, err)
+			return fmt.Errorf("read %s: %w", f.Name, err)
 		}
 		if actualSHA256 != claimedSHA256 {
 			report.HashMismatches = append(report.HashMismatches, f.Name)
@@ -97,9 +114,7 @@ func Check(zr *zip.Reader) (*CheckReport, error) {
 	sort.Strings(report.HashMismatches)
 	sort.Strings(report.MissingFiles)
 	sort.Strings(report.OrphanFiles)
-
-	report.Valid = len(report.SchemaErrors) == 0 && len(report.HashMismatches) == 0 && len(report.MissingFiles) == 0
-	return report, nil
+	return nil
 }
 
 func sha256OfZipEntry(f *zip.File) (string, error) {

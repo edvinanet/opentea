@@ -18,6 +18,17 @@ type ArtifactRef struct {
 	Version int
 }
 
+// BelongsToProductRelease and BelongsToComponentRelease are the two valid
+// values of collection.belongs_to (matching the column's own CHECK
+// constraint, internal/db/migrations/0001_init.sql) -- named here so
+// callers pass a real, type-checked constant instead of a bare string
+// literal, particularly at the read-path call sites that use it to scope a
+// lookup to one release type (see getCollectionByVersionTx).
+const (
+	BelongsToProductRelease   = "PRODUCT_RELEASE"
+	BelongsToComponentRelease = "COMPONENT_RELEASE"
+)
+
 // CollectionInput carries the fields needed to publish a new collection version.
 type CollectionInput struct {
 	UpdateReason *tea.UpdateReason
@@ -35,7 +46,7 @@ func (r *Repo) CreateCollectionForComponentRelease(ctx context.Context, componen
 	if exists == 0 {
 		return tea.Collection{}, ErrNotFound
 	}
-	return r.createCollection(ctx, componentReleaseUUID, "COMPONENT_RELEASE", in)
+	return r.createCollection(ctx, componentReleaseUUID, BelongsToComponentRelease, in)
 }
 
 // CreateCollectionForProductRelease publishes a new collection version for
@@ -49,7 +60,7 @@ func (r *Repo) CreateCollectionForProductRelease(ctx context.Context, productRel
 	if exists == 0 {
 		return tea.Collection{}, ErrNotFound
 	}
-	return r.createCollection(ctx, productReleaseUUID, "PRODUCT_RELEASE", in)
+	return r.createCollection(ctx, productReleaseUUID, BelongsToProductRelease, in)
 }
 
 func (r *Repo) createCollection(ctx context.Context, ownerUUID, belongsTo string, in CollectionInput) (tea.Collection, error) {
@@ -96,7 +107,7 @@ func (r *Repo) createCollection(ctx context.Context, ownerUUID, belongsTo string
 	if err := tx.Commit(); err != nil {
 		return tea.Collection{}, err
 	}
-	return r.GetCollectionByVersion(ctx, ownerUUID, version)
+	return r.GetCollectionByVersion(ctx, ownerUUID, version, belongsTo)
 }
 
 // ImportCollectionInput carries the explicit (uuid, version) identity a
@@ -119,7 +130,7 @@ type ImportCollectionInput struct {
 // different content.
 func (r *Repo) ImportCollection(ctx context.Context, in ImportCollectionInput) (created bool, err error) {
 	return runInTx(ctx, r, func(tx dbtx) (bool, error) {
-		existing, err := getCollectionByVersionTx(ctx, tx, in.UUID, in.Version)
+		existing, err := getCollectionByVersionUnfilteredTx(ctx, tx, in.UUID, in.Version)
 		if err == nil {
 			if collectionConflicts(existing, in) {
 				return false, fmt.Errorf("%w: collection %s version %d", ErrImportIdentityConflict, in.UUID, in.Version)
@@ -183,29 +194,89 @@ func collectionConflicts(existing tea.Collection, in ImportCollectionInput) bool
 }
 
 // GetLatestCollection fetches the highest-versioned collection for
-// ownerUUID. Returns ErrNotFound if ownerUUID has no collections yet.
-func (r *Repo) GetLatestCollection(ctx context.Context, ownerUUID string) (tea.Collection, error) {
+// ownerUUID whose belongs_to matches belongsTo (BelongsToProductRelease or
+// BelongsToComponentRelease). Returns ErrNotFound if ownerUUID has no
+// collections of that type yet -- including when ownerUUID exists but only
+// as the *other* release type's collection, so a product-release route
+// can't be used to read a component-release's collection (or vice versa)
+// by supplying its UUID.
+func (r *Repo) GetLatestCollection(ctx context.Context, ownerUUID, belongsTo string) (tea.Collection, error) {
 	var version sql.NullInt64
-	if err := r.conn().QueryRowContext(ctx, `SELECT MAX(version) FROM collection WHERE uuid = ?`, ownerUUID).Scan(&version); err != nil {
+	if err := r.conn().QueryRowContext(ctx,
+		`SELECT MAX(version) FROM collection WHERE uuid = ? AND belongs_to = ?`, ownerUUID, belongsTo,
+	).Scan(&version); err != nil {
 		return tea.Collection{}, err
 	}
 	if !version.Valid {
 		return tea.Collection{}, ErrNotFound
 	}
-	return r.GetCollectionByVersion(ctx, ownerUUID, int(version.Int64))
+	return r.GetCollectionByVersion(ctx, ownerUUID, int(version.Int64), belongsTo)
 }
 
 // GetCollectionByVersion fetches one specific collection version for
 // ownerUUID, including its artifacts. Returns ErrNotFound if that
-// (ownerUUID, version) pair doesn't exist.
-func (r *Repo) GetCollectionByVersion(ctx context.Context, ownerUUID string, version int) (tea.Collection, error) {
-	return getCollectionByVersionTx(ctx, r.conn(), ownerUUID, version)
+// (ownerUUID, version) pair doesn't exist under belongsTo -- see
+// GetLatestCollection's doc comment for why the type is part of the lookup.
+func (r *Repo) GetCollectionByVersion(ctx context.Context, ownerUUID string, version int, belongsTo string) (tea.Collection, error) {
+	return getCollectionByVersionTx(ctx, r.conn(), ownerUUID, version, belongsTo)
 }
 
 // getCollectionByVersionTx is GetCollectionByVersion's logic parameterized
 // over a dbtx -- see product.go's getProductTx doc comment for why this
 // exists.
-func getCollectionByVersionTx(ctx context.Context, q dbtx, ownerUUID string, version int) (tea.Collection, error) {
+func getCollectionByVersionTx(ctx context.Context, q dbtx, ownerUUID string, version int, belongsTo string) (tea.Collection, error) {
+	var (
+		date                  string
+		gotBelongsTo          string
+		reasonType, reasonCmt sql.NullString
+	)
+	err := q.QueryRowContext(ctx,
+		`SELECT date, belongs_to, update_reason_type, update_reason_comment FROM collection WHERE uuid = ? AND version = ? AND belongs_to = ?`,
+		ownerUUID, version, belongsTo,
+	).Scan(&date, &gotBelongsTo, &reasonType, &reasonCmt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return tea.Collection{}, ErrNotFound
+	}
+	if err != nil {
+		return tea.Collection{}, err
+	}
+
+	d, err := parseTime(date)
+	if err != nil {
+		return tea.Collection{}, err
+	}
+
+	artifacts, err := listCollectionArtifacts(ctx, q, ownerUUID, version)
+	if err != nil {
+		return tea.Collection{}, err
+	}
+
+	c := tea.Collection{
+		UUID:      ownerUUID,
+		Version:   version,
+		Date:      d,
+		BelongsTo: gotBelongsTo,
+		Artifacts: artifacts,
+	}
+	if reasonType.Valid {
+		c.UpdateReason = &tea.UpdateReason{Type: reasonType.String, Comment: reasonCmt.String}
+	}
+	return c, nil
+}
+
+// getCollectionByVersionUnfilteredTx is getCollectionByVersionTx without
+// the belongs_to filter -- used ONLY by ImportCollection's own conflict
+// check, which already separately compares BelongsTo in collectionConflicts
+// and returns the friendlier ErrImportIdentityConflict on a type mismatch,
+// instead of this query simply reporting ErrNotFound and letting the
+// subsequent INSERT hit the raw collection(uuid, version) primary-key
+// constraint. Do not reach for this from any other caller -- every other
+// caller should go through getCollectionByVersionTx with a real
+// BelongsToProductRelease/BelongsToComponentRelease value, since that's
+// what keeps a product-release collection from being readable through a
+// component-release route (or vice versa) when their UUIDs happen to
+// collide (see GetLatestCollection's doc comment).
+func getCollectionByVersionUnfilteredTx(ctx context.Context, q dbtx, ownerUUID string, version int) (tea.Collection, error) {
 	var (
 		date                  string
 		belongsTo             string
@@ -281,11 +352,12 @@ func listCollectionArtifacts(ctx context.Context, q dbtx, ownerUUID string, vers
 	return out, nil
 }
 
-// ListCollections returns up to limit collection versions for ownerUUID.
-// "version" is the only allowed sortField.
-func (r *Repo) ListCollections(ctx context.Context, ownerUUID, sortOrder string, cursor *pagination.Cursor, limit int) ([]tea.Collection, error) {
-	query := `SELECT version FROM collection WHERE uuid = ?`
-	args := []any{ownerUUID}
+// ListCollections returns up to limit collection versions for ownerUUID
+// whose belongs_to matches belongsTo -- see GetLatestCollection's doc
+// comment for why. "version" is the only allowed sortField.
+func (r *Repo) ListCollections(ctx context.Context, ownerUUID, sortOrder string, cursor *pagination.Cursor, limit int, belongsTo string) ([]tea.Collection, error) {
+	query := `SELECT version FROM collection WHERE uuid = ? AND belongs_to = ?`
+	args := []any{ownerUUID, belongsTo}
 
 	pq := pageQuery{SortColumn: "version", SortOrder: sortOrder}
 	if cursor != nil {
@@ -318,7 +390,7 @@ func (r *Repo) ListCollections(ctx context.Context, ownerUUID, sortOrder string,
 
 	out := make([]tea.Collection, 0, len(versions))
 	for _, v := range versions {
-		c, err := r.GetCollectionByVersion(ctx, ownerUUID, v)
+		c, err := r.GetCollectionByVersion(ctx, ownerUUID, v, belongsTo)
 		if err != nil {
 			return nil, err
 		}

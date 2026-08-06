@@ -61,6 +61,14 @@ they don't get lost.
       real authorization model exists, decide whether its rules travel with a product's
       export/import bundle (the user's stated intent is that they should — authorization
       travels, authentication/credentials do not).
+      A 2026-08-06 external scan flagged that `/tea/v1`'s anonymous-by-default behavior
+      (`internal/api/auth_middleware.go`'s `optionalBearerAuth`) diverges from the upstream
+      TEA OpenAPI document's global bearer-or-Basic security declaration, and suggested either
+      enforcing that contract strictly or publishing an implementation-specific OpenAPI doc.
+      Per the user: this isn't a conformance bug — authentication behavior is a per-server
+      policy decision, and the OpenAPI's global security block doesn't obligate every
+      deployment to require it. No code change made; tracked here as part of the same
+      authorization-model design work above, not as a separate item.
 
 ## Reference client (this feature)
 - [ ] **Browsing consumer GUI** — a web GUI for the *client* that lets you browse *any* TEA

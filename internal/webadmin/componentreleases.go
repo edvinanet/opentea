@@ -27,7 +27,7 @@ func (s *Server) componentReleaseDetailPage(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	collections, err := s.repo.ListCollections(r.Context(), uuid, "desc", nil, listPageLimit)
+	collections, err := s.repo.ListCollections(r.Context(), uuid, "desc", nil, listPageLimit, repo.BelongsToComponentRelease)
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return

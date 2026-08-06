@@ -32,10 +32,16 @@ func Login(baseURL, username, password string) (*Runner, error) {
 	client := &http.Client{
 		CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse },
 	}
-	resp, err := client.PostForm(baseURL+"/admin/ui/login", url.Values{
-		"username": {username},
-		"password": {password},
-	})
+	form := url.Values{"username": {username}, "password": {password}}
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/admin/ui/login", strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	// Matches a real browser submitting this login form from baseURL itself
+	// -- the admin GUI's own CSRF check (SameOrigin) requires this.
+	req.Header.Set("Origin", baseURL)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}

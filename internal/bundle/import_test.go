@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -135,7 +136,7 @@ func TestImportRoundTrip(t *testing.T) {
 		t.Fatalf("Distribution URL = %q, want rewritten against the destination server's root URL", dist.URL)
 	}
 
-	collections, err := dstRepo.ListCollections(ctx, componentReleaseUUID, "asc", nil, 10)
+	collections, err := dstRepo.ListCollections(ctx, componentReleaseUUID, "asc", nil, 10, repo.BelongsToComponentRelease)
 	if err != nil {
 		t.Fatalf("ListCollections: %v", err)
 	}
@@ -353,6 +354,133 @@ func TestOversizedZipEntryIsRejected(t *testing.T) {
 		dstStore := newTestStore(t)
 		if _, err := Import(ctx, dstRepo, dstStore, "http://dest.example", zr); err == nil {
 			t.Fatal("expected Import to reject a zip entry exceeding maxZipEntrySize")
+		}
+	})
+}
+
+// TestZipResourceLimitsRejectOversizedManifest is the regression test for
+// maxManifestSize: manifest.json used to be read via an unbounded
+// io.ReadAll. Temporarily lowers maxManifestSize below a real exported
+// manifest's actual size, rather than crafting an oversized manifest,
+// since the limit itself is what's under test here, not any particular
+// manifest content.
+func TestZipResourceLimitsRejectOversizedManifest(t *testing.T) {
+	ctx := context.Background()
+	r := newTestRepo(t)
+	store := newTestStore(t)
+	productUUID := seedProduct(t, r, store)
+
+	var buf bytes.Buffer
+	if err := Export(ctx, r, store, productUUID, &buf); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+
+	original := maxManifestSize
+	maxManifestSize = 10 // far smaller than any real manifest
+	t.Cleanup(func() { maxManifestSize = original })
+
+	t.Run("Check", func(t *testing.T) {
+		zr, err := zip.NewReader(bytes.NewReader(buf.Bytes()), int64(buf.Len()))
+		if err != nil {
+			t.Fatalf("zip.NewReader: %v", err)
+		}
+		if _, err := Check(zr); err == nil {
+			t.Fatal("expected Check to reject a manifest exceeding maxManifestSize")
+		}
+	})
+
+	t.Run("Import", func(t *testing.T) {
+		zr, err := zip.NewReader(bytes.NewReader(buf.Bytes()), int64(buf.Len()))
+		if err != nil {
+			t.Fatalf("zip.NewReader: %v", err)
+		}
+		dstRepo := newTestRepo(t)
+		dstStore := newTestStore(t)
+		if _, err := Import(ctx, dstRepo, dstStore, "http://dest.example", zr); err == nil {
+			t.Fatal("expected Import to reject a manifest exceeding maxManifestSize")
+		}
+	})
+}
+
+// TestZipResourceLimitsRejectExcessiveEntryCount is the regression test for
+// maxZipEntries -- a zip crafted with many entries (well past any real
+// bundle's handful of files) must be rejected before any entry is opened.
+func TestZipResourceLimitsRejectExcessiveEntryCount(t *testing.T) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for i := 0; i < maxZipEntries+1; i++ {
+		if _, err := zw.Create("files/entry-" + strconv.Itoa(i)); err != nil {
+			t.Fatalf("zw.Create: %v", err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("close zip: %v", err)
+	}
+
+	t.Run("Check", func(t *testing.T) {
+		zr, err := zip.NewReader(bytes.NewReader(buf.Bytes()), int64(buf.Len()))
+		if err != nil {
+			t.Fatalf("zip.NewReader: %v", err)
+		}
+		if _, err := Check(zr); err == nil {
+			t.Fatal("expected Check to reject a zip exceeding maxZipEntries")
+		}
+	})
+
+	t.Run("Import", func(t *testing.T) {
+		zr, err := zip.NewReader(bytes.NewReader(buf.Bytes()), int64(buf.Len()))
+		if err != nil {
+			t.Fatalf("zip.NewReader: %v", err)
+		}
+		r := newTestRepo(t)
+		store := newTestStore(t)
+		if _, err := Import(context.Background(), r, store, "http://dest.example", zr); err == nil {
+			t.Fatal("expected Import to reject a zip exceeding maxZipEntries")
+		}
+	})
+}
+
+// TestZipResourceLimitsRejectExcessiveAggregateSize is the regression test
+// for maxZipTotalUncompressed -- temporarily lowers it well below a small
+// real entry's size, rather than needing a multi-gigabyte fixture to
+// exceed the real 4 GiB default.
+func TestZipResourceLimitsRejectExcessiveAggregateSize(t *testing.T) {
+	original := maxZipTotalUncompressed
+	maxZipTotalUncompressed = 100
+	t.Cleanup(func() { maxZipTotalUncompressed = original })
+
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, err := zw.Create("files/dummy")
+	if err != nil {
+		t.Fatalf("zw.Create: %v", err)
+	}
+	if _, err := w.Write(make([]byte, 200)); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("close zip: %v", err)
+	}
+
+	t.Run("Check", func(t *testing.T) {
+		zr, err := zip.NewReader(bytes.NewReader(buf.Bytes()), int64(buf.Len()))
+		if err != nil {
+			t.Fatalf("zip.NewReader: %v", err)
+		}
+		if _, err := Check(zr); err == nil {
+			t.Fatal("expected Check to reject a zip exceeding maxZipTotalUncompressed")
+		}
+	})
+
+	t.Run("Import", func(t *testing.T) {
+		zr, err := zip.NewReader(bytes.NewReader(buf.Bytes()), int64(buf.Len()))
+		if err != nil {
+			t.Fatalf("zip.NewReader: %v", err)
+		}
+		r := newTestRepo(t)
+		store := newTestStore(t)
+		if _, err := Import(context.Background(), r, store, "http://dest.example", zr); err == nil {
+			t.Fatal("expected Import to reject a zip exceeding maxZipTotalUncompressed")
 		}
 	})
 }
@@ -648,7 +776,7 @@ func TestImportConflictDetection(t *testing.T) {
 					t.Fatalf("ListProductReleasesByProduct: releases=%+v err=%v", releases, err)
 				}
 				componentReleaseUUID := *releases[0].Components[0].Release
-				collections, err := dstRepo.ListCollections(ctx, componentReleaseUUID, "asc", nil, 10)
+				collections, err := dstRepo.ListCollections(ctx, componentReleaseUUID, "asc", nil, 10, repo.BelongsToComponentRelease)
 				if err != nil || len(collections) != 1 {
 					t.Fatalf("ListCollections: collections=%+v err=%v", collections, err)
 				}
@@ -690,7 +818,7 @@ func TestImportConflictDetection(t *testing.T) {
 					t.Fatalf("ListProductReleasesByProduct: releases=%+v err=%v", releases, err)
 				}
 				componentReleaseUUID := *releases[0].Components[0].Release
-				collections, err := dstRepo.ListCollections(ctx, componentReleaseUUID, "asc", nil, 10)
+				collections, err := dstRepo.ListCollections(ctx, componentReleaseUUID, "asc", nil, 10, repo.BelongsToComponentRelease)
 				if err != nil || len(collections) != 1 || len(collections[0].Artifacts) != 1 {
 					t.Fatalf("ListCollections: collections=%+v err=%v", collections, err)
 				}

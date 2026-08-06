@@ -28,16 +28,21 @@ type Config struct {
 	TLSCertFile string
 	TLSKeyFile  string
 
-	// TrustProxyHeaders, if set, makes the server treat an incoming
-	// X-Forwarded-Proto: https header as proof the connection is effectively
-	// over TLS (used for the session cookie's Secure flag and HSTS) even
-	// though the connection this process itself sees is plain HTTP -- the
-	// normal shape of a TLS-terminating reverse proxy deployment. Off by
-	// default: X-Forwarded-Proto is exactly as trustworthy as any other
-	// client-supplied header unless something in front of this process is
-	// actually guaranteed to set (and strip any client-supplied copy of) it,
-	// which is a deployment fact this process can't verify on its own --
-	// only turn this on if that's actually true of your deployment.
+	// TrustProxyHeaders, if set, makes the server treat incoming
+	// X-Forwarded-* headers from a reverse proxy as trustworthy: an
+	// X-Forwarded-Proto: https header is taken as proof the connection is
+	// effectively over TLS (used for the session cookie's Secure flag and
+	// HSTS) even though the connection this process itself sees is plain
+	// HTTP, and the right-most entry of X-Forwarded-For is used as the real
+	// client IP for admin-login rate limiting (internal/webadmin/loginlimiter.go's
+	// clientIP) instead of RemoteAddr (which would otherwise be the proxy's
+	// own address for every client). Both are the normal shape of a
+	// TLS-terminating reverse proxy deployment. Off by default: these
+	// headers are exactly as trustworthy as any other client-supplied
+	// header unless something in front of this process is actually
+	// guaranteed to set (and strip any client-supplied copy of) them, which
+	// is a deployment fact this process can't verify on its own -- only
+	// turn this on if that's actually true of your deployment.
 	TrustProxyHeaders bool
 }
 

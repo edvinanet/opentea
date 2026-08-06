@@ -1,0 +1,113 @@
+{
+  "$schema": "http://cyclonedx.org/schema/bom-1.6.schema.json",
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.6",
+  "serialNumber": "urn:uuid:2cfe6178-90d5-45d5-b7f3-0d7dcab3472f",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-08-06T10:21:56+02:00",
+    "tools": [
+      {
+        "vendor": "CycloneDX",
+        "name": "cyclonedx-gomod",
+        "version": "v1.10.0",
+        "hashes": [
+          {
+            "alg": "MD5",
+            "content": "bd6eabb099c06bd174ad32f0ce4168a6"
+          },
+          {
+            "alg": "SHA-1",
+            "content": "3b344b6601f8585c2130b5708311654450c7671d"
+          },
+          {
+            "alg": "SHA-256",
+            "content": "20a32fdf688771269bd15f95065df1478734e201e254bcccee5ea4964161d671"
+          },
+          {
+            "alg": "SHA-384",
+            "content": "984a24f22107538f64b58c6eba1b91bf2c2255a8e63514b948196baf37145688dc4d5f17cfc5ce614f3b521dea909a2e"
+          },
+          {
+            "alg": "SHA-512",
+            "content": "e97e542970dbe91d65693eb4dc40bba9cb8a4ed0bf4e66ed076568a3dd2dbf2dd74859a028dc7d849624ec6308d7970c4a09c0a9c6b3f20529975938c2610d94"
+          }
+        ],
+        "externalReferences": [
+          {
+            "url": "https://github.com/CycloneDX/cyclonedx-gomod",
+            "type": "vcs"
+          },
+          {
+            "url": "https://cyclonedx.org",
+            "type": "website"
+          }
+        ]
+      }
+    ],
+    "component": {
+      "bom-ref": "pkg:golang/github.com/oej/opentea@v0.0.0-20260806070306-ea3ff54e1d08?type=module#cmd/teaclient",
+      "type": "application",
+      "name": "github.com/oej/opentea",
+      "version": "v0.0.0-20260806070306-ea3ff54e1d08",
+      "purl": "pkg:golang/github.com/oej/opentea@v0.0.0-20260806070306-ea3ff54e1d08?goarch=arm64&goos=linux&type=module#cmd/teaclient",
+      "externalReferences": [
+        {
+          "url": "https://github.com/oej/opentea",
+          "type": "vcs"
+        }
+      ],
+      "properties": [
+        {
+          "name": "cdx:gomod:build:env:CGO_ENABLED",
+          "value": "1"
+        },
+        {
+          "name": "cdx:gomod:build:env:GOARCH",
+          "value": "arm64"
+        },
+        {
+          "name": "cdx:gomod:build:env:GOOS",
+          "value": "linux"
+        },
+        {
+          "name": "cdx:gomod:build:env:GOVERSION",
+          "value": "go1.26.5"
+        }
+      ]
+    }
+  },
+  "components": [
+    {
+      "bom-ref": "pkg:golang/golang.org/x/crypto@v0.53.0?type=module",
+      "type": "library",
+      "name": "golang.org/x/crypto",
+      "version": "v0.53.0",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "419e0cba8f131d7e828b3376bcf3dde5f0461f2a20add2bd7c6e302cf154b2da"
+        }
+      ],
+      "purl": "pkg:golang/golang.org/x/crypto@v0.53.0?goarch=arm64&goos=linux&type=module",
+      "properties": [
+        {
+          "name": "opentea:cpeChecked",
+          "value": "2026-08-06, https://cpe.gcve.eu, no match"
+        }
+      ]
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "pkg:golang/github.com/oej/opentea@v0.0.0-20260806070306-ea3ff54e1d08?type=module#cmd/teaclient",
+      "dependsOn": [
+        "pkg:golang/golang.org/x/crypto@v0.53.0?type=module"
+      ]
+    },
+    {
+      "ref": "pkg:golang/golang.org/x/crypto@v0.53.0?type=module"
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "$schema": "http://cyclonedx.org/schema/bom-1.6.schema.json",
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.6",
+  "serialNumber": "urn:uuid:260de7f9-0ee9-435e-8c31-d6d184c9ea64",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-08-06T08:21:56Z",
+    "tools": [
+      {
+        "vendor": "opentea",
+        "name": "generate-shared-sbom.py"
+      }
+    ],
+    "component": {
+      "bom-ref": "pkg:golang/github.com/oej/opentea@ea3ff54-dirty?type=module#pkg/tea",
+      "type": "library",
+      "name": "github.com/oej/opentea/pkg/tea",
+      "version": "ea3ff54-dirty",
+      "purl": "pkg:golang/github.com/oej/opentea@ea3ff54-dirty?type=module#pkg/tea",
+      "externalReferences": [
+        {
+          "url": "https://github.com/oej/opentea",
+          "type": "vcs"
+        }
+      ]
+    }
+  },
+  "components": [],
+  "dependencies": [
+    {
+      "ref": "pkg:golang/github.com/oej/opentea@ea3ff54-dirty?type=module#pkg/tea",
+      "dependsOn": []
+    }
+  ]
+}

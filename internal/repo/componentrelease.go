@@ -49,6 +49,9 @@ func (r *Repo) CreateComponentRelease(ctx context.Context, componentUUID string,
 	if err := insertIdentifiers(ctx, tx, OwnerComponentRelease, uuid, in.Identifiers); err != nil {
 		return tea.ComponentRelease{}, err
 	}
+	if err := bumpWatermarkTx(ctx, tx, WatermarkComponentReleases); err != nil {
+		return tea.ComponentRelease{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return tea.ComponentRelease{}, err
 	}
@@ -96,6 +99,9 @@ func (r *Repo) ImportComponentRelease(ctx context.Context, in ImportComponentRel
 		if err := insertIdentifiers(ctx, tx, OwnerComponentRelease, in.UUID, in.Identifiers); err != nil {
 			return false, err
 		}
+		if err := bumpWatermarkTx(ctx, tx, WatermarkComponentReleases); err != nil {
+			return false, err
+		}
 		return true, nil
 	})
 }
@@ -127,6 +133,27 @@ func componentReleaseConflicts(existing tea.ComponentRelease, in ImportComponent
 // identifiers and distributions. Returns ErrNotFound if uuid doesn't exist.
 func (r *Repo) GetComponentRelease(ctx context.Context, uuid string) (tea.ComponentRelease, error) {
 	return getComponentReleaseTx(ctx, r.conn(), uuid)
+}
+
+// GetComponentReleaseRevision fetches just the revision counter for one
+// component release -- for ETag construction, so a conditional GET can
+// check If-None-Match against a single indexed column instead of the full
+// fetch (which also joins identifiers and distributions)
+// GetComponentRelease does. Returns ErrNotFound if uuid doesn't exist.
+func (r *Repo) GetComponentReleaseRevision(ctx context.Context, uuid string) (int64, error) {
+	return getComponentReleaseRevisionTx(ctx, r.conn(), uuid)
+}
+
+func getComponentReleaseRevisionTx(ctx context.Context, q dbtx, uuid string) (int64, error) {
+	var revision int64
+	err := q.QueryRowContext(ctx, `SELECT revision FROM component_release WHERE uuid = ?`, uuid).Scan(&revision)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrNotFound
+	}
+	if err != nil {
+		return 0, err
+	}
+	return revision, nil
 }
 
 // getComponentReleaseTx is GetComponentRelease's logic parameterized over a
@@ -282,6 +309,9 @@ func (r *Repo) DeleteComponentRelease(ctx context.Context, uuid string) error {
 		return ErrNotFound
 	}
 	if err := deleteOwnerScoped(ctx, tx, OwnerComponentRelease, uuid); err != nil {
+		return err
+	}
+	if err := bumpWatermarkTx(ctx, tx, WatermarkComponentReleases); err != nil {
 		return err
 	}
 	return tx.Commit()

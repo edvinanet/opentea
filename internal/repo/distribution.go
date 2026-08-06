@@ -12,25 +12,34 @@ import (
 
 // CreateDistribution creates a new distribution for componentReleaseUUID
 // with a fresh generated ID. Returns ErrNotFound if componentReleaseUUID
-// doesn't exist.
+// doesn't exist. Bumps the owning component release's revision, since its
+// response embeds .Distributions.
 func (r *Repo) CreateDistribution(ctx context.Context, componentReleaseUUID, description string) (tea.ReleaseDistribution, error) {
-	// Ensure the parent exists so we fail with ErrNotFound rather than a raw FK error.
-	var exists int
-	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM component_release WHERE uuid = ?`, componentReleaseUUID).Scan(&exists); err != nil {
-		return tea.ReleaseDistribution{}, err
-	}
-	if exists == 0 {
-		return tea.ReleaseDistribution{}, ErrNotFound
-	}
+	return runInTx(ctx, r, func(tx dbtx) (tea.ReleaseDistribution, error) {
+		// Ensure the parent exists so we fail with ErrNotFound rather than a raw FK error.
+		var exists int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM component_release WHERE uuid = ?`, componentReleaseUUID).Scan(&exists); err != nil {
+			return tea.ReleaseDistribution{}, err
+		}
+		if exists == 0 {
+			return tea.ReleaseDistribution{}, ErrNotFound
+		}
 
-	id := idgen.New()
-	if _, err := r.db.ExecContext(ctx,
-		`INSERT INTO release_distribution (distribution_id, component_release_uuid, description) VALUES (?, ?, ?)`,
-		id, componentReleaseUUID, description,
-	); err != nil {
-		return tea.ReleaseDistribution{}, err
-	}
-	return r.GetDistribution(ctx, id)
+		id := idgen.New()
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO release_distribution (distribution_id, component_release_uuid, description) VALUES (?, ?, ?)`,
+			id, componentReleaseUUID, description,
+		); err != nil {
+			return tea.ReleaseDistribution{}, err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE component_release SET revision = revision + 1 WHERE uuid = ?`, componentReleaseUUID); err != nil {
+			return tea.ReleaseDistribution{}, err
+		}
+		if err := bumpWatermarkTx(ctx, tx, WatermarkComponentReleases); err != nil {
+			return tea.ReleaseDistribution{}, err
+		}
+		return getDistributionTx(ctx, tx, id)
+	})
 }
 
 // ImportDistributionInput carries everything a bundle already knows about a
@@ -87,6 +96,12 @@ func (r *Repo) ImportDistribution(ctx context.Context, in ImportDistributionInpu
 		if err := insertChecksums(ctx, tx, OwnerDistribution, in.DistributionID, in.Checksums); err != nil {
 			return false, err
 		}
+		if _, err := tx.ExecContext(ctx, `UPDATE component_release SET revision = revision + 1 WHERE uuid = ?`, in.ComponentReleaseUUID); err != nil {
+			return false, err
+		}
+		if err := bumpWatermarkTx(ctx, tx, WatermarkComponentReleases); err != nil {
+			return false, err
+		}
 		return true, nil
 	})
 }
@@ -112,30 +127,39 @@ func (r *Repo) GetDistribution(ctx context.Context, id string) (tea.ReleaseDistr
 }
 
 // SetDistributionFile records an uploaded file for a distribution: sets its
-// download URL and adds a SHA-256 checksum row.
+// download URL and adds a SHA-256 checksum row. Runs as one transaction
+// (including the owning component release's revision bump below) so that
+// revision can never observe a partial version of this change -- reuses
+// distributionComponentReleaseUUIDTx (also used by ImportDistribution's
+// conflict check) to find which component release to bump.
 func (r *Repo) SetDistributionFile(ctx context.Context, id, url, sha256Hex string) (tea.ReleaseDistribution, error) {
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return tea.ReleaseDistribution{}, err
-	}
-	defer func() { _ = tx.Rollback() }()
+	return runInTx(ctx, r, func(tx dbtx) (tea.ReleaseDistribution, error) {
+		res, err := tx.ExecContext(ctx, `UPDATE release_distribution SET url = ? WHERE distribution_id = ?`, url, id)
+		if err != nil {
+			return tea.ReleaseDistribution{}, err
+		}
+		if n, err := res.RowsAffected(); err != nil {
+			return tea.ReleaseDistribution{}, err
+		} else if n == 0 {
+			return tea.ReleaseDistribution{}, ErrNotFound
+		}
+		if err := insertChecksums(ctx, tx, OwnerDistribution, id, []tea.Checksum{{AlgType: "SHA-256", AlgValue: sha256Hex}}); err != nil {
+			return tea.ReleaseDistribution{}, err
+		}
 
-	res, err := tx.ExecContext(ctx, `UPDATE release_distribution SET url = ? WHERE distribution_id = ?`, url, id)
-	if err != nil {
-		return tea.ReleaseDistribution{}, err
-	}
-	if n, err := res.RowsAffected(); err != nil {
-		return tea.ReleaseDistribution{}, err
-	} else if n == 0 {
-		return tea.ReleaseDistribution{}, ErrNotFound
-	}
-	if err := insertChecksums(ctx, tx, OwnerDistribution, id, []tea.Checksum{{AlgType: "SHA-256", AlgValue: sha256Hex}}); err != nil {
-		return tea.ReleaseDistribution{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return tea.ReleaseDistribution{}, err
-	}
-	return r.GetDistribution(ctx, id)
+		componentReleaseUUID, err := distributionComponentReleaseUUIDTx(ctx, tx, id)
+		if err != nil {
+			return tea.ReleaseDistribution{}, err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE component_release SET revision = revision + 1 WHERE uuid = ?`, componentReleaseUUID); err != nil {
+			return tea.ReleaseDistribution{}, err
+		}
+		if err := bumpWatermarkTx(ctx, tx, WatermarkComponentReleases); err != nil {
+			return tea.ReleaseDistribution{}, err
+		}
+
+		return getDistributionTx(ctx, tx, id)
+	})
 }
 
 func listDistributionsForRelease(ctx context.Context, q dbtx, componentReleaseUUID string) ([]tea.ReleaseDistribution, error) {

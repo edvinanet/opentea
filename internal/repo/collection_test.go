@@ -112,3 +112,44 @@ func TestGetLatestCollectionNotFound(t *testing.T) {
 		t.Fatalf("err = %v, want ErrNotFound", err)
 	}
 }
+
+// TestExistsCollectionVersion confirms the existence check correctly
+// distinguishes a real collection version from an unknown version and from
+// the same (uuid, version) under the *other* belongsTo type. Unlike
+// product/component, a collection version's "owning" release deletion
+// doesn't cascade to it -- collection.uuid is polymorphic (either a
+// product_release or component_release uuid depending on belongs_to), so it
+// can't carry a FOREIGN KEY to either, and there's no DeleteCollection at
+// all -- confirmed while writing this test (DeleteComponentRelease leaves a
+// component release's collections in place as orphaned rows, still
+// reachable by uuid+version+belongsTo). Noted in TODO.md as a pre-existing
+// gap, out of scope for this feature to fix.
+func TestExistsCollectionVersion(t *testing.T) {
+	ctx := context.Background()
+	r := newTestRepo(t)
+
+	component, err := r.CreateComponent(ctx, "tomcat", nil)
+	if err != nil {
+		t.Fatalf("CreateComponent: %v", err)
+	}
+	cr, err := r.CreateComponentRelease(ctx, component.UUID, ComponentReleaseInput{Version: "1.0.0", CreatedDate: time.Now()})
+	if err != nil {
+		t.Fatalf("CreateComponentRelease: %v", err)
+	}
+	c1, err := r.CreateCollectionForComponentRelease(ctx, cr.UUID, CollectionInput{})
+	if err != nil {
+		t.Fatalf("CreateCollectionForComponentRelease: %v", err)
+	}
+
+	if err := r.ExistsCollectionVersion(ctx, cr.UUID, c1.Version, BelongsToComponentRelease); err != nil {
+		t.Fatalf("ExistsCollectionVersion: %v", err)
+	}
+	// A real version under the *other* belongsTo type doesn't exist there.
+	if err := r.ExistsCollectionVersion(ctx, cr.UUID, c1.Version, BelongsToProductRelease); err != ErrNotFound {
+		t.Fatalf("ExistsCollectionVersion (wrong belongsTo): err = %v, want ErrNotFound", err)
+	}
+	// A nonexistent version under the right owner/type.
+	if err := r.ExistsCollectionVersion(ctx, cr.UUID, c1.Version+1, BelongsToComponentRelease); err != ErrNotFound {
+		t.Fatalf("ExistsCollectionVersion (unknown version): err = %v, want ErrNotFound", err)
+	}
+}

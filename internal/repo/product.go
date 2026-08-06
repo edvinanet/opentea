@@ -27,6 +27,9 @@ func (r *Repo) CreateProduct(ctx context.Context, name string, identifiers []tea
 	if err := insertIdentifiers(ctx, tx, OwnerProduct, uuid, identifiers); err != nil {
 		return tea.Product{}, err
 	}
+	if err := bumpWatermarkTx(ctx, tx, WatermarkProducts); err != nil {
+		return tea.Product{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return tea.Product{}, err
 	}
@@ -62,6 +65,9 @@ func (r *Repo) ImportProduct(ctx context.Context, uuid, name string, identifiers
 		if err := insertIdentifiers(ctx, tx, OwnerProduct, uuid, identifiers); err != nil {
 			return false, err
 		}
+		if err := bumpWatermarkTx(ctx, tx, WatermarkProducts); err != nil {
+			return false, err
+		}
 		return true, nil
 	})
 }
@@ -69,6 +75,27 @@ func (r *Repo) ImportProduct(ctx context.Context, uuid, name string, identifiers
 // GetProduct fetches a product by UUID. Returns ErrNotFound if uuid doesn't exist.
 func (r *Repo) GetProduct(ctx context.Context, uuid string) (tea.Product, error) {
 	return getProductTx(ctx, r.conn(), uuid)
+}
+
+// ExistsProduct reports whether uuid exists, without fetching the rest of
+// the row -- for ETag construction: product has no update path in this
+// codebase (no rename, no re-identify), so its representation is provably
+// immutable once created and its ETag needs no revision counter, just this
+// one cheap existence check (still required, not skippable -- DeleteProduct
+// is a real write path, so a client's cached ETag for a since-deleted
+// product must not keep matching forever). Returns ErrNotFound if uuid
+// doesn't exist.
+func (r *Repo) ExistsProduct(ctx context.Context, uuid string) error {
+	return existsProductTx(ctx, r.conn(), uuid)
+}
+
+func existsProductTx(ctx context.Context, q dbtx, uuid string) error {
+	var exists int
+	err := q.QueryRowContext(ctx, `SELECT 1 FROM product WHERE uuid = ?`, uuid).Scan(&exists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	return err
 }
 
 // getProductTx is GetProduct's logic parameterized over a dbtx instead of
@@ -169,6 +196,9 @@ func (r *Repo) DeleteProduct(ctx context.Context, uuid string) error {
 		return ErrNotFound
 	}
 	if err := deleteOwnerScoped(ctx, tx, OwnerProduct, uuid); err != nil {
+		return err
+	}
+	if err := bumpWatermarkTx(ctx, tx, WatermarkProducts); err != nil {
 		return err
 	}
 	return tx.Commit()

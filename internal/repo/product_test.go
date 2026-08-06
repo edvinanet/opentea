@@ -133,3 +133,36 @@ func TestDeleteProduct(t *testing.T) {
 		t.Fatalf("DeleteProduct (already gone): err = %v, want ErrNotFound", err)
 	}
 }
+
+// TestExistsProduct is the regression test for the design-review-caught
+// "skip the DB entirely for immutable resources" bug: product has no
+// revision column (it's provably immutable -- no update path exists), but
+// DeleteProduct is a real write path, so an ETag built from the UUID alone
+// still needs an existence check first -- otherwise a client polling a
+// deleted product's cached ETag would get 304 with stale data forever.
+func TestExistsProduct(t *testing.T) {
+	ctx := context.Background()
+	r := newTestRepo(t)
+
+	p, err := r.CreateProduct(ctx, "exists-check", nil)
+	if err != nil {
+		t.Fatalf("CreateProduct: %v", err)
+	}
+	if err := r.ExistsProduct(ctx, p.UUID); err != nil {
+		t.Fatalf("ExistsProduct: %v", err)
+	}
+
+	if err := r.DeleteProduct(ctx, p.UUID); err != nil {
+		t.Fatalf("DeleteProduct: %v", err)
+	}
+	if err := r.ExistsProduct(ctx, p.UUID); err != ErrNotFound {
+		t.Fatalf("ExistsProduct after delete: err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestExistsProductNotFound(t *testing.T) {
+	r := newTestRepo(t)
+	if err := r.ExistsProduct(context.Background(), "00000000-0000-4000-8000-000000000000"); err != ErrNotFound {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+}

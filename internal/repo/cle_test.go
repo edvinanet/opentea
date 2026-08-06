@@ -107,3 +107,131 @@ func TestCLESupportDefinitions(t *testing.T) {
 		t.Fatalf("Definitions = %+v", got.Definitions)
 	}
 }
+
+// TestCLERevisionBumpsOnEveryWrite is the regression test for CLE ETag
+// support: an owner with no CLE data yet has revision 0 (not ErrNotFound,
+// matching GetCLE's own "empty CLE is valid" semantics), and each of the 4
+// CLE write functions bumps it by exactly 1.
+func TestCLERevisionBumpsOnEveryWrite(t *testing.T) {
+	ctx := context.Background()
+	r := newTestRepo(t)
+
+	product, err := r.CreateProduct(ctx, "A", nil)
+	if err != nil {
+		t.Fatalf("CreateProduct: %v", err)
+	}
+
+	rev, err := r.GetCLERevision(ctx, OwnerProduct, product.UUID)
+	if err != nil {
+		t.Fatalf("GetCLERevision (no CLE data yet): %v", err)
+	}
+	if rev != 0 {
+		t.Fatalf("revision = %d, want 0 for an owner with no CLE data yet", rev)
+	}
+
+	now := time.Now().UTC().Truncate(time.Second)
+	if _, err := r.CreateCLEEvent(ctx, OwnerProduct, product.UUID, CLEEventInput{Type: "released", Effective: now, Published: now}); err != nil {
+		t.Fatalf("CreateCLEEvent: %v", err)
+	}
+	rev, err = r.GetCLERevision(ctx, OwnerProduct, product.UUID)
+	if err != nil {
+		t.Fatalf("GetCLERevision after CreateCLEEvent: %v", err)
+	}
+	if rev != 1 {
+		t.Fatalf("revision after CreateCLEEvent = %d, want 1", rev)
+	}
+
+	if _, err := r.ImportCLEEvent(ctx, OwnerProduct, product.UUID, tea.CLEEvent{ID: 99, Type: "released", Effective: now, Published: now}); err != nil {
+		t.Fatalf("ImportCLEEvent: %v", err)
+	}
+	rev, err = r.GetCLERevision(ctx, OwnerProduct, product.UUID)
+	if err != nil {
+		t.Fatalf("GetCLERevision after ImportCLEEvent: %v", err)
+	}
+	if rev != 2 {
+		t.Fatalf("revision after ImportCLEEvent = %d, want 2", rev)
+	}
+
+	if _, err := r.CreateCLESupportDefinition(ctx, OwnerProduct, product.UUID, tea.CLESupportDefinition{ID: "standard", Description: "x"}); err != nil {
+		t.Fatalf("CreateCLESupportDefinition: %v", err)
+	}
+	rev, err = r.GetCLERevision(ctx, OwnerProduct, product.UUID)
+	if err != nil {
+		t.Fatalf("GetCLERevision after CreateCLESupportDefinition: %v", err)
+	}
+	if rev != 3 {
+		t.Fatalf("revision after CreateCLESupportDefinition = %d, want 3", rev)
+	}
+
+	if _, err := r.ImportCLESupportDefinition(ctx, OwnerProduct, product.UUID, tea.CLESupportDefinition{ID: "lts", Description: "y"}); err != nil {
+		t.Fatalf("ImportCLESupportDefinition: %v", err)
+	}
+	rev, err = r.GetCLERevision(ctx, OwnerProduct, product.UUID)
+	if err != nil {
+		t.Fatalf("GetCLERevision after ImportCLESupportDefinition: %v", err)
+	}
+	if rev != 4 {
+		t.Fatalf("revision after ImportCLESupportDefinition = %d, want 4", rev)
+	}
+
+	// An idempotent re-import (matching content) must NOT bump.
+	if _, err := r.ImportCLEEvent(ctx, OwnerProduct, product.UUID, tea.CLEEvent{ID: 99, Type: "released", Effective: now, Published: now}); err != nil {
+		t.Fatalf("ImportCLEEvent (re-import): %v", err)
+	}
+	rev, err = r.GetCLERevision(ctx, OwnerProduct, product.UUID)
+	if err != nil {
+		t.Fatalf("GetCLERevision after idempotent re-import: %v", err)
+	}
+	if rev != 4 {
+		t.Fatalf("revision after idempotent re-import = %d, want unchanged at 4", rev)
+	}
+}
+
+// TestDeleteProductBumpsCLERevision is the regression test for the design-
+// review-caught bug: GetCLE never checks whether its owner still exists
+// (see its own doc comment -- "valid call on any existing product/release
+// even before any lifecycle events are recorded" -- it just queries by
+// owner_type/owner_uuid regardless), so deleting a product with CLE events
+// must still bump cle_revision, or a client polling with a stale ETag would
+// keep getting 304 with now-deleted event data forever instead of the
+// current (now-empty) state.
+func TestDeleteProductBumpsCLERevision(t *testing.T) {
+	ctx := context.Background()
+	r := newTestRepo(t)
+
+	product, err := r.CreateProduct(ctx, "A", nil)
+	if err != nil {
+		t.Fatalf("CreateProduct: %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	if _, err := r.CreateCLEEvent(ctx, OwnerProduct, product.UUID, CLEEventInput{Type: "released", Effective: now, Published: now}); err != nil {
+		t.Fatalf("CreateCLEEvent: %v", err)
+	}
+	beforeDelete, err := r.GetCLERevision(ctx, OwnerProduct, product.UUID)
+	if err != nil {
+		t.Fatalf("GetCLERevision before delete: %v", err)
+	}
+
+	if err := r.DeleteProduct(ctx, product.UUID); err != nil {
+		t.Fatalf("DeleteProduct: %v", err)
+	}
+
+	afterDelete, err := r.GetCLERevision(ctx, OwnerProduct, product.UUID)
+	if err != nil {
+		t.Fatalf("GetCLERevision after delete: %v", err)
+	}
+	if afterDelete == beforeDelete {
+		t.Fatalf("revision after DeleteProduct = %d, want different from pre-delete %d (a cached ETag must not still match)", afterDelete, beforeDelete)
+	}
+
+	// The events themselves are actually gone (deleteOwnerScoped's existing
+	// behavior, unaffected by this change) -- confirms the revision bump
+	// reflects a real, visible content change, not a decoy.
+	cle, err := r.GetCLE(ctx, OwnerProduct, product.UUID)
+	if err != nil {
+		t.Fatalf("GetCLE after delete: %v", err)
+	}
+	if len(cle.Events) != 0 {
+		t.Fatalf("Events after delete = %+v, want none", cle.Events)
+	}
+}

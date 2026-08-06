@@ -116,6 +116,12 @@ const (
 // etc.) are cleaned up by the schema's ON DELETE CASCADE foreign keys;
 // identifier/CLE rows are not FK-enforced (they're polymorphic across owner
 // types) so they need explicit cleanup here.
+//
+// Also bumps cle_revision for this owner (see bumpCLERevisionTx's doc
+// comment for why this is required, not just tidy): GetCLE never checks
+// whether the owner itself still exists, so wiping cle_event/
+// cle_support_definition without also bumping the revision would leave a
+// stale cached ETag matching forever against data that no longer exists.
 func deleteOwnerScoped(ctx context.Context, q dbtx, ownerType, ownerUUID string) error {
 	if _, err := q.ExecContext(ctx, `DELETE FROM identifier WHERE owner_type = ? AND owner_uuid = ?`, ownerType, ownerUUID); err != nil {
 		return err
@@ -126,5 +132,5 @@ func deleteOwnerScoped(ctx context.Context, q dbtx, ownerType, ownerUUID string)
 	if _, err := q.ExecContext(ctx, `DELETE FROM cle_support_definition WHERE owner_type = ? AND owner_uuid = ?`, ownerType, ownerUUID); err != nil {
 		return err
 	}
-	return nil
+	return bumpCLERevisionTx(ctx, q, ownerType, ownerUUID)
 }

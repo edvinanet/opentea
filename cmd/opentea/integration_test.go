@@ -1009,3 +1009,237 @@ func TestCollectionRoutesRespectParentType(t *testing.T) {
 		}
 	})
 }
+
+// getWithETag issues a GET against path, optionally sending ifNoneMatch as
+// the If-None-Match header (skipped entirely if empty), and returns the
+// status code, the response's own ETag header, and the body.
+func getWithETag(t *testing.T, srv *testServer, path, ifNoneMatch string) (status int, etag string, body []byte) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, srv.URL+path, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	if ifNoneMatch != "" {
+		req.Header.Set("If-None-Match", ifNoneMatch)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET %s: %v", path, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read response body: %v", err)
+	}
+	return resp.StatusCode, resp.Header.Get("ETag"), b
+}
+
+// TestETagConditionalRequests drives ETag/If-None-Match support through the
+// real HTTP stack across the 4 shapes this feature distinguishes:
+// existence-only (product, provably immutable), revision-based
+// (productRelease, mutated via LinkComponent), a second revision-based case
+// with its own mutation path (artifact, mutated via file upload), and CLE
+// (revision-based, with the design-review-caught delete-must-still-bump
+// case). Also proves the core regression the "skip the DB for immutable
+// resources" bug would have caused: a deleted product's cached ETag must
+// 404, not 304.
+func TestETagConditionalRequests(t *testing.T) {
+	srv := newTestServer(t)
+
+	status, raw := jsonRequest(t, srv, http.MethodPost, "/admin/v1/products", map[string]any{"name": "ETag Test Product"})
+	if status != http.StatusCreated {
+		t.Fatalf("create product: status=%d body=%s", status, raw)
+	}
+	var product tea.Product
+	decodeInto(t, raw, &product)
+
+	status, raw = jsonRequest(t, srv, http.MethodPost, "/admin/v1/products/"+product.UUID+"/releases", map[string]any{
+		"version": "1.0.0", "createdDate": "2026-07-01T00:00:00Z",
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("create product release: status=%d body=%s", status, raw)
+	}
+	var productRelease tea.ProductRelease
+	decodeInto(t, raw, &productRelease)
+
+	status, raw = jsonRequest(t, srv, http.MethodPost, "/admin/v1/components", map[string]any{"name": "etag-test-component"})
+	if status != http.StatusCreated {
+		t.Fatalf("create component: status=%d body=%s", status, raw)
+	}
+	var component tea.Component
+	decodeInto(t, raw, &component)
+
+	status, raw = jsonRequest(t, srv, http.MethodPost, "/admin/v1/artifacts", map[string]any{
+		"type": "BOM", "formats": []map[string]any{{"mediaType": "application/json"}},
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("create artifact: status=%d body=%s", status, raw)
+	}
+	var artifact tea.Artifact
+	decodeInto(t, raw, &artifact)
+
+	t.Run("product (existence-only)", func(t *testing.T) {
+		path := "/tea/v1/product/" + product.UUID
+		status, etag1, _ := getWithETag(t, srv, path, "")
+		if status != http.StatusOK || etag1 == "" {
+			t.Fatalf("first GET: status=%d etag=%q, want 200 with a non-empty ETag", status, etag1)
+		}
+
+		status, _, body := getWithETag(t, srv, path, etag1)
+		if status != http.StatusNotModified {
+			t.Fatalf("matching If-None-Match: status=%d, want 304", status)
+		}
+		if len(body) != 0 {
+			t.Fatalf("304 body = %q, want empty", body)
+		}
+
+		status, etag2, _ := getWithETag(t, srv, path, `"stale-etag"`)
+		if status != http.StatusOK || etag2 != etag1 {
+			t.Fatalf("stale If-None-Match: status=%d etag=%q, want 200 with the same ETag %q (product never changes)", status, etag2, etag1)
+		}
+	})
+
+	t.Run("productRelease (revision, mutated via LinkComponent)", func(t *testing.T) {
+		path := "/tea/v1/productRelease/" + productRelease.UUID
+		status, etag1, _ := getWithETag(t, srv, path, "")
+		if status != http.StatusOK || etag1 == "" {
+			t.Fatalf("first GET: status=%d etag=%q, want 200 with a non-empty ETag", status, etag1)
+		}
+		status, _, _ = getWithETag(t, srv, path, etag1)
+		if status != http.StatusNotModified {
+			t.Fatalf("matching If-None-Match: status=%d, want 304", status)
+		}
+
+		status, raw := jsonRequest(t, srv, http.MethodPost, "/admin/v1/productReleases/"+productRelease.UUID+"/components", tea.ComponentRef{UUID: component.UUID})
+		if status != http.StatusOK {
+			t.Fatalf("LinkComponent: status=%d body=%s", status, raw)
+		}
+
+		status, etag2, _ := getWithETag(t, srv, path, etag1)
+		if status != http.StatusOK {
+			t.Fatalf("GET after LinkComponent: status=%d, want 200 (old ETag must no longer match)", status)
+		}
+		if etag2 == etag1 {
+			t.Fatal("ETag unchanged after LinkComponent, want a new one")
+		}
+	})
+
+	t.Run("artifact (revision, mutated via file upload)", func(t *testing.T) {
+		path := "/tea/v1/artifact/" + artifact.UUID + "/" + strconv.Itoa(artifact.Version)
+		status, etag1, _ := getWithETag(t, srv, path, "")
+		if status != http.StatusOK || etag1 == "" {
+			t.Fatalf("first GET: status=%d etag=%q, want 200 with a non-empty ETag", status, etag1)
+		}
+		status, _, _ = getWithETag(t, srv, path, etag1)
+		if status != http.StatusNotModified {
+			t.Fatalf("matching If-None-Match: status=%d, want 304", status)
+		}
+
+		status, raw := uploadFile(t, srv,
+			"/admin/v1/artifacts/"+artifact.UUID+"/"+strconv.Itoa(artifact.Version)+"/files?formatIndex=0",
+			"sbom.json", []byte(`{"bomFormat":"CycloneDX"}`), "application/json")
+		if status != http.StatusOK {
+			t.Fatalf("upload artifact file: status=%d body=%s", status, raw)
+		}
+
+		status, etag2, _ := getWithETag(t, srv, path, etag1)
+		if status != http.StatusOK {
+			t.Fatalf("GET after file upload: status=%d, want 200 (old ETag must no longer match)", status)
+		}
+		if etag2 == etag1 {
+			t.Fatal("ETag unchanged after file upload, want a new one")
+		}
+	})
+
+	t.Run("CLE (revision, mutated via CreateCLEEvent)", func(t *testing.T) {
+		path := "/tea/v1/product/" + product.UUID + "/cle"
+		status, etag1, _ := getWithETag(t, srv, path, "")
+		if status != http.StatusOK || etag1 == "" {
+			t.Fatalf("first GET (no events yet): status=%d etag=%q, want 200 with a non-empty ETag", status, etag1)
+		}
+		status, _, _ = getWithETag(t, srv, path, etag1)
+		if status != http.StatusNotModified {
+			t.Fatalf("matching If-None-Match: status=%d, want 304", status)
+		}
+
+		status, raw := jsonRequest(t, srv, http.MethodPost, "/admin/v1/products/"+product.UUID+"/cle/events", map[string]any{
+			"type": "released", "effective": "2026-07-01T00:00:00Z", "published": "2026-07-01T00:00:00Z", "version": "1.0.0",
+		})
+		if status != http.StatusCreated {
+			t.Fatalf("CreateCLEEvent: status=%d body=%s", status, raw)
+		}
+
+		status, etag2, _ := getWithETag(t, srv, path, etag1)
+		if status != http.StatusOK {
+			t.Fatalf("GET after CreateCLEEvent: status=%d, want 200 (old ETag must no longer match)", status)
+		}
+		if etag2 == etag1 {
+			t.Fatal("ETag unchanged after CreateCLEEvent, want a new one")
+		}
+
+		// cleByProduct independently checks the owner's own existence
+		// before ever reaching writeCLE's ETag logic, so this route 404s
+		// after delete regardless of the CLE-revision fix -- confirms that
+		// existing guard still works with the new ETag step added in
+		// front of it. The design-review-caught case this route's own
+		// guard happens to mask (GetCLE/GetCLERevision never checking
+		// owner existence on their own, so a route reachable WITHOUT such
+		// a guard would otherwise 304 forever against deleted data) is
+		// covered directly at the repo layer by
+		// internal/repo/cle_test.go's TestDeleteProductBumpsCLERevision.
+		if status, raw := jsonRequest(t, srv, http.MethodDelete, "/admin/v1/products/"+product.UUID, nil); status != http.StatusNoContent {
+			t.Fatalf("DeleteProduct: status=%d body=%s", status, raw)
+		}
+		status, _, _ = getWithETag(t, srv, path, etag2)
+		if status != http.StatusNotFound {
+			t.Fatalf("GET CLE after owning product deleted: status=%d, want 404", status)
+		}
+	})
+}
+
+// TestListETagConditionalRequests confirms list-endpoint ETags (backed by
+// the global per-resource-family watermark, not any single row's own
+// identity) behave correctly through the real HTTP stack: stable across
+// repeated identical requests, matching If-None-Match short-circuits to
+// 304, and creating a new product changes the list's ETag even though the
+// query parameters themselves didn't change.
+func TestListETagConditionalRequests(t *testing.T) {
+	srv := newTestServer(t)
+
+	status, raw := jsonRequest(t, srv, http.MethodPost, "/admin/v1/products", map[string]any{"name": "List ETag Product 1"})
+	if status != http.StatusCreated {
+		t.Fatalf("create product 1: status=%d body=%s", status, raw)
+	}
+
+	path := "/tea/v1/products"
+	status, etag1, _ := getWithETag(t, srv, path, "")
+	if status != http.StatusOK || etag1 == "" {
+		t.Fatalf("first GET: status=%d etag=%q, want 200 with a non-empty ETag", status, etag1)
+	}
+
+	status, etag1b, _ := getWithETag(t, srv, path, "")
+	if status != http.StatusOK || etag1b != etag1 {
+		t.Fatalf("repeated GET with no mutation: status=%d etag=%q, want the same ETag %q", status, etag1b, etag1)
+	}
+
+	status, _, body := getWithETag(t, srv, path, etag1)
+	if status != http.StatusNotModified {
+		t.Fatalf("matching If-None-Match: status=%d, want 304", status)
+	}
+	if len(body) != 0 {
+		t.Fatalf("304 body = %q, want empty", body)
+	}
+
+	status, raw = jsonRequest(t, srv, http.MethodPost, "/admin/v1/products", map[string]any{"name": "List ETag Product 2"})
+	if status != http.StatusCreated {
+		t.Fatalf("create product 2: status=%d body=%s", status, raw)
+	}
+
+	status, etag2, _ := getWithETag(t, srv, path, etag1)
+	if status != http.StatusOK {
+		t.Fatalf("GET after creating a new product: status=%d, want 200 (old ETag must no longer match)", status)
+	}
+	if etag2 == etag1 {
+		t.Fatal("list ETag unchanged after creating a new product, want a new one")
+	}
+}

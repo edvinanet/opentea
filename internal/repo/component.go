@@ -27,6 +27,9 @@ func (r *Repo) CreateComponent(ctx context.Context, name string, identifiers []t
 	if err := insertIdentifiers(ctx, tx, OwnerComponent, uuid, identifiers); err != nil {
 		return tea.Component{}, err
 	}
+	if err := bumpWatermarkTx(ctx, tx, WatermarkComponents); err != nil {
+		return tea.Component{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return tea.Component{}, err
 	}
@@ -54,6 +57,9 @@ func (r *Repo) ImportComponent(ctx context.Context, uuid, name string, identifie
 		if err := insertIdentifiers(ctx, tx, OwnerComponent, uuid, identifiers); err != nil {
 			return false, err
 		}
+		if err := bumpWatermarkTx(ctx, tx, WatermarkComponents); err != nil {
+			return false, err
+		}
 		return true, nil
 	})
 }
@@ -61,6 +67,24 @@ func (r *Repo) ImportComponent(ctx context.Context, uuid, name string, identifie
 // GetComponent fetches a component by UUID. Returns ErrNotFound if uuid doesn't exist.
 func (r *Repo) GetComponent(ctx context.Context, uuid string) (tea.Component, error) {
 	return getComponentTx(ctx, r.conn(), uuid)
+}
+
+// ExistsComponent reports whether uuid exists, without fetching the rest of
+// the row -- see product.go's ExistsProduct doc comment for the rationale
+// (component has the same no-update-path immutability, and the same
+// still-required existence check given DeleteComponent is a real write path).
+// Returns ErrNotFound if uuid doesn't exist.
+func (r *Repo) ExistsComponent(ctx context.Context, uuid string) error {
+	return existsComponentTx(ctx, r.conn(), uuid)
+}
+
+func existsComponentTx(ctx context.Context, q dbtx, uuid string) error {
+	var exists int
+	err := q.QueryRowContext(ctx, `SELECT 1 FROM component WHERE uuid = ?`, uuid).Scan(&exists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	return err
 }
 
 // getComponentTx is GetComponent's logic parameterized over a dbtx --
@@ -153,6 +177,9 @@ func (r *Repo) DeleteComponent(ctx context.Context, uuid string) error {
 		return ErrNotFound
 	}
 	if err := deleteOwnerScoped(ctx, tx, OwnerComponent, uuid); err != nil {
+		return err
+	}
+	if err := bumpWatermarkTx(ctx, tx, WatermarkComponents); err != nil {
 		return err
 	}
 	return tx.Commit()

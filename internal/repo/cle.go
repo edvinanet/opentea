@@ -30,61 +30,58 @@ type CLEEventInput struct {
 // CreateCLEEvent records a new lifecycle event for (ownerType, ownerUUID),
 // assigning it the next sequential id for that owner.
 func (r *Repo) CreateCLEEvent(ctx context.Context, ownerType, ownerUUID string, in CLEEventInput) (tea.CLEEvent, error) {
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return tea.CLEEvent{}, err
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	var maxID sql.NullInt64
-	if err := tx.QueryRowContext(ctx, `SELECT MAX(id) FROM cle_event WHERE owner_type = ? AND owner_uuid = ?`, ownerType, ownerUUID).Scan(&maxID); err != nil {
-		return tea.CLEEvent{}, err
-	}
-	id := 1
-	if maxID.Valid {
-		id = int(maxID.Int64) + 1
-	}
-
-	_, err = tx.ExecContext(ctx,
-		`INSERT INTO cle_event (owner_type, owner_uuid, id, type, effective, published, version, support_id, license, superseded_by_version, event_id_ref, reason, description)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		ownerType, ownerUUID, id, in.Type, formatTime(in.Effective), formatTime(in.Published),
-		nullIfEmpty(in.Version), nullIfEmpty(in.SupportID), nullIfEmpty(in.License), nullIfEmpty(in.SupersededByVersion),
-		in.EventID, nullIfEmpty(in.Reason), nullIfEmpty(in.Description),
-	)
-	if err != nil {
-		return tea.CLEEvent{}, err
-	}
-
-	for _, v := range in.Versions {
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO cle_event_version (owner_type, owner_uuid, event_id, version, version_range) VALUES (?, ?, ?, ?, ?)`,
-			ownerType, ownerUUID, id, nullIfEmpty(v.Version), nullIfEmpty(v.Range),
-		); err != nil {
+	return runInTx(ctx, r, func(tx dbtx) (tea.CLEEvent, error) {
+		var maxID sql.NullInt64
+		if err := tx.QueryRowContext(ctx, `SELECT MAX(id) FROM cle_event WHERE owner_type = ? AND owner_uuid = ?`, ownerType, ownerUUID).Scan(&maxID); err != nil {
 			return tea.CLEEvent{}, err
 		}
-	}
-	for _, ident := range in.Identifiers {
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO cle_event_identifier (owner_type, owner_uuid, event_id, id_type, id_value) VALUES (?, ?, ?, ?, ?)`,
-			ownerType, ownerUUID, id, ident.IDType, ident.IDValue,
-		); err != nil {
-			return tea.CLEEvent{}, err
+		id := 1
+		if maxID.Valid {
+			id = int(maxID.Int64) + 1
 		}
-	}
-	for _, ref := range in.References {
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO cle_event_reference (owner_type, owner_uuid, event_id, uri) VALUES (?, ?, ?, ?)`,
-			ownerType, ownerUUID, id, ref,
-		); err != nil {
-			return tea.CLEEvent{}, err
-		}
-	}
 
-	if err := tx.Commit(); err != nil {
-		return tea.CLEEvent{}, err
-	}
-	return getCLEEventTx(ctx, r.conn(), ownerType, ownerUUID, id)
+		_, err := tx.ExecContext(ctx,
+			`INSERT INTO cle_event (owner_type, owner_uuid, id, type, effective, published, version, support_id, license, superseded_by_version, event_id_ref, reason, description)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			ownerType, ownerUUID, id, in.Type, formatTime(in.Effective), formatTime(in.Published),
+			nullIfEmpty(in.Version), nullIfEmpty(in.SupportID), nullIfEmpty(in.License), nullIfEmpty(in.SupersededByVersion),
+			in.EventID, nullIfEmpty(in.Reason), nullIfEmpty(in.Description),
+		)
+		if err != nil {
+			return tea.CLEEvent{}, err
+		}
+
+		for _, v := range in.Versions {
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO cle_event_version (owner_type, owner_uuid, event_id, version, version_range) VALUES (?, ?, ?, ?, ?)`,
+				ownerType, ownerUUID, id, nullIfEmpty(v.Version), nullIfEmpty(v.Range),
+			); err != nil {
+				return tea.CLEEvent{}, err
+			}
+		}
+		for _, ident := range in.Identifiers {
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO cle_event_identifier (owner_type, owner_uuid, event_id, id_type, id_value) VALUES (?, ?, ?, ?, ?)`,
+				ownerType, ownerUUID, id, ident.IDType, ident.IDValue,
+			); err != nil {
+				return tea.CLEEvent{}, err
+			}
+		}
+		for _, ref := range in.References {
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO cle_event_reference (owner_type, owner_uuid, event_id, uri) VALUES (?, ?, ?, ?)`,
+				ownerType, ownerUUID, id, ref,
+			); err != nil {
+				return tea.CLEEvent{}, err
+			}
+		}
+
+		if err := bumpCLERevisionTx(ctx, tx, ownerType, ownerUUID); err != nil {
+			return tea.CLEEvent{}, err
+		}
+
+		return getCLEEventTx(ctx, tx, ownerType, ownerUUID, id)
+	})
 }
 
 // ImportCLEEvent creates the event at its exact source id if it doesn't
@@ -141,6 +138,10 @@ func (r *Repo) ImportCLEEvent(ctx context.Context, ownerType, ownerUUID string, 
 			); err != nil {
 				return false, err
 			}
+		}
+
+		if err := bumpCLERevisionTx(ctx, tx, ownerType, ownerUUID); err != nil {
+			return false, err
 		}
 
 		return true, nil
@@ -222,6 +223,9 @@ func (r *Repo) ImportCLESupportDefinition(ctx context.Context, ownerType, ownerU
 		); err != nil {
 			return false, err
 		}
+		if err := bumpCLERevisionTx(ctx, tx, ownerType, ownerUUID); err != nil {
+			return false, err
+		}
 		return true, nil
 	})
 }
@@ -229,13 +233,18 @@ func (r *Repo) ImportCLESupportDefinition(ctx context.Context, ownerType, ownerU
 // CreateCLESupportDefinition records a support policy definition for
 // (ownerType, ownerUUID), referenceable by CLE events via their SupportID.
 func (r *Repo) CreateCLESupportDefinition(ctx context.Context, ownerType, ownerUUID string, def tea.CLESupportDefinition) (tea.CLESupportDefinition, error) {
-	if _, err := r.db.ExecContext(ctx,
-		`INSERT INTO cle_support_definition (owner_type, owner_uuid, id, description, url) VALUES (?, ?, ?, ?, ?)`,
-		ownerType, ownerUUID, def.ID, def.Description, nullIfEmpty(def.URL),
-	); err != nil {
-		return tea.CLESupportDefinition{}, err
-	}
-	return def, nil
+	return runInTx(ctx, r, func(tx dbtx) (tea.CLESupportDefinition, error) {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO cle_support_definition (owner_type, owner_uuid, id, description, url) VALUES (?, ?, ?, ?, ?)`,
+			ownerType, ownerUUID, def.ID, def.Description, nullIfEmpty(def.URL),
+		); err != nil {
+			return tea.CLESupportDefinition{}, err
+		}
+		if err := bumpCLERevisionTx(ctx, tx, ownerType, ownerUUID); err != nil {
+			return tea.CLESupportDefinition{}, err
+		}
+		return def, nil
+	})
 }
 
 // GetCLE returns the full CLE object (events ordered newest-first by id, per
@@ -245,6 +254,49 @@ func (r *Repo) CreateCLESupportDefinition(ctx context.Context, ownerType, ownerU
 // existing product/release even before any lifecycle events are recorded.
 func (r *Repo) GetCLE(ctx context.Context, ownerType, ownerUUID string) (tea.CLE, error) {
 	return getCLETx(ctx, r.conn(), ownerType, ownerUUID)
+}
+
+// GetCLERevision fetches just the revision counter for one CLE owner -- for
+// ETag construction, so a conditional GET can check If-None-Match against a
+// single indexed lookup instead of the full CLE fetch (which joins events,
+// their versions/identifiers/references, and support definitions).
+// Returns 0, nil (not ErrNotFound) if the owner has no CLE data yet,
+// matching GetCLE's own "empty CLE is valid" semantics -- unlike every
+// other entity here, GetCLE never checks whether ownerUUID itself still
+// exists, so this can't distinguish "no CLE data" from "no such owner"
+// either; callers needing that distinction must check the owner separately
+// (see internal/api/cle.go).
+func (r *Repo) GetCLERevision(ctx context.Context, ownerType, ownerUUID string) (int64, error) {
+	return getCLERevisionTx(ctx, r.conn(), ownerType, ownerUUID)
+}
+
+func getCLERevisionTx(ctx context.Context, q dbtx, ownerType, ownerUUID string) (int64, error) {
+	var revision int64
+	err := q.QueryRowContext(ctx, `SELECT revision FROM cle_revision WHERE owner_type = ? AND owner_uuid = ?`, ownerType, ownerUUID).Scan(&revision)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	return revision, nil
+}
+
+// bumpCLERevisionTx increments (ownerType, ownerUUID)'s CLE revision,
+// creating its row at revision 1 on the first ever bump. Called from every
+// CLE write (CreateCLEEvent/ImportCLEEvent/CreateCLESupportDefinition/
+// ImportCLESupportDefinition) and also from deleteOwnerScoped -- the latter
+// is required, not optional: GetCLE (see its own doc comment) never checks
+// owner existence, so without bumping here, deleting a product/release with
+// CLE events would leave a client's cached CLE ETag matching forever
+// against now-deleted event data instead of the (now-empty) current state.
+func bumpCLERevisionTx(ctx context.Context, q dbtx, ownerType, ownerUUID string) error {
+	_, err := q.ExecContext(ctx,
+		`INSERT INTO cle_revision (owner_type, owner_uuid, revision) VALUES (?, ?, 1)
+		 ON CONFLICT (owner_type, owner_uuid) DO UPDATE SET revision = revision + 1`,
+		ownerType, ownerUUID,
+	)
+	return err
 }
 
 // getCLETx is GetCLE's logic parameterized over a dbtx -- see product.go's

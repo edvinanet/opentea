@@ -49,7 +49,16 @@ they don't get lost.
       export/import there either. Revisit the checksum/signature model and
       `internal/bundle`'s export/import together with the trust-architecture design.
 - [ ] **Authorization** via OpenIDConnect/Oauth2
-- [ ] **Multitenant**
+- [ ] **Multitenant** — no tenant concept exists anywhere in the schema or request path today
+      (confirmed 2026-08-06 while scoping ETag/conditional-request support for `/tea/v1`, added
+      the same day). That work's per-resource-family list "dataset watermarks" and its
+      `Cache-Control: public` policy are both deliberately untenanted, per the user's explicit
+      decision to start simple rather than build tenant-shaped plumbing now for a feature that
+      isn't scheduled. If multi-tenancy is ever implemented, the watermark tracking needs a
+      tenant dimension added at the same time, `Cache-Control` needs to switch from `public` to
+      `private`/`Vary`-based isolation (or a trusted, scope-keyed application cache, per the
+      original ETag proposal's own guidance), and any CDN/reverse-proxy cache layer added later
+      needs tenant-aware cache-key partitioning, not just per-resource ones.
 - [ ] **Versioning of collections**
 - [ ] **Promotheus API endpoint for metrics**
 - [ ] **Consumer API (`/tea/v1`) authorization** — not discussed yet (2026-07-04). Today
@@ -218,6 +227,18 @@ they don't get lost.
       cancellation between `receiveFile` (blob written) and `SetDistributionFile`/
       `SetArtifactFormatFile` (attach) can still orphan a blob -- that residual window, like
       `importBlobs`'s, needs the same GC pass rather than more upfront checks.
+- [ ] Deleting a product/component release doesn't clean up its collections (found 2026-08-06
+      while adding ETag support -- see below): `collection.uuid` is polymorphic (either a
+      product_release or component_release uuid depending on `belongs_to`), so it can't carry a
+      `FOREIGN KEY` to either table, and there's no `DeleteCollection` at all. Deleting the
+      "owning" release leaves its collections (and their `collection_artifact` rows) in place as
+      orphaned rows, still fetchable by `(uuid, version, belongsTo)` via
+      `GET /*Release/{uuid}/collection/{version}` even though the release itself now 404s. Low
+      practical impact (collections are rarely deleted independently of their release, and the
+      orphaned data isn't wrong, just unreachable through the normal parent-scoped browsing
+      paths), but worth an explicit cleanup pass (e.g. `DeleteProductRelease`/
+      `DeleteComponentRelease` sweeping `collection`/`collection_artifact` by `uuid` the same way
+      `deleteOwnerScoped` already sweeps `identifier`/`cle_event`) rather than leaving it implicit.
 - [ ] Bundle-level signing/hashing (noted 2026-08-05, not yet designed): today only individual
       `files/<sha256>` entries are checksum-verified (see the two done items above) -- there's
       no signature or hash covering the *bundle zip as a whole* (manifest + files together), so
@@ -240,7 +261,100 @@ they don't get lost.
       zip -- no server, DB, or admin auth needed. Scriptable: exit 0 if every given bundle is
       valid, exit 1 if any is invalid or unreadable.
 
+## ETag / conditional requests (this feature)
+- [ ] Check the `revision`/`cle_revision`/`dataset_watermark` scheme (added 2026-08-06) against
+      the actual TEA OpenAPI spec, not just the external design proposal it was built from.
+      These are purely internal, server-side counters -- never exposed in any response body or
+      schema, only folded into the opaque `ETag` string -- so they can't violate the spec's wire
+      format by construction, but worth double-checking there isn't spec text about caching,
+      `ETag`/`Last-Modified` semantics, or a spec-defined revision/version concept for these
+      resources that this implementation should align to (or explicitly diverge from with a
+      documented reason) rather than having invented its own scheme unchecked against the spec.
+      Also re-verify the immutability assumptions the whole design leans on (`product`/
+      `component`/`collection` having no update path today) still hold if the spec is ever
+      extended with an update/rename operation for any of them.
+- [ ] `pkg/teaclient` doesn't support conditional polling yet -- server-side `ETag`/
+      `If-None-Match` handling is done (see above), but the client has no way to send back a
+      previously-seen `ETag` or act on a `304`. This is Phase 4 (item 1) of the original ETag
+      proposal ("Proposal: ETag and Conditional Request Support", 2026-08-06, see below for
+      other unresolved parts of the same document), deliberately deferred when the server-side
+      work (Phases 1-3) was scoped and built (2026-08-06). Needs: persisting the last `ETag` per
+      URL (+ auth scope, once one exists) so repeated polls can send `If-None-Match`; treating
+      `304` as success-with-no-new-data rather than an error; and probably a small wrapper type
+      (the original proposal sketched `ConditionalResult[T]{Value, ETag, NotModified}`) so
+      callers doing continuous polling don't have to manage raw `*http.Response`s themselves.
+      This is the actual point of the whole server-side feature -- it only reduces real polling
+      load once a client uses it.
+- [ ] `GET /files/{sha256}` (`internal/files/handler.go`) still has no `ETag`/`If-None-Match`
+      support -- the document's Phase 1, step 1 explicitly calls this out first ("Add ETag
+      support to `/files/{sha256}`"), and it's the easiest case in the whole proposal (blobs are
+      already content-addressed and immutable, so `ETag: "sha256:<digest>"` needs no revision
+      tracking at all -- the handler already sends the right `Cache-Control:
+      public, max-age=31536000, immutable`, just no `ETag` header or conditional check). Missed
+      in this pass because `internal/files` sits outside `internal/api` and wasn't in the
+      approved implementation scope, which was written against `/tea/v1` routes specifically.
+- [ ] `GET /tea/v1/discovery` has no ETag support. The document has a dedicated "Discovery"
+      section recommending an ETag built from the normalized TEI, TEI-to-release mapping
+      revision, configured root URL, advertised API versions, and (if discovery ever becomes
+      restricted) authorization scope. Explicitly out of scope for this pass, same as it's out
+      of scope in `## Phase 1 (base server) follow-ups` above (self-authoritative only, no
+      federation) -- revisit together.
+- [ ] No observability was added for this feature. The document's "Observability" section asks
+      for `200` vs `304` counts by endpoint, conditional-request outcomes (missing/matching/stale
+      validator), ETag lookup latency vs. full-representation latency, and bytes avoided via
+      `304`; its Acceptance Criteria sets a concrete target ("more than 95% of routine no-change
+      polls return `304`"). None of this is instrumented today, so there's currently no way to
+      confirm the feature is actually reducing load in production the way it was designed to.
+- [ ] CDN/reverse-proxy caching (document's Phase 4, items 3-4: "Configure CDN or reverse-proxy
+      caching" and "Validate authorization-aware cache isolation") is unaddressed beyond emitting
+      correct `Cache-Control` headers server-side -- no actual edge/CDN config, and no test
+      proving a real intermediary cache respects `ETag`/`Cache-Control` the way this
+      implementation assumes. Overlaps with **Multitenant** above (cache-key partitioning once
+      tenancy exists) but is a distinct, narrower gap even for the current untenanted, all-public
+      state: nothing has verified an actual proxy/CDN in front of this server behaves correctly.
+      Related to the new front-ingress-proxy TODO under **Config / deployment** below, though
+      that one is about trusting inbound `X-Forwarded-*` request headers, not outbound response
+      cacheability.
+- [ ] Compression-variant ETag correctness (document's "Compression variants" section) is
+      currently moot -- this server does no gzip/Brotli content negotiation today -- but is a
+      landmine if that's ever added: a strong ETag must then either vary by encoding, be
+      generated per-variant by the CDN, or fall back to a weak validator, none of which this
+      implementation currently has any provision for.
+- [ ] Change-event delivery (an `outbox_event` table, sketched in the document's "Import and
+      transaction behavior" section) was an explicit non-goal for this pass ("Initial
+      implementation does not require webhooks, SSE, or a change-feed endpoint") and remains
+      fully undesigned. Distinct from the polling-reduction goal this feature actually
+      implements -- would let clients avoid polling entirely rather than just making unchanged
+      polls cheap.
+
 ## Config / deployment (this feature)
+- [ ] Front-ingress-proxy support is narrower and less verified than it should be. Today
+      `TrustProxyHeaders` (`internal/config/config.go`, added 2026-08-06 fixing a scan finding)
+      only gates two call sites: `internal/webadmin/loginlimiter.go`'s `clientIP` (right-most
+      `X-Forwarded-For` entry, used for login rate-limit keying) and `internal/httpx/security.go`'s
+      `IsSecure` (`X-Forwarded-Proto: https`, used for the `Secure` cookie flag). Gaps: (1) no
+      other code path uses `X-Forwarded-For` for client-IP-dependent logic (e.g. if IP-based
+      logic is ever added to `/tea/v1` or `/admin/v1`, it would need to thread the same flag
+      through, not reimplement its own header parsing); (2) `X-Forwarded-Host` isn't read or
+      validated anywhere, so a proxy that rewrites the host isn't accounted for; (3) only tested
+      against synthetic headers set directly on an `httptest.Request` (`loginlimiter_test.go`,
+      `security_test.go`) -- never against a real reverse proxy actually rewriting/appending
+      headers over the wire, so header-format edge cases a real proxy produces (multiple `X-
+      Forwarded-For` header lines vs. one comma-joined line, IPv6 literals, a proxy that doesn't
+      strip a client-supplied spoofed header before appending its own) are unverified; (4)
+      `README-deploy.md` currently states "no reverse proxy -- the server listens directly on
+      `TEA_LISTEN_ADDR`" and never mentions `TEA_TRUST_PROXY_HEADERS` at all, so a deployer
+      actually putting this behind nginx/Traefik/an ingress controller has no documented guidance
+      on when or how to turn proxy trust on safely. Needs: (a) a `README-deploy.md` section
+      documenting `TEA_TRUST_PROXY_HEADERS`, when to enable it (only when the proxy is the sole
+      network path to the server and itself strips/overwrites client-supplied `X-Forwarded-*`
+      headers before appending its own -- the existing doc comment on `config.TrustProxyHeaders`
+      already explains the threat model, it just isn't surfaced in deployer-facing docs), and a
+      worked example for at least one well-known proxy; (b) an integration test that actually
+      runs a real reverse proxy (e.g. nginx or Traefik in a Docker container, alongside this
+      project's existing `Dockerfile`/`README-docker.md` conventions) in front of a real running
+      `opentea` server and asserts the server sees the correct client IP/scheme through it, not
+      just through hand-constructed headers.
 - [ ] TLS cert/key rotation isn't automatic (no SIGHUP reload or filesystem watch) — a
       certificate renewal (e.g. via certbot) requires a `systemctl restart opentea.service` to
       pick up the new files. No ACME/Let's Encrypt integration either.

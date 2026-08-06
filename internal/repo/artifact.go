@@ -195,20 +195,57 @@ func artifactFormatKey(mediaType, description string, checksums []tea.Checksum) 
 // GetArtifactLatest fetches the highest-versioned revision of artifact
 // uuid. Returns ErrNotFound if uuid has no revisions.
 func (r *Repo) GetArtifactLatest(ctx context.Context, uuid string) (tea.Artifact, error) {
-	var version sql.NullInt64
-	if err := r.conn().QueryRowContext(ctx, `SELECT MAX(version) FROM artifact WHERE uuid = ?`, uuid).Scan(&version); err != nil {
+	version, ok, err := r.LatestArtifactVersion(ctx, uuid)
+	if err != nil {
 		return tea.Artifact{}, err
 	}
-	if !version.Valid {
+	if !ok {
 		return tea.Artifact{}, ErrNotFound
 	}
-	return r.GetArtifactByVersion(ctx, uuid, int(version.Int64))
+	return r.GetArtifactByVersion(ctx, uuid, version)
+}
+
+// LatestArtifactVersion fetches just the highest existing version number
+// for artifact uuid -- for ETag construction on the "latest artifact"
+// endpoint, so a conditional GET can check for a newly-published revision
+// via one indexed MAX() lookup instead of the full artifact fetch. ok is
+// false (not an error) if uuid has no revisions at all.
+func (r *Repo) LatestArtifactVersion(ctx context.Context, uuid string) (version int, ok bool, err error) {
+	var v sql.NullInt64
+	if err := r.conn().QueryRowContext(ctx, `SELECT MAX(version) FROM artifact WHERE uuid = ?`, uuid).Scan(&v); err != nil {
+		return 0, false, err
+	}
+	if !v.Valid {
+		return 0, false, nil
+	}
+	return int(v.Int64), true, nil
 }
 
 // GetArtifactByVersion fetches one specific revision of artifact uuid.
 // Returns ErrNotFound if that (uuid, version) pair doesn't exist.
 func (r *Repo) GetArtifactByVersion(ctx context.Context, uuid string, version int) (tea.Artifact, error) {
 	return getArtifactByVersionTx(ctx, r.conn(), uuid, version)
+}
+
+// GetArtifactRevision fetches just the revision counter for one artifact
+// version -- for ETag construction, so a conditional GET can check
+// If-None-Match against a single indexed column instead of the full
+// join-heavy fetch GetArtifactByVersion does. Returns ErrNotFound if that
+// (uuid, version) pair doesn't exist.
+func (r *Repo) GetArtifactRevision(ctx context.Context, uuid string, version int) (int64, error) {
+	return getArtifactRevisionTx(ctx, r.conn(), uuid, version)
+}
+
+func getArtifactRevisionTx(ctx context.Context, q dbtx, uuid string, version int) (int64, error) {
+	var revision int64
+	err := q.QueryRowContext(ctx, `SELECT revision FROM artifact WHERE uuid = ? AND version = ?`, uuid, version).Scan(&revision)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrNotFound
+	}
+	if err != nil {
+		return 0, err
+	}
+	return revision, nil
 }
 
 // getArtifactByVersionTx is GetArtifactByVersion's logic parameterized
@@ -316,47 +353,47 @@ func listArtifactFormats(ctx context.Context, q dbtx, uuid string, version int) 
 
 // SetArtifactFormatFile records an uploaded file for the formatIndex-th
 // format (0-based, in creation order) of an artifact revision: sets its
-// download URL and adds a SHA-256 checksum row.
+// download URL and adds a SHA-256 checksum row. Runs as one transaction
+// (format lookup, update, checksum insert, and the revision bump below) so
+// the revision that backs this artifact version's ETag can never observe a
+// partial version of this change.
 func (r *Repo) SetArtifactFormatFile(ctx context.Context, artifactUUID string, artifactVersion, formatIndex int, url, sha256Hex string) (tea.Artifact, error) {
-	rows, err := r.db.QueryContext(ctx,
-		`SELECT id FROM artifact_format WHERE artifact_uuid = ? AND artifact_version = ? ORDER BY rowid`, artifactUUID, artifactVersion)
-	if err != nil {
-		return tea.Artifact{}, err
-	}
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+	return runInTx(ctx, r, func(tx dbtx) (tea.Artifact, error) {
+		rows, err := tx.QueryContext(ctx,
+			`SELECT id FROM artifact_format WHERE artifact_uuid = ? AND artifact_version = ? ORDER BY rowid`, artifactUUID, artifactVersion)
+		if err != nil {
+			return tea.Artifact{}, err
+		}
+		var ids []string
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				_ = rows.Close()
+				return tea.Artifact{}, err
+			}
+			ids = append(ids, id)
+		}
+		if err := rows.Err(); err != nil {
 			_ = rows.Close()
 			return tea.Artifact{}, err
 		}
-		ids = append(ids, id)
-	}
-	if err := rows.Err(); err != nil {
 		_ = rows.Close()
-		return tea.Artifact{}, err
-	}
-	_ = rows.Close()
 
-	if formatIndex < 0 || formatIndex >= len(ids) {
-		return tea.Artifact{}, ErrNotFound
-	}
-	formatID := ids[formatIndex]
+		if formatIndex < 0 || formatIndex >= len(ids) {
+			return tea.Artifact{}, ErrNotFound
+		}
+		formatID := ids[formatIndex]
 
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return tea.Artifact{}, err
-	}
-	defer func() { _ = tx.Rollback() }()
+		if _, err := tx.ExecContext(ctx, `UPDATE artifact_format SET url = ? WHERE id = ?`, url, formatID); err != nil {
+			return tea.Artifact{}, err
+		}
+		if err := insertChecksums(ctx, tx, OwnerArtifactFormat, formatID, []tea.Checksum{{AlgType: "SHA-256", AlgValue: sha256Hex}}); err != nil {
+			return tea.Artifact{}, err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE artifact SET revision = revision + 1 WHERE uuid = ? AND version = ?`, artifactUUID, artifactVersion); err != nil {
+			return tea.Artifact{}, err
+		}
 
-	if _, err := tx.ExecContext(ctx, `UPDATE artifact_format SET url = ? WHERE id = ?`, url, formatID); err != nil {
-		return tea.Artifact{}, err
-	}
-	if err := insertChecksums(ctx, tx, OwnerArtifactFormat, formatID, []tea.Checksum{{AlgType: "SHA-256", AlgValue: sha256Hex}}); err != nil {
-		return tea.Artifact{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return tea.Artifact{}, err
-	}
-	return r.GetArtifactByVersion(ctx, artifactUUID, artifactVersion)
+		return getArtifactByVersionTx(ctx, tx, artifactUUID, artifactVersion)
+	})
 }

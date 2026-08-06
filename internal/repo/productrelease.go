@@ -49,6 +49,9 @@ func (r *Repo) CreateProductRelease(ctx context.Context, productUUID string, in 
 	if err := insertIdentifiers(ctx, tx, OwnerProductRelease, uuid, in.Identifiers); err != nil {
 		return tea.ProductRelease{}, err
 	}
+	if err := bumpWatermarkTx(ctx, tx, WatermarkProductReleases); err != nil {
+		return tea.ProductRelease{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return tea.ProductRelease{}, err
 	}
@@ -99,6 +102,9 @@ func (r *Repo) ImportProductRelease(ctx context.Context, in ImportProductRelease
 		if err := insertIdentifiers(ctx, tx, OwnerProductRelease, in.UUID, in.Identifiers); err != nil {
 			return false, err
 		}
+		if err := bumpWatermarkTx(ctx, tx, WatermarkProductReleases); err != nil {
+			return false, err
+		}
 		return true, nil
 	})
 }
@@ -138,6 +144,27 @@ func productReleaseConflicts(existing tea.ProductRelease, in ImportProductReleas
 // identifiers and linked components. Returns ErrNotFound if uuid doesn't exist.
 func (r *Repo) GetProductRelease(ctx context.Context, uuid string) (tea.ProductRelease, error) {
 	return getProductReleaseTx(ctx, r.conn(), uuid)
+}
+
+// GetProductReleaseRevision fetches just the revision counter for one
+// product release -- for ETag construction, so a conditional GET can check
+// If-None-Match against a single indexed column instead of the full fetch
+// (which also joins identifiers and linked components) GetProductRelease
+// does. Returns ErrNotFound if uuid doesn't exist.
+func (r *Repo) GetProductReleaseRevision(ctx context.Context, uuid string) (int64, error) {
+	return getProductReleaseRevisionTx(ctx, r.conn(), uuid)
+}
+
+func getProductReleaseRevisionTx(ctx context.Context, q dbtx, uuid string) (int64, error) {
+	var revision int64
+	err := q.QueryRowContext(ctx, `SELECT revision FROM product_release WHERE uuid = ?`, uuid).Scan(&revision)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrNotFound
+	}
+	if err != nil {
+		return 0, err
+	}
+	return revision, nil
 }
 
 // getProductReleaseTx is GetProductRelease's logic parameterized over a
@@ -225,16 +252,29 @@ func listProductReleaseComponents(ctx context.Context, q dbtx, productReleaseUUI
 // product release -- the admin-API stand-in for productRelease.components[].
 // Deliberately permissive (UPSERT-on-conflict): an admin re-pinning a
 // component to a different release is a normal, correct action here. Bundle
-// import uses the stricter ImportComponentLink instead -- see there.
+// import uses the stricter ImportComponentLink instead -- see there. Bumps
+// the product release's revision (it's embedded in GetProductRelease's own
+// response as .Components), so this always counts as a change even when
+// re-pinning to the same release it already pointed at -- simpler and
+// still correct (an extra cache miss, never staleness), matching this
+// feature's other deliberately-coarse bump points.
 func (r *Repo) LinkComponent(ctx context.Context, productReleaseUUID string, ref tea.ComponentRef) (tea.ProductRelease, error) {
-	if _, err := r.conn().ExecContext(ctx,
-		`INSERT INTO product_release_component (product_release_uuid, component_uuid, component_release_uuid) VALUES (?, ?, ?)
-		 ON CONFLICT (product_release_uuid, component_uuid) DO UPDATE SET component_release_uuid = excluded.component_release_uuid`,
-		productReleaseUUID, ref.UUID, ref.Release,
-	); err != nil {
-		return tea.ProductRelease{}, err
-	}
-	return r.GetProductRelease(ctx, productReleaseUUID)
+	return runInTx(ctx, r, func(tx dbtx) (tea.ProductRelease, error) {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO product_release_component (product_release_uuid, component_uuid, component_release_uuid) VALUES (?, ?, ?)
+			 ON CONFLICT (product_release_uuid, component_uuid) DO UPDATE SET component_release_uuid = excluded.component_release_uuid`,
+			productReleaseUUID, ref.UUID, ref.Release,
+		); err != nil {
+			return tea.ProductRelease{}, err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE product_release SET revision = revision + 1 WHERE uuid = ?`, productReleaseUUID); err != nil {
+			return tea.ProductRelease{}, err
+		}
+		if err := bumpWatermarkTx(ctx, tx, WatermarkProductReleases); err != nil {
+			return tea.ProductRelease{}, err
+		}
+		return getProductReleaseTx(ctx, tx, productReleaseUUID)
+	})
 }
 
 // ImportComponentLink adds a component reference on a product release
@@ -271,6 +311,12 @@ func (r *Repo) ImportComponentLink(ctx context.Context, productReleaseUUID strin
 			`INSERT INTO product_release_component (product_release_uuid, component_uuid, component_release_uuid) VALUES (?, ?, ?)`,
 			productReleaseUUID, ref.UUID, ref.Release,
 		); err != nil {
+			return false, err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE product_release SET revision = revision + 1 WHERE uuid = ?`, productReleaseUUID); err != nil {
+			return false, err
+		}
+		if err := bumpWatermarkTx(ctx, tx, WatermarkProductReleases); err != nil {
 			return false, err
 		}
 		return true, nil
@@ -375,6 +421,9 @@ func (r *Repo) DeleteProductRelease(ctx context.Context, uuid string) error {
 		return ErrNotFound
 	}
 	if err := deleteOwnerScoped(ctx, tx, OwnerProductRelease, uuid); err != nil {
+		return err
+	}
+	if err := bumpWatermarkTx(ctx, tx, WatermarkProductReleases); err != nil {
 		return err
 	}
 	return tx.Commit()

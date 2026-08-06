@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/oej/opentea/internal/httpx"
 	"github.com/oej/opentea/internal/repo"
@@ -30,6 +31,21 @@ func (s *Server) latestCollection(w http.ResponseWriter, r *http.Request, belong
 		httpx.BadRequest(w, "invalid uuid")
 		return
 	}
+
+	version, ok, err := s.repo.LatestCollectionVersion(r.Context(), uuid, belongsTo)
+	if err != nil {
+		httpx.InternalError(w, r, err)
+		return
+	}
+	if !ok {
+		httpx.NotFound(w)
+		return
+	}
+	etag := httpx.BuildETag("collection-latest", belongsTo, uuid, strconv.Itoa(version))
+	if httpx.WriteConditional(w, r, etag, cacheControlRevalidate) {
+		return
+	}
+
 	c, err := s.repo.GetLatestCollection(r.Context(), uuid, belongsTo)
 	if errors.Is(err, repo.ErrNotFound) {
 		httpx.NotFound(w)
@@ -61,6 +77,24 @@ func (s *Server) getCollectionByVersion(w http.ResponseWriter, r *http.Request, 
 		httpx.BadRequest(w, "invalid collectionVersion")
 		return
 	}
+
+	// A specific collection version is genuinely immutable in this
+	// codebase (insert-only, no update path -- see repo.ExistsCollectionVersion's
+	// doc comment), so this is the one endpoint that gets the long-lived
+	// immutable cache policy, matching the proposal's original
+	// recommendation exactly.
+	if err := s.repo.ExistsCollectionVersion(r.Context(), uuid, version, belongsTo); errors.Is(err, repo.ErrNotFound) {
+		httpx.NotFound(w)
+		return
+	} else if err != nil {
+		httpx.InternalError(w, r, err)
+		return
+	}
+	etag := httpx.BuildETag("collection", belongsTo, uuid, strconv.Itoa(version))
+	if httpx.WriteConditional(w, r, etag, cacheControlImmutable) {
+		return
+	}
+
 	c, err := s.repo.GetCollectionByVersion(r.Context(), uuid, version, belongsTo)
 	if errors.Is(err, repo.ErrNotFound) {
 		httpx.NotFound(w)
@@ -89,6 +123,16 @@ func (s *Server) listCollections(w http.ResponseWriter, r *http.Request, belongs
 	}
 	pp, ok := parsePageParams(w, r, collectionSortFields)
 	if !ok {
+		return
+	}
+
+	watermark, err := s.repo.GetWatermark(r.Context(), repo.WatermarkCollections)
+	if err != nil {
+		httpx.InternalError(w, r, err)
+		return
+	}
+	etag := httpx.BuildETag("collections", belongsTo, uuid, pp.SortOrder, cursorPart(pp.Cursor), strconv.FormatInt(watermark, 10))
+	if httpx.WriteConditional(w, r, etag, cacheControlRevalidate) {
 		return
 	}
 

@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/oej/opentea/internal/httpx"
 	"github.com/oej/opentea/internal/repo"
@@ -15,6 +16,20 @@ func (s *Server) getComponent(w http.ResponseWriter, r *http.Request) {
 		httpx.BadRequest(w, "invalid uuid")
 		return
 	}
+
+	// See getProduct's comment (internal/api/product.go) -- component is
+	// the same provably-immutable, existence-check-only case.
+	if err := s.repo.ExistsComponent(r.Context(), uuid); errors.Is(err, repo.ErrNotFound) {
+		httpx.NotFound(w)
+		return
+	} else if err != nil {
+		httpx.InternalError(w, r, err)
+		return
+	}
+	if httpx.WriteConditional(w, r, httpx.BuildETag("component", uuid), cacheControlRevalidate) {
+		return
+	}
+
 	c, err := s.repo.GetComponent(r.Context(), uuid)
 	if errors.Is(err, repo.ErrNotFound) {
 		httpx.NotFound(w)
@@ -48,6 +63,16 @@ func (s *Server) listReleasesByComponent(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	watermark, err := s.repo.GetWatermark(r.Context(), repo.WatermarkComponentReleases)
+	if err != nil {
+		httpx.InternalError(w, r, err)
+		return
+	}
+	etag := httpx.BuildETag("componentReleases", uuid, pp.SortField, pp.SortOrder, cursorPart(pp.Cursor), strconv.FormatInt(watermark, 10))
+	if httpx.WriteConditional(w, r, etag, cacheControlRevalidate) {
+		return
+	}
+
 	rows, err := s.repo.ListComponentReleasesByComponent(r.Context(), uuid, pp.SortField, pp.SortOrder, pp.Cursor, pp.PageSize+1)
 	if err != nil {
 		httpx.InternalError(w, r, err)
@@ -74,6 +99,16 @@ func (s *Server) queryComponents(w http.ResponseWriter, r *http.Request) {
 	}
 	pp, ok := parsePageParams(w, r, componentSortFields)
 	if !ok {
+		return
+	}
+
+	watermark, err := s.repo.GetWatermark(r.Context(), repo.WatermarkComponents)
+	if err != nil {
+		httpx.InternalError(w, r, err)
+		return
+	}
+	etag := httpx.BuildETag("components", idType, idValue, pp.SortField, pp.SortOrder, cursorPart(pp.Cursor), strconv.FormatInt(watermark, 10))
+	if httpx.WriteConditional(w, r, etag, cacheControlRevalidate) {
 		return
 	}
 

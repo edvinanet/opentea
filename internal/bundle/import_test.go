@@ -161,6 +161,70 @@ func TestImportRoundTrip(t *testing.T) {
 	}
 }
 
+// TestImportBumpsWatermarksOnce is the regression test for list-endpoint
+// ETag support via bundle import: importing a bundle bumps every affected
+// resource-family watermark (each entity's own Import* call bumps its own
+// family on a genuine insert -- there's no separate bundle-import-level
+// watermark step, so this proves that composition actually works end to
+// end), and a second, idempotent re-import of the identical bundle must not
+// bump any of them further.
+func TestImportBumpsWatermarksOnce(t *testing.T) {
+	ctx := context.Background()
+	srcRepo := newTestRepo(t)
+	srcStore := newTestStore(t)
+	productUUID := seedProduct(t, srcRepo, srcStore)
+
+	var buf bytes.Buffer
+	if err := Export(ctx, srcRepo, srcStore, productUUID, &buf); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	zr, err := zip.NewReader(bytes.NewReader(buf.Bytes()), int64(buf.Len()))
+	if err != nil {
+		t.Fatalf("zip.NewReader: %v", err)
+	}
+
+	dstRepo := newTestRepo(t)
+	dstStore := newTestStore(t)
+	if _, err := Import(ctx, dstRepo, dstStore, "http://dest.example", zr); err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+
+	families := []string{
+		repo.WatermarkProducts, repo.WatermarkProductReleases, repo.WatermarkComponents,
+		repo.WatermarkComponentReleases, repo.WatermarkCollections,
+	}
+	afterFirst := map[string]int64{}
+	for _, f := range families {
+		w, err := dstRepo.GetWatermark(ctx, f)
+		if err != nil {
+			t.Fatalf("GetWatermark(%q): %v", f, err)
+		}
+		if w == 0 {
+			t.Errorf("watermark(%q) = 0 after import, want > 0", f)
+		}
+		afterFirst[f] = w
+	}
+
+	// Re-importing the identical bundle is an idempotent no-op (already
+	// proven by TestImportRoundTrip) -- confirm watermarks don't move either.
+	zr2, err := zip.NewReader(bytes.NewReader(buf.Bytes()), int64(buf.Len()))
+	if err != nil {
+		t.Fatalf("zip.NewReader (2nd): %v", err)
+	}
+	if _, err := Import(ctx, dstRepo, dstStore, "http://dest.example", zr2); err != nil {
+		t.Fatalf("second Import: %v", err)
+	}
+	for _, f := range families {
+		w, err := dstRepo.GetWatermark(ctx, f)
+		if err != nil {
+			t.Fatalf("GetWatermark(%q) after re-import: %v", f, err)
+		}
+		if w != afterFirst[f] {
+			t.Errorf("watermark(%q) after idempotent re-import = %d, want unchanged at %d", f, w, afterFirst[f])
+		}
+	}
+}
+
 func TestImportDedupsSharedComponent(t *testing.T) {
 	ctx := context.Background()
 	srcRepo := newTestRepo(t)
@@ -997,5 +1061,20 @@ func TestImportIsAtomicOnFailure(t *testing.T) {
 	}
 	if _, err := dstRepo.GetComponentRelease(ctx, componentRelease.UUID); !errors.Is(err, repo.ErrNotFound) {
 		t.Errorf("GetComponentRelease after failed import: err = %v, want ErrNotFound", err)
+	}
+
+	// Watermark bumps ride inside the same transaction as everything else
+	// (each entity's own Import* call bumps its own family) -- confirm they
+	// roll back too, not just the entity rows, so a failed import can't
+	// falsely invalidate list-endpoint caches for content it never
+	// actually committed.
+	for _, f := range []string{repo.WatermarkProducts, repo.WatermarkProductReleases, repo.WatermarkComponents, repo.WatermarkComponentReleases} {
+		w, err := dstRepo.GetWatermark(ctx, f)
+		if err != nil {
+			t.Fatalf("GetWatermark(%q) after failed import: %v", f, err)
+		}
+		if w != 0 {
+			t.Errorf("watermark(%q) after failed import = %d, want 0 (rolled back)", f, w)
+		}
 	}
 }

@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/oej/opentea/internal/httpx"
 	"github.com/oej/opentea/internal/repo"
@@ -15,6 +16,20 @@ func (s *Server) getProductRelease(w http.ResponseWriter, r *http.Request) {
 		httpx.BadRequest(w, "invalid uuid")
 		return
 	}
+
+	revision, err := s.repo.GetProductReleaseRevision(r.Context(), uuid)
+	if errors.Is(err, repo.ErrNotFound) {
+		httpx.NotFound(w)
+		return
+	} else if err != nil {
+		httpx.InternalError(w, r, err)
+		return
+	}
+	etag := httpx.BuildETag("productRelease", uuid, strconv.FormatInt(revision, 10))
+	if httpx.WriteConditional(w, r, etag, cacheControlRevalidate) {
+		return
+	}
+
 	pr, err := s.repo.GetProductRelease(r.Context(), uuid)
 	if errors.Is(err, repo.ErrNotFound) {
 		httpx.NotFound(w)
@@ -35,6 +50,16 @@ func (s *Server) queryProductReleases(w http.ResponseWriter, r *http.Request) {
 	}
 	pp, ok := parsePageParams(w, r, productReleaseSortFields)
 	if !ok {
+		return
+	}
+
+	watermark, err := s.repo.GetWatermark(r.Context(), repo.WatermarkProductReleases)
+	if err != nil {
+		httpx.InternalError(w, r, err)
+		return
+	}
+	etag := httpx.BuildETag("productReleases", idType, idValue, pp.SortField, pp.SortOrder, cursorPart(pp.Cursor), strconv.FormatInt(watermark, 10))
+	if httpx.WriteConditional(w, r, etag, cacheControlRevalidate) {
 		return
 	}
 

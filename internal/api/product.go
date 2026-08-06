@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/oej/opentea/internal/httpx"
 	"github.com/oej/opentea/internal/repo"
@@ -15,6 +16,23 @@ func (s *Server) getProduct(w http.ResponseWriter, r *http.Request) {
 		httpx.BadRequest(w, "invalid uuid")
 		return
 	}
+
+	// Product has no revision column (it's provably immutable -- no update
+	// path exists), so its ETag is built from identity alone; this
+	// existence check is still required (not skippable), since a deleted
+	// product's cached ETag must not keep matching forever -- see
+	// repo.ExistsProduct's doc comment.
+	if err := s.repo.ExistsProduct(r.Context(), uuid); errors.Is(err, repo.ErrNotFound) {
+		httpx.NotFound(w)
+		return
+	} else if err != nil {
+		httpx.InternalError(w, r, err)
+		return
+	}
+	if httpx.WriteConditional(w, r, httpx.BuildETag("product", uuid), cacheControlRevalidate) {
+		return
+	}
+
 	p, err := s.repo.GetProduct(r.Context(), uuid)
 	if errors.Is(err, repo.ErrNotFound) {
 		httpx.NotFound(w)
@@ -48,6 +66,16 @@ func (s *Server) listReleasesByProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	watermark, err := s.repo.GetWatermark(r.Context(), repo.WatermarkProductReleases)
+	if err != nil {
+		httpx.InternalError(w, r, err)
+		return
+	}
+	etag := httpx.BuildETag("productReleases", uuid, pp.SortField, pp.SortOrder, cursorPart(pp.Cursor), strconv.FormatInt(watermark, 10))
+	if httpx.WriteConditional(w, r, etag, cacheControlRevalidate) {
+		return
+	}
+
 	rows, err := s.repo.ListProductReleasesByProduct(r.Context(), uuid, pp.SortField, pp.SortOrder, pp.Cursor, pp.PageSize+1)
 	if err != nil {
 		httpx.InternalError(w, r, err)
@@ -74,6 +102,16 @@ func (s *Server) queryProducts(w http.ResponseWriter, r *http.Request) {
 	}
 	pp, ok := parsePageParams(w, r, productSortFields)
 	if !ok {
+		return
+	}
+
+	watermark, err := s.repo.GetWatermark(r.Context(), repo.WatermarkProducts)
+	if err != nil {
+		httpx.InternalError(w, r, err)
+		return
+	}
+	etag := httpx.BuildETag("products", idType, idValue, pp.SortField, pp.SortOrder, cursorPart(pp.Cursor), strconv.FormatInt(watermark, 10))
+	if httpx.WriteConditional(w, r, etag, cacheControlRevalidate) {
 		return
 	}
 

@@ -104,6 +104,9 @@ func (r *Repo) createCollection(ctx context.Context, ownerUUID, belongsTo string
 		}
 	}
 
+	if err := bumpWatermarkTx(ctx, tx, WatermarkCollections); err != nil {
+		return tea.Collection{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return tea.Collection{}, err
 	}
@@ -164,6 +167,9 @@ func (r *Repo) ImportCollection(ctx context.Context, in ImportCollectionInput) (
 			}
 		}
 
+		if err := bumpWatermarkTx(ctx, tx, WatermarkCollections); err != nil {
+			return false, err
+		}
 		return true, nil
 	})
 }
@@ -201,16 +207,47 @@ func collectionConflicts(existing tea.Collection, in ImportCollectionInput) bool
 // can't be used to read a component-release's collection (or vice versa)
 // by supplying its UUID.
 func (r *Repo) GetLatestCollection(ctx context.Context, ownerUUID, belongsTo string) (tea.Collection, error) {
-	var version sql.NullInt64
-	if err := r.conn().QueryRowContext(ctx,
-		`SELECT MAX(version) FROM collection WHERE uuid = ? AND belongs_to = ?`, ownerUUID, belongsTo,
-	).Scan(&version); err != nil {
+	version, ok, err := latestCollectionVersionTx(ctx, r.conn(), ownerUUID, belongsTo)
+	if err != nil {
 		return tea.Collection{}, err
 	}
-	if !version.Valid {
+	if !ok {
 		return tea.Collection{}, ErrNotFound
 	}
-	return r.GetCollectionByVersion(ctx, ownerUUID, int(version.Int64), belongsTo)
+	return r.GetCollectionByVersion(ctx, ownerUUID, version, belongsTo)
+}
+
+// LatestCollectionVersion fetches just the highest existing collection
+// version for (ownerUUID, belongsTo) -- the public form of
+// latestCollectionVersionTx, for ETag construction on endpoints that embed
+// "the latest collection" without needing GetLatestCollection's full fetch
+// (or its ErrNotFound-on-none semantics: ok is false, not an error, when
+// ownerUUID has no collections of this type yet).
+func (r *Repo) LatestCollectionVersion(ctx context.Context, ownerUUID, belongsTo string) (version int, ok bool, err error) {
+	return latestCollectionVersionTx(ctx, r.conn(), ownerUUID, belongsTo)
+}
+
+// latestCollectionVersionTx fetches just the highest existing collection
+// version for (ownerUUID, belongsTo), without fetching the collection
+// itself -- for ETag construction on endpoints that embed "the latest
+// collection" (GetLatestCollection itself, and getComponentReleaseWithCollection's
+// aggregate ETag), so a conditional GET can check for a newly-published
+// collection (or the first one ever) via one indexed MAX() lookup instead
+// of the full collection+artifacts fetch. ok is false if ownerUUID has no
+// collections of this type yet -- not an error, since "no collection yet"
+// is a normal, valid state (distinguished from GetLatestCollection's own
+// ErrNotFound, which callers there want as an error).
+func latestCollectionVersionTx(ctx context.Context, q dbtx, ownerUUID, belongsTo string) (version int, ok bool, err error) {
+	var v sql.NullInt64
+	if err := q.QueryRowContext(ctx,
+		`SELECT MAX(version) FROM collection WHERE uuid = ? AND belongs_to = ?`, ownerUUID, belongsTo,
+	).Scan(&v); err != nil {
+		return 0, false, err
+	}
+	if !v.Valid {
+		return 0, false, nil
+	}
+	return int(v.Int64), true, nil
 }
 
 // GetCollectionByVersion fetches one specific collection version for
@@ -219,6 +256,30 @@ func (r *Repo) GetLatestCollection(ctx context.Context, ownerUUID, belongsTo str
 // GetLatestCollection's doc comment for why the type is part of the lookup.
 func (r *Repo) GetCollectionByVersion(ctx context.Context, ownerUUID string, version int, belongsTo string) (tea.Collection, error) {
 	return getCollectionByVersionTx(ctx, r.conn(), ownerUUID, version, belongsTo)
+}
+
+// ExistsCollectionVersion reports whether (ownerUUID, version, belongsTo)
+// exists, without fetching the rest of the row -- for ETag construction: a
+// specific collection version has no update path in this codebase
+// (insert-only), so its representation is provably immutable once created
+// and its ETag needs no revision counter, just this one cheap existence
+// check (still required, not skippable -- a collection version cascade-
+// deletes with its owning release, so a client's cached ETag for a
+// since-deleted release's collection must not keep matching forever).
+// Returns ErrNotFound if it doesn't exist.
+func (r *Repo) ExistsCollectionVersion(ctx context.Context, ownerUUID string, version int, belongsTo string) error {
+	return existsCollectionVersionTx(ctx, r.conn(), ownerUUID, version, belongsTo)
+}
+
+func existsCollectionVersionTx(ctx context.Context, q dbtx, ownerUUID string, version int, belongsTo string) error {
+	var exists int
+	err := q.QueryRowContext(ctx,
+		`SELECT 1 FROM collection WHERE uuid = ? AND version = ? AND belongs_to = ?`, ownerUUID, version, belongsTo,
+	).Scan(&exists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	return err
 }
 
 // getCollectionByVersionTx is GetCollectionByVersion's logic parameterized

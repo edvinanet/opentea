@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"log"
 	"log/slog"
@@ -21,6 +22,7 @@ import (
 	"github.com/oej/opentea/internal/config"
 	"github.com/oej/opentea/internal/db"
 	"github.com/oej/opentea/internal/files"
+	"github.com/oej/opentea/internal/httpx"
 	"github.com/oej/opentea/internal/repo"
 	"github.com/oej/opentea/internal/storage"
 	"github.com/oej/opentea/internal/webadmin"
@@ -77,6 +79,14 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
+	if tlsEnabled {
+		// Pinned explicitly rather than left at crypto/tls's own default so
+		// this server's minimum doesn't silently change if that default
+		// ever does; 1.2 is still the current floor most TEA client
+		// tooling can be expected to support, with 1.3 negotiated
+		// automatically whenever both ends support it.
+		srv.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -116,5 +126,33 @@ func newMux(r *repo.Repo, blobStore storage.Storage, cfg config.Config, startedA
 	mux.Handle("/admin/v1/", admin.NewRouter(r, blobStore, cfg, startedAt))
 	mux.Handle("/admin/ui/", webadmin.NewRouter(r, cfg))
 	mux.Handle("/files/", files.NewHandler(r, blobStore))
-	return mux
+	return securityHeaders(mux, cfg)
+}
+
+// adminCSP has no script-src at all -- internal/webadmin's templates never
+// emit a <script> tag, so scripts are simply disallowed outright rather
+// than allowlisted, which also covers any XSS that might otherwise sneak
+// one in. style-src allows 'unsafe-inline' for the templates' own <style>
+// blocks/attributes (all static, developer-authored, never built from
+// request or DB data); nothing else is fetched from anywhere (no external
+// fonts/images/CDN links), hence default-src 'none'.
+const adminCSP = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+
+// securityHeaders sets response headers that don't vary per request and
+// aren't any individual handler's concern, applied uniformly across every
+// route (api, admin, webadmin, files) rather than duplicated per package --
+// they're harmless on the JSON/binary responses they don't functionally
+// affect, and this is the one place the whole handler tree is assembled.
+func securityHeaders(next http.Handler, cfg config.Config) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		h.Set("Content-Security-Policy", adminCSP)
+		if httpx.IsSecure(r, cfg.TrustProxyHeaders) {
+			h.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		}
+		next.ServeHTTP(w, r)
+	})
 }

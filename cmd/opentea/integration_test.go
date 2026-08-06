@@ -818,3 +818,38 @@ func TestStatsIncludesStartedAt(t *testing.T) {
 		t.Fatalf("stats.StartedAt = %v, want between %v and now", stats.StartedAt, before)
 	}
 }
+
+// TestSecurityHeaders confirms securityHeaders' response headers actually
+// reach a client through the full handler tree (not just unit-tested in
+// isolation), across all four sub-routers, and that Strict-Transport-Security
+// is correctly absent over this test server's plain HTTP (newTestServer
+// doesn't set TrustProxyHeaders, so there's no signal telling securityHeaders
+// to treat the connection as secure).
+func TestSecurityHeaders(t *testing.T) {
+	srv := newTestServer(t)
+
+	for _, path := range []string{"/tea/v1/products", "/admin/v1/products", "/admin/ui/login", "/files/nonexistent"} {
+		t.Run(path, func(t *testing.T) {
+			resp, err := http.Get(srv.URL + path) //nolint:gosec // srv.URL is this test's own httptest.Server, not remote input
+			if err != nil {
+				t.Fatalf("GET %s: %v", path, err)
+			}
+			_ = resp.Body.Close()
+
+			want := map[string]string{
+				"X-Content-Type-Options":  "nosniff",
+				"X-Frame-Options":         "DENY",
+				"Referrer-Policy":         "strict-origin-when-cross-origin",
+				"Content-Security-Policy": adminCSP,
+			}
+			for header, wantValue := range want {
+				if got := resp.Header.Get(header); got != wantValue {
+					t.Errorf("%s: header %s = %q, want %q", path, header, got, wantValue)
+				}
+			}
+			if got := resp.Header.Get("Strict-Transport-Security"); got != "" {
+				t.Errorf("%s: Strict-Transport-Security = %q, want absent over plain HTTP", path, got)
+			}
+		})
+	}
+}

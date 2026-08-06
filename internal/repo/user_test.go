@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 
+	"golang.org/x/crypto/bcrypt"
+
 	"github.com/oej/opentea/internal/model"
 )
 
@@ -39,6 +41,35 @@ func TestCreateUserRejectsShortPassword(t *testing.T) {
 	r := newTestRepo(t)
 	if _, err := r.CreateUser(context.Background(), "alice", "short", model.RoleAdmin); err != ErrPasswordTooShort {
 		t.Fatalf("err = %v, want ErrPasswordTooShort", err)
+	}
+}
+
+// TestCreateUserUsesBcryptCost confirms newly created passwords are hashed
+// at 12, not bcrypt's own lower DefaultCost (10) -- the cost is encoded in
+// the stored hash itself, so this reads it back the same way VerifyLogin's
+// bcrypt.CompareHashAndPassword would. Deliberately asserts against the
+// literal 12, not the bcryptCost constant this same behavior is driven by
+// -- comparing against that constant would make this test pass no matter
+// what bcryptCost is ever changed to, since both sides would move together.
+func TestCreateUserUsesBcryptCost(t *testing.T) {
+	const wantCost = 12
+	ctx := context.Background()
+	r := newTestRepo(t)
+
+	if _, err := r.CreateUser(ctx, "alice", "password1", model.RoleAdmin); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	var hash string
+	if err := r.db.QueryRowContext(ctx, `SELECT password_hash FROM user WHERE username = ?`, "alice").Scan(&hash); err != nil {
+		t.Fatalf("query password_hash: %v", err)
+	}
+	cost, err := bcrypt.Cost([]byte(hash))
+	if err != nil {
+		t.Fatalf("bcrypt.Cost: %v", err)
+	}
+	if cost != wantCost {
+		t.Fatalf("cost = %d, want %d", cost, wantCost)
 	}
 }
 

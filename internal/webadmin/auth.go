@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/oej/opentea/internal/authn"
+	"github.com/oej/opentea/internal/httpx"
 	"github.com/oej/opentea/internal/repo"
 )
 
@@ -54,7 +55,7 @@ func (s *Server) loginSubmit(w http.ResponseWriter, r *http.Request) {
 		Expires:  expiresAt,
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
-		Secure:   r.TLS != nil,
+		Secure:   httpx.IsSecure(r, s.cfg.TrustProxyHeaders),
 	})
 	http.Redirect(w, r, "/admin/ui/", http.StatusSeeOther)
 }
@@ -70,7 +71,7 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 		MaxAge:   -1,
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
-		Secure:   r.TLS != nil, // match the Secure flag used when this cookie was originally set
+		Secure:   httpx.IsSecure(r, s.cfg.TrustProxyHeaders), // match the Secure flag used when this cookie was originally set
 	})
 	http.Redirect(w, r, "/admin/ui/login", http.StatusSeeOther)
 }

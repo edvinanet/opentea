@@ -20,6 +20,15 @@ import (
 // meaningfully increasing entropy).
 const minPasswordLength = 8
 
+// bcryptCost is pinned above bcrypt.DefaultCost (10) -- 12 is current
+// common guidance for admin-facing accounts, and pinning it explicitly
+// means this doesn't silently change if the library's own default ever
+// does. Existing hashes keep working regardless: bcrypt encodes its cost
+// in the hash string itself, so bcrypt.CompareHashAndPassword reads each
+// hash's own cost rather than this constant -- raising it only affects
+// newly created hashes, no migration needed.
+const bcryptCost = 12
+
 var (
 	// ErrInvalidCredentials is returned by VerifyLogin on any mismatch --
 	// deliberately the same error whether the username or the password was
@@ -42,7 +51,7 @@ func (r *Repo) CreateUser(ctx context.Context, username, plaintextPassword, role
 		return model.User{}, ErrPasswordTooShort
 	}
 
-	hash, err := bcrypt.GenerateFromPassword([]byte(plaintextPassword), bcrypt.DefaultCost)
+	hash, err := bcrypt.GenerateFromPassword([]byte(plaintextPassword), bcryptCost)
 	if err != nil {
 		return model.User{}, err
 	}

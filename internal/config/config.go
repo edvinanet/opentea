@@ -27,6 +27,18 @@ type Config struct {
 	// plain HTTP (the default).
 	TLSCertFile string
 	TLSKeyFile  string
+
+	// TrustProxyHeaders, if set, makes the server treat an incoming
+	// X-Forwarded-Proto: https header as proof the connection is effectively
+	// over TLS (used for the session cookie's Secure flag and HSTS) even
+	// though the connection this process itself sees is plain HTTP -- the
+	// normal shape of a TLS-terminating reverse proxy deployment. Off by
+	// default: X-Forwarded-Proto is exactly as trustworthy as any other
+	// client-supplied header unless something in front of this process is
+	// actually guaranteed to set (and strip any client-supplied copy of) it,
+	// which is a deployment fact this process can't verify on its own --
+	// only turn this on if that's actually true of your deployment.
+	TrustProxyHeaders bool
 }
 
 // defaultConfigFile is checked automatically if TEA_CONFIG_FILE isn't set.
@@ -44,14 +56,15 @@ func Load() (Config, error) {
 	}
 
 	return Config{
-		ListenAddr:  resolve("TEA_LISTEN_ADDR", fileValues, ":8080"),
-		DBPath:      resolve("TEA_DB_PATH", fileValues, "data/opentea.db"),
-		BlobDir:     resolve("TEA_BLOB_DIR", fileValues, "data/blobs"),
-		RootURL:     resolve("TEA_ROOT_URL", fileValues, "http://localhost:8080"),
-		Versions:    splitCSV(resolve("TEA_VERSIONS", fileValues, "0.4.0")),
-		OrgName:     resolve("TEA_ORG_NAME", fileValues, ""),
-		TLSCertFile: resolve("TEA_TLS_CERT_FILE", fileValues, ""),
-		TLSKeyFile:  resolve("TEA_TLS_KEY_FILE", fileValues, ""),
+		ListenAddr:        resolve("TEA_LISTEN_ADDR", fileValues, ":8080"),
+		DBPath:            resolve("TEA_DB_PATH", fileValues, "data/opentea.db"),
+		BlobDir:           resolve("TEA_BLOB_DIR", fileValues, "data/blobs"),
+		RootURL:           resolve("TEA_ROOT_URL", fileValues, "http://localhost:8080"),
+		Versions:          splitCSV(resolve("TEA_VERSIONS", fileValues, "0.4.0")),
+		OrgName:           resolve("TEA_ORG_NAME", fileValues, ""),
+		TLSCertFile:       resolve("TEA_TLS_CERT_FILE", fileValues, ""),
+		TLSKeyFile:        resolve("TEA_TLS_KEY_FILE", fileValues, ""),
+		TrustProxyHeaders: resolve("TEA_TRUST_PROXY_HEADERS", fileValues, "false") == "true",
 	}, nil
 }
 

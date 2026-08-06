@@ -1,5 +1,6 @@
-// Package httpx holds small HTTP response and request-parsing helpers shared
-// by the api and admin handler packages.
+// Package httpx holds small HTTP response, request-parsing, and request
+// helpers shared across this project's handler packages (api, admin,
+// webadmin) and cmd/opentea's server wiring.
 package httpx
 
 import (

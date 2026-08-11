@@ -1,5 +1,10 @@
 # opentea
 
+Note: This is at this point a lab for OEJ learning vibe coding. Play with it, but remember it's at this point
+not anything useful for any type of production. /OEJ
+
+---
+
 A reference implementation set for the [CycloneDX Transparency Exchange API (TEA)](https://github.com/cyclonedx/transparency-exchange-api) (spec v0.4.0, Beta 2): a server, a client, and shared test data, built for interoperability testing — the server should work with any conformant client, and the client should work against any conformant server, not just each other.
 
 ## Scope (Phase 1)

@@ -23,6 +23,13 @@ const (
 	WatermarkComponents        = "components"
 	WatermarkComponentReleases = "componentReleases"
 	WatermarkCollections       = "collections"
+	// WatermarkEntitlements backs principal-scoped /tea/v1 ETags (see
+	// Repo.GetPrincipalEntitlementWatermark): bumped by every entitlement
+	// write so any authenticated caller's cached representation
+	// invalidates the moment ANY entitlement changes, even one that didn't
+	// previously apply to them. Seeded to 1 by the bootstrap entitlement
+	// in internal/db/migrations/0005_authz.sql.
+	WatermarkEntitlements = "entitlements"
 )
 
 // GetWatermark fetches the current watermark for family -- for list-ETag

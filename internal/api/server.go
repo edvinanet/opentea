@@ -20,5 +20,5 @@ func NewRouter(r *repo.Repo, cfg config.Config) http.Handler {
 	srv := &Server{repo: r, cfg: cfg}
 	mux := http.NewServeMux()
 	srv.registerRoutes(mux)
-	return optionalBearerAuth(r, mux)
+	return resolvePrincipal(r, mux)
 }

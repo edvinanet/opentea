@@ -80,3 +80,62 @@ func nextPageToken(hasNext bool, sortField, sortOrder, lastValue, lastUUID strin
 		LastUUID:  lastUUID,
 	})
 }
+
+// filterAuthorized repeatedly fetches pages from fetch (each call passing
+// the appropriate next cursor) and drops rows authorized rejects, until it
+// has accumulated pageSize+1 authorized rows or fetch returns fewer than
+// requested (meaning there's no more underlying data). This keeps
+// splitPage's pageSize+1 "is there a next page" trick correct even though
+// filtering happens after the DB query: hasNext reflects "is there another
+// AUTHORIZED row", not "did the underlying table have more rows" -- which
+// is what spec Sec 18 requires (pagination must operate on the authorized
+// set, no gaps or leaks via cursor or count).
+//
+// fetch(cursor, limit) must return rows in stable sort order and accept a
+// nil cursor for the first call. toCursor derives the resumption cursor
+// from a row's own sort field/UUID, so a short/filtered batch can resume
+// correctly from the last underlying row seen (not the last authorized
+// one).
+//
+// Known Phase 1 simplification: authorized calls authz.Decide once per
+// row, and a caller whose authorized rows are sparse relative to the
+// underlying table triggers repeated round trips (worst case O(table size
+// / pageSize)). Simpler and more obviously correct than a join-based
+// filter; batching CandidateRules to evaluate many rows in one query is a
+// documented follow-up, not a blocker for Phase 1's expected data volumes.
+func filterAuthorized[T any](
+	fetch func(cursor *pagination.Cursor, limit int) ([]T, error),
+	toCursor func(T) pagination.Cursor,
+	authorized func(T) (bool, error),
+	startCursor *pagination.Cursor,
+	pageSize int,
+) (page []T, hasNext bool, err error) {
+	cursor := startCursor
+	for {
+		rows, err := fetch(cursor, pageSize+1)
+		if err != nil {
+			return nil, false, err
+		}
+		for _, row := range rows {
+			ok, err := authorized(row)
+			if err != nil {
+				return nil, false, err
+			}
+			if ok {
+				page = append(page, row)
+			}
+		}
+		gotFullUnderlyingBatch := len(rows) > pageSize
+		if len(page) > pageSize || !gotFullUnderlyingBatch {
+			break
+		}
+		last := rows[len(rows)-1]
+		c := toCursor(last)
+		cursor = &c
+	}
+	hasNext = len(page) > pageSize
+	if hasNext {
+		page = page[:pageSize]
+	}
+	return page, hasNext, nil
+}

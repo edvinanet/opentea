@@ -126,7 +126,7 @@ func newMux(r *repo.Repo, blobStore storage.Storage, cfg config.Config, startedA
 	mux.Handle("/admin/v1/", admin.NewRouter(r, blobStore, cfg, startedAt))
 	mux.Handle("/admin/ui/", webadmin.NewRouter(r, cfg))
 	mux.Handle("/files/", files.NewHandler(r, blobStore))
-	return securityHeaders(mux, cfg)
+	return httpx.WithRequestID(securityHeaders(mux, cfg))
 }
 
 // adminCSP has no script-src at all -- internal/webadmin's templates never

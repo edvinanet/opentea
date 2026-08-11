@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/oej/opentea/internal/authz"
 	"github.com/oej/opentea/internal/httpx"
 	"github.com/oej/opentea/internal/repo"
 	"github.com/oej/opentea/pkg/tea"
@@ -26,6 +27,19 @@ func (s *Server) discoveryByTEI(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		httpx.InternalError(w, r, err)
+		return
+	}
+
+	// An unauthorized match must be indistinguishable from no match at all
+	// (spec Sec 18) -- discovery reveals a release's existence just as much
+	// as a direct lookup would.
+	allowed, err := s.decide(r, authz.CapReleaseDiscover, authz.Resource{ProductReleaseUUID: productReleaseUUID})
+	if err != nil {
+		httpx.InternalError(w, r, err)
+		return
+	}
+	if !allowed {
+		httpx.WriteJSON(w, http.StatusOK, []tea.DiscoveryInfo{})
 		return
 	}
 

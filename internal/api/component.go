@@ -5,7 +5,9 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/oej/opentea/internal/authz"
 	"github.com/oej/opentea/internal/httpx"
+	"github.com/oej/opentea/internal/pagination"
 	"github.com/oej/opentea/internal/repo"
 	"github.com/oej/opentea/pkg/tea"
 )
@@ -26,7 +28,14 @@ func (s *Server) getComponent(w http.ResponseWriter, r *http.Request) {
 		httpx.InternalError(w, r, err)
 		return
 	}
-	if httpx.WriteConditional(w, r, httpx.BuildETag("component", uuid), cacheControlRevalidate) {
+	// Components share product.*'s capability names -- the spec's
+	// vocabulary has one generic product.read, not separate product/
+	// component capabilities; Resource.ComponentUUID is what tells the
+	// policy engine which branch of the scope hierarchy to expand.
+	if !s.authorize(w, r, authz.CapProductRead, authz.Resource{ComponentUUID: uuid}) {
+		return
+	}
+	if s.conditional(w, r, cacheControlRevalidate, "component", uuid) {
 		return
 	}
 
@@ -57,6 +66,9 @@ func (s *Server) listReleasesByComponent(w http.ResponseWriter, r *http.Request)
 		httpx.InternalError(w, r, err)
 		return
 	}
+	if !s.authorize(w, r, authz.CapProductDiscover, authz.Resource{ComponentUUID: uuid}) {
+		return
+	}
 
 	pp, ok := parsePageParams(w, r, componentReleaseSortFields)
 	if !ok {
@@ -68,17 +80,26 @@ func (s *Server) listReleasesByComponent(w http.ResponseWriter, r *http.Request)
 		httpx.InternalError(w, r, err)
 		return
 	}
-	etag := httpx.BuildETag("componentReleases", uuid, pp.SortField, pp.SortOrder, cursorPart(pp.Cursor), strconv.FormatInt(watermark, 10))
-	if httpx.WriteConditional(w, r, etag, cacheControlRevalidate) {
+	if s.conditional(w, r, cacheControlRevalidate, "componentReleases", uuid, pp.SortField, pp.SortOrder, cursorPart(pp.Cursor), strconv.FormatInt(watermark, 10)) {
 		return
 	}
 
-	rows, err := s.repo.ListComponentReleasesByComponent(r.Context(), uuid, pp.SortField, pp.SortOrder, pp.Cursor, pp.PageSize+1)
+	page, hasNext, err := filterAuthorized(
+		func(cursor *pagination.Cursor, limit int) ([]tea.ComponentRelease, error) {
+			return s.repo.ListComponentReleasesByComponent(r.Context(), uuid, pp.SortField, pp.SortOrder, cursor, limit)
+		},
+		func(cr tea.ComponentRelease) pagination.Cursor {
+			return pagination.Cursor{SortField: pp.SortField, SortOrder: pp.SortOrder, LastValue: componentReleaseSortValue(cr, pp.SortField), LastUUID: cr.UUID}
+		},
+		func(cr tea.ComponentRelease) (bool, error) {
+			return s.decide(r, authz.CapReleaseRead, authz.Resource{ComponentReleaseUUID: cr.UUID})
+		},
+		pp.Cursor, pp.PageSize,
+	)
 	if err != nil {
 		httpx.InternalError(w, r, err)
 		return
 	}
-	page, hasNext := splitPage(rows, pp.PageSize)
 
 	resp := tea.PaginatedComponentReleases{Results: page}
 	resp.HasNext = hasNext
@@ -107,17 +128,26 @@ func (s *Server) queryComponents(w http.ResponseWriter, r *http.Request) {
 		httpx.InternalError(w, r, err)
 		return
 	}
-	etag := httpx.BuildETag("components", idType, idValue, pp.SortField, pp.SortOrder, cursorPart(pp.Cursor), strconv.FormatInt(watermark, 10))
-	if httpx.WriteConditional(w, r, etag, cacheControlRevalidate) {
+	if s.conditional(w, r, cacheControlRevalidate, "components", idType, idValue, pp.SortField, pp.SortOrder, cursorPart(pp.Cursor), strconv.FormatInt(watermark, 10)) {
 		return
 	}
 
-	rows, err := s.repo.QueryComponents(r.Context(), idType, idValue, pp.SortField, pp.SortOrder, pp.Cursor, pp.PageSize+1)
+	page, hasNext, err := filterAuthorized(
+		func(cursor *pagination.Cursor, limit int) ([]tea.Component, error) {
+			return s.repo.QueryComponents(r.Context(), idType, idValue, pp.SortField, pp.SortOrder, cursor, limit)
+		},
+		func(c tea.Component) pagination.Cursor {
+			return pagination.Cursor{SortField: pp.SortField, SortOrder: pp.SortOrder, LastValue: c.Name, LastUUID: c.UUID}
+		},
+		func(c tea.Component) (bool, error) {
+			return s.decide(r, authz.CapProductRead, authz.Resource{ComponentUUID: c.UUID})
+		},
+		pp.Cursor, pp.PageSize,
+	)
 	if err != nil {
 		httpx.InternalError(w, r, err)
 		return
 	}
-	page, hasNext := splitPage(rows, pp.PageSize)
 
 	resp := tea.PaginatedComponents{Results: page}
 	resp.HasNext = hasNext

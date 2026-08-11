@@ -2,6 +2,7 @@ package repo
 
 import (
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -22,6 +23,18 @@ import (
 // rolls back the whole import atomically (via Repo.WithTx) on any error,
 // this one included.
 var ErrImportIdentityConflict = errors.New("repo: imported identity conflicts with existing content")
+
+// isForeignKeyConstraintError reports whether err came from a SQLite
+// FOREIGN KEY constraint violation -- used to translate a rejected delete
+// (e.g. a template still referenced by an entitlement, via
+// entitlement.template_uuid's ON DELETE RESTRICT) into a domain error
+// instead of a generic 500. Matches modernc.org/sqlite's standard error
+// text, the same approach isUniqueConstraintError (user.go) uses for
+// UNIQUE violations -- the driver doesn't expose a typed constraint-kind API
+// worth depending on here.
+func isForeignKeyConstraintError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "FOREIGN KEY constraint failed")
+}
 
 // setEqual reports whether a and b contain the same elements, ignoring
 // order and duplicate count. Appropriate for comparing identifier/checksum/

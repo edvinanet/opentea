@@ -248,6 +248,20 @@ func getArtifactRevisionTx(ctx context.Context, q dbtx, uuid string, version int
 	return revision, nil
 }
 
+// GetArtifactType fetches just the type column for (uuid, version) -- for
+// authz checks that need to evaluate an artifact-type-constrained
+// capability rule before the full object is worth fetching (see
+// internal/api/artifact.go). Returns ErrNotFound if the (uuid, version)
+// pair doesn't exist.
+func (r *Repo) GetArtifactType(ctx context.Context, uuid string, version int) (string, error) {
+	var artifactType string
+	err := r.conn().QueryRowContext(ctx, `SELECT type FROM artifact WHERE uuid = ? AND version = ?`, uuid, version).Scan(&artifactType)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return artifactType, err
+}
+
 // getArtifactByVersionTx is GetArtifactByVersion's logic parameterized
 // over a dbtx -- see product.go's getProductTx doc comment for why this
 // exists.

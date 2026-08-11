@@ -5,7 +5,9 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/oej/opentea/internal/authz"
 	"github.com/oej/opentea/internal/httpx"
+	"github.com/oej/opentea/internal/pagination"
 	"github.com/oej/opentea/internal/repo"
 	"github.com/oej/opentea/pkg/tea"
 )
@@ -25,8 +27,10 @@ func (s *Server) getProductRelease(w http.ResponseWriter, r *http.Request) {
 		httpx.InternalError(w, r, err)
 		return
 	}
-	etag := httpx.BuildETag("productRelease", uuid, strconv.FormatInt(revision, 10))
-	if httpx.WriteConditional(w, r, etag, cacheControlRevalidate) {
+	if !s.authorize(w, r, authz.CapReleaseRead, authz.Resource{ProductReleaseUUID: uuid}) {
+		return
+	}
+	if s.conditional(w, r, cacheControlRevalidate, "productRelease", uuid, strconv.FormatInt(revision, 10)) {
 		return
 	}
 
@@ -58,17 +62,26 @@ func (s *Server) queryProductReleases(w http.ResponseWriter, r *http.Request) {
 		httpx.InternalError(w, r, err)
 		return
 	}
-	etag := httpx.BuildETag("productReleases", idType, idValue, pp.SortField, pp.SortOrder, cursorPart(pp.Cursor), strconv.FormatInt(watermark, 10))
-	if httpx.WriteConditional(w, r, etag, cacheControlRevalidate) {
+	if s.conditional(w, r, cacheControlRevalidate, "productReleases", idType, idValue, pp.SortField, pp.SortOrder, cursorPart(pp.Cursor), strconv.FormatInt(watermark, 10)) {
 		return
 	}
 
-	rows, err := s.repo.QueryProductReleases(r.Context(), idType, idValue, pp.SortField, pp.SortOrder, pp.Cursor, pp.PageSize+1)
+	page, hasNext, err := filterAuthorized(
+		func(cursor *pagination.Cursor, limit int) ([]tea.ProductRelease, error) {
+			return s.repo.QueryProductReleases(r.Context(), idType, idValue, pp.SortField, pp.SortOrder, cursor, limit)
+		},
+		func(pr tea.ProductRelease) pagination.Cursor {
+			return pagination.Cursor{SortField: pp.SortField, SortOrder: pp.SortOrder, LastValue: productReleaseSortValue(pr, pp.SortField), LastUUID: pr.UUID}
+		},
+		func(pr tea.ProductRelease) (bool, error) {
+			return s.decide(r, authz.CapReleaseRead, authz.Resource{ProductReleaseUUID: pr.UUID})
+		},
+		pp.Cursor, pp.PageSize,
+	)
 	if err != nil {
 		httpx.InternalError(w, r, err)
 		return
 	}
-	page, hasNext := splitPage(rows, pp.PageSize)
 
 	resp := tea.PaginatedProductReleases{Results: page}
 	resp.HasNext = hasNext

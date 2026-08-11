@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/oej/opentea/internal/authz"
 	"github.com/oej/opentea/internal/httpx"
 	"github.com/oej/opentea/internal/repo"
 )
@@ -25,6 +26,29 @@ func (s *Server) getLatestArtifact(w http.ResponseWriter, r *http.Request) {
 		httpx.NotFound(w)
 		return
 	}
+	// The artifact's type is needed before the authz check (a template rule
+	// can be constrained to one artifact classification -- spec Sec 17.1),
+	// so it's fetched here rather than after the ETag short-circuit like
+	// the rest of the object; the authz check must still happen before any
+	// conditional-request response is written, so an unauthorized caller
+	// never gets a 304 confirming the resource's current state (spec
+	// Sec 18's existence-hiding).
+	artifactType, err := s.repo.GetArtifactType(r.Context(), uuid, version)
+	if errors.Is(err, repo.ErrNotFound) {
+		httpx.NotFound(w)
+		return
+	} else if err != nil {
+		httpx.InternalError(w, r, err)
+		return
+	}
+	// No CollectionUUID: this is a direct-by-artifact-uuid fetch with no
+	// collection context, so every collection referencing the artifact is
+	// considered (spec Sec 17.2: a shared artifact is reachable via any one
+	// authorized relationship).
+	if !s.authorize(w, r, authz.CapArtifactMetadataRead, authz.Resource{ArtifactUUID: uuid, ArtifactType: authz.ArtifactType(artifactType)}) {
+		return
+	}
+
 	revision, err := s.repo.GetArtifactRevision(r.Context(), uuid, version)
 	if errors.Is(err, repo.ErrNotFound) {
 		httpx.NotFound(w)
@@ -33,8 +57,7 @@ func (s *Server) getLatestArtifact(w http.ResponseWriter, r *http.Request) {
 		httpx.InternalError(w, r, err)
 		return
 	}
-	etag := httpx.BuildETag("artifact", uuid, strconv.Itoa(version), strconv.FormatInt(revision, 10))
-	if httpx.WriteConditional(w, r, etag, cacheControlRevalidate) {
+	if s.conditional(w, r, cacheControlRevalidate, "artifact", uuid, strconv.Itoa(version), strconv.FormatInt(revision, 10)) {
 		return
 	}
 
@@ -62,6 +85,20 @@ func (s *Server) getArtifactByVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// See getLatestArtifact's comment on why the type is fetched before the
+	// authz check, and why authz must precede the ETag/conditional check.
+	artifactType, err := s.repo.GetArtifactType(r.Context(), uuid, version)
+	if errors.Is(err, repo.ErrNotFound) {
+		httpx.NotFound(w)
+		return
+	} else if err != nil {
+		httpx.InternalError(w, r, err)
+		return
+	}
+	if !s.authorize(w, r, authz.CapArtifactMetadataRead, authz.Resource{ArtifactUUID: uuid, ArtifactType: authz.ArtifactType(artifactType)}) {
+		return
+	}
+
 	// Not cacheControlImmutable, deliberately: unlike the proposal's
 	// generic assumption, artifact revisions aren't strictly enforced
 	// immutable in this codebase -- SetArtifactFormatFile mutates an
@@ -76,8 +113,7 @@ func (s *Server) getArtifactByVersion(w http.ResponseWriter, r *http.Request) {
 		httpx.InternalError(w, r, err)
 		return
 	}
-	etag := httpx.BuildETag("artifact", uuid, strconv.Itoa(version), strconv.FormatInt(revision, 10))
-	if httpx.WriteConditional(w, r, etag, cacheControlRevalidate) {
+	if s.conditional(w, r, cacheControlRevalidate, "artifact", uuid, strconv.Itoa(version), strconv.FormatInt(revision, 10)) {
 		return
 	}
 

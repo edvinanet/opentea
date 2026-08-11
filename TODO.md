@@ -49,35 +49,72 @@ they don't get lost.
       export/import there either. Revisit the checksum/signature model and
       `internal/bundle`'s export/import together with the trust-architecture design.
 - [ ] **Authorization** via OpenIDConnect/Oauth2
-- [ ] **Multitenant** — no tenant concept exists anywhere in the schema or request path today
-      (confirmed 2026-08-06 while scoping ETag/conditional-request support for `/tea/v1`, added
-      the same day). That work's per-resource-family list "dataset watermarks" and its
-      `Cache-Control: public` policy are both deliberately untenanted, per the user's explicit
-      decision to start simple rather than build tenant-shaped plumbing now for a feature that
-      isn't scheduled. If multi-tenancy is ever implemented, the watermark tracking needs a
-      tenant dimension added at the same time, `Cache-Control` needs to switch from `public` to
-      `private`/`Vary`-based isolation (or a trusted, scope-keyed application cache, per the
-      original ETag proposal's own guidance), and any CDN/reverse-proxy cache layer added later
-      needs tenant-aware cache-key partitioning, not just per-resource ones.
+- [ ] **Multitenant** — **on hold (2026-08-10), per explicit user decision.** No tenant concept
+      exists anywhere in the schema or request path today (confirmed 2026-08-06 while scoping
+      ETag/conditional-request support for `/tea/v1`, added the same day). That work's
+      per-resource-family list "dataset watermarks" and its `Cache-Control: public` policy are
+      both deliberately untenanted, per the user's explicit decision to start simple rather than
+      build tenant-shaped plumbing now for a feature that isn't scheduled. If multi-tenancy is
+      ever implemented, the watermark tracking needs a tenant dimension added at the same time,
+      `Cache-Control` needs to switch from `public` to `private`/`Vary`-based isolation (or a
+      trusted, scope-keyed application cache, per the original ETag proposal's own guidance), and
+      any CDN/reverse-proxy cache layer added later needs tenant-aware cache-key partitioning,
+      not just per-resource ones. Consumer-API authorization work (below, and the
+      `TEA_AUTHENTICATION_AUTHORIZATION_SPECIFICATION.md` design) should proceed single-tenant
+      (one organization = this deployment) for now rather than waiting on this.
 - [ ] **Versioning of collections**
 - [ ] **Promotheus API endpoint for metrics**
-- [ ] **Consumer API (`/tea/v1`) authorization** — not discussed yet (2026-07-04). Today
-      `/tea/v1` has no real authorization model: it's public by default, and a bearer token
-      (when supplied) just identifies who's asking without granting/restricting access to
-      specific products — anyone can read anything. Need to design what per-product/per-tenant
-      access control for consumers should look like, presumably alongside **Multitenant**
-      above. Directly relevant to the product import/export design (see next section): once a
-      real authorization model exists, decide whether its rules travel with a product's
-      export/import bundle (the user's stated intent is that they should — authorization
-      travels, authentication/credentials do not).
+- [x] ~~**Consumer API (`/tea/v1`) authorization**~~ — Phase 1 shipped (2026-08-11), per
+      `~/TEA_AUTHENTICATION_AUTHORIZATION_SPECIFICATION.md` (v0.1 draft, 2026-08-06; not in this
+      repo) and its Sec 27 "Implementation Profile for OpenTEA", single-tenant per the user's
+      2026-08-10 decision. `/tea/v1` is no longer unconditionally public: every route now runs
+      `authz.Decide` (`internal/authz`, a pure policy-evaluation engine implementing the spec's
+      Sec 15.1-15.3 ranking algorithm -- resource specificity, then subject specificity, deny
+      wins at equal specificity, default deny) against entitlements/templates managed via new
+      `/admin/v1` endpoints (`internal/admin/{template,entitlement,productgroup,releasegroup}.go`).
+      Schema: `internal/db/migrations/0005_authz.sql`. A migration-seeded bootstrap entitlement
+      (everyone/all_products, fully permissive) preserves today's anonymous-read-everything
+      behavior on upgrade until an admin narrows it -- a real, visible, revocable row, not a
+      bypass in the engine. Capability independence (spec Sec 12.2: product access doesn't imply
+      collection/artifact access) and per-caller list-pagination filtering (spec Sec 18) are both
+      enforced and integration-tested (`cmd/opentea/authz_tea_test.go`). ETags/Cache-Control are
+      now principal-scoped (`internal/api/cachepolicy.go`'s `conditional`/`authzCacheSuffix`) --
+      anonymous responses stay public/shared-cacheable, authenticated ones become private and
+      partition by the caller's effective entitlement revision.
+
+      **Explicit Phase 1 deferrals** (not built, by design): organization/multitenant subject
+      (still on hold), audience/principal groups, capability overrides (single-capability grants
+      layered on a template), mTLS, external decision-service profile, signed-collection
+      filtering, events/notifications, emergency restrictions, `/admin/ui` GUI for
+      templates/entitlements (JSON API only), `insight.query`, and fine-grained SBOM/VEX/VDR
+      artifact classification (reuses the existing `artifact.type` enum, which can't distinguish
+      a VEX document from a generic SBOM -- real fix is a future `artifact.classification`
+      column). Component/component-release scoping exists but is deliberately simpler than the
+      product side: no component-group/component-release-group tables, just all_products plus a
+      direct component/component_release grant.
+
+      **Known gap, not addressed this pass**: `GET /files/{sha256}` (`internal/files`) -- the raw
+      blob download endpoint referenced by artifact/collection URLs -- has no authorization check
+      at all, matching its pre-existing behavior. Even where `/tea/v1` now denies
+      `artifact.metadata.read`/`artifact.discover` for a given artifact, its underlying blob
+      remains fetchable directly if the caller already knows (or brute-forces) its sha256. Low
+      practical severity (256-bit hash preimage space) but a real gap between "the API says no"
+      and "the bytes are actually inaccessible" -- worth wiring `authz.Decide` into
+      `internal/files` in a follow-up, or issuing short-lived signed download URLs instead of
+      bare content-addressed ones.
+
+      **Not yet done**: bundle export/import doesn't carry entitlements/templates yet (the
+      schema doesn't preclude it -- a future `manifest.entitlements[]` section would follow the
+      same `WithTx` + `ErrImportIdentityConflict` pattern as everything else in
+      `internal/bundle`), and `/admin/ui` has no template/entitlement management pages.
+
       A 2026-08-06 external scan flagged that `/tea/v1`'s anonymous-by-default behavior
-      (`internal/api/auth_middleware.go`'s `optionalBearerAuth`) diverges from the upstream
-      TEA OpenAPI document's global bearer-or-Basic security declaration, and suggested either
-      enforcing that contract strictly or publishing an implementation-specific OpenAPI doc.
-      Per the user: this isn't a conformance bug — authentication behavior is a per-server
-      policy decision, and the OpenAPI's global security block doesn't obligate every
-      deployment to require it. No code change made; tracked here as part of the same
-      authorization-model design work above, not as a separate item.
+      (now `internal/api/auth_middleware.go`'s `resolvePrincipal`, formerly `optionalBearerAuth`)
+      diverges from the upstream TEA OpenAPI document's global bearer-or-Basic security
+      declaration, and suggested either enforcing that contract strictly or publishing an
+      implementation-specific OpenAPI doc. Per the user: this isn't a conformance bug --
+      authentication behavior is a per-server policy decision, and the OpenAPI's global security
+      block doesn't obligate every deployment to require it.
 
 ## Reference client (this feature)
 - [ ] **Browsing consumer GUI** — a web GUI for the *client* that lets you browse *any* TEA
@@ -328,6 +365,12 @@ they don't get lost.
       polls cheap.
 
 ## Config / deployment (this feature)
+- [ ] Add HTTPS proxy settings to the config file (requested 2026-08-11, not yet scoped) --
+      needs a decision on what this covers: outbound HTTPS-proxy support (e.g. `HTTPS_PROXY`/
+      `NO_PROXY`-style config for any outbound calls this server or `teaclient` makes), vs.
+      additional inbound reverse-proxy/TLS-termination settings alongside the existing
+      `TEA_TRUST_PROXY_HEADERS` (see the front-ingress-proxy item directly below, which is the
+      current state of inbound proxy trust).
 - [ ] Front-ingress-proxy support is narrower and less verified than it should be. Today
       `TrustProxyHeaders` (`internal/config/config.go`, added 2026-08-06 fixing a scan finding)
       only gates two call sites: `internal/webadmin/loginlimiter.go`'s `clientIP` (right-most

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/oej/opentea/internal/authz"
 	"github.com/oej/opentea/internal/httpx"
 	"github.com/oej/opentea/internal/repo"
 	"github.com/oej/opentea/pkg/tea"
@@ -41,8 +42,15 @@ func (s *Server) latestCollection(w http.ResponseWriter, r *http.Request, belong
 		httpx.NotFound(w)
 		return
 	}
-	etag := httpx.BuildETag("collection-latest", belongsTo, uuid, strconv.Itoa(version))
-	if httpx.WriteConditional(w, r, etag, cacheControlRevalidate) {
+	// Collection authorization is evaluated independently of product/
+	// release visibility (spec Sec 12.2/17.1); the policy engine derives
+	// belongs_to and the owning release itself from collectionUUID, so
+	// callers here just pass CollectionUUID (== uuid, this schema's
+	// identity convention).
+	if !s.authorize(w, r, authz.CapCollectionRead, authz.Resource{CollectionUUID: uuid}) {
+		return
+	}
+	if s.conditional(w, r, cacheControlRevalidate, "collection-latest", belongsTo, uuid, strconv.Itoa(version)) {
 		return
 	}
 
@@ -90,8 +98,14 @@ func (s *Server) getCollectionByVersion(w http.ResponseWriter, r *http.Request, 
 		httpx.InternalError(w, r, err)
 		return
 	}
-	etag := httpx.BuildETag("collection", belongsTo, uuid, strconv.Itoa(version))
-	if httpx.WriteConditional(w, r, etag, cacheControlImmutable) {
+	// Entitlement scope is keyed by collection identity (uuid), not by
+	// individual version -- every version under this uuid shares the same
+	// decision, matching entitlement.resource_id's semantics (see
+	// internal/db/migrations/0005_authz.sql).
+	if !s.authorize(w, r, authz.CapCollectionRead, authz.Resource{CollectionUUID: uuid}) {
+		return
+	}
+	if s.conditional(w, r, cacheControlImmutable, "collection", belongsTo, uuid, strconv.Itoa(version)) {
 		return
 	}
 
@@ -121,6 +135,16 @@ func (s *Server) listCollections(w http.ResponseWriter, r *http.Request, belongs
 		httpx.BadRequest(w, "invalid uuid")
 		return
 	}
+	// Every row this lists shares one collection identity (uuid) and thus
+	// one entitlement scope -- a single check up front, not per-row
+	// filtering (unlike the product/release list endpoints, whose rows are
+	// each a distinct, independently-scoped identity). collection.read,
+	// not .discover, since this returns full collection objects, not just
+	// existence/minimal metadata.
+	if !s.authorize(w, r, authz.CapCollectionRead, authz.Resource{CollectionUUID: uuid}) {
+		return
+	}
+
 	pp, ok := parsePageParams(w, r, collectionSortFields)
 	if !ok {
 		return
@@ -131,8 +155,7 @@ func (s *Server) listCollections(w http.ResponseWriter, r *http.Request, belongs
 		httpx.InternalError(w, r, err)
 		return
 	}
-	etag := httpx.BuildETag("collections", belongsTo, uuid, pp.SortOrder, cursorPart(pp.Cursor), strconv.FormatInt(watermark, 10))
-	if httpx.WriteConditional(w, r, etag, cacheControlRevalidate) {
+	if s.conditional(w, r, cacheControlRevalidate, "collections", belongsTo, uuid, pp.SortOrder, cursorPart(pp.Cursor), strconv.FormatInt(watermark, 10)) {
 		return
 	}
 

@@ -5,7 +5,9 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/oej/opentea/internal/authz"
 	"github.com/oej/opentea/internal/httpx"
+	"github.com/oej/opentea/internal/pagination"
 	"github.com/oej/opentea/internal/repo"
 	"github.com/oej/opentea/pkg/tea"
 )
@@ -45,8 +47,19 @@ func (s *Server) getComponentReleaseWithCollection(w http.ResponseWriter, r *htt
 		httpx.NotFound(w)
 		return
 	}
-	etag := httpx.BuildETag("componentRelease", uuid, strconv.FormatInt(revision, 10), strconv.Itoa(latestVersion))
-	if httpx.WriteConditional(w, r, etag, cacheControlRevalidate) {
+	// This response can't omit latestCollection (the wire contract requires
+	// it), so denying release access without also checking collection
+	// access would let a collection-only grant leak the release, and vice
+	// versa -- both capabilities must allow. collectionUUID == uuid in this
+	// schema (see internal/db/migrations/0001_init.sql's comment on the
+	// collection table).
+	if !s.authorize(w, r, authz.CapReleaseRead, authz.Resource{ComponentReleaseUUID: uuid}) {
+		return
+	}
+	if !s.authorize(w, r, authz.CapCollectionRead, authz.Resource{CollectionUUID: uuid}) {
+		return
+	}
+	if s.conditional(w, r, cacheControlRevalidate, "componentRelease", uuid, strconv.FormatInt(revision, 10), strconv.Itoa(latestVersion)) {
 		return
 	}
 
@@ -89,17 +102,26 @@ func (s *Server) queryComponentReleases(w http.ResponseWriter, r *http.Request) 
 		httpx.InternalError(w, r, err)
 		return
 	}
-	etag := httpx.BuildETag("componentReleases", idType, idValue, pp.SortField, pp.SortOrder, cursorPart(pp.Cursor), strconv.FormatInt(watermark, 10))
-	if httpx.WriteConditional(w, r, etag, cacheControlRevalidate) {
+	if s.conditional(w, r, cacheControlRevalidate, "componentReleases", idType, idValue, pp.SortField, pp.SortOrder, cursorPart(pp.Cursor), strconv.FormatInt(watermark, 10)) {
 		return
 	}
 
-	rows, err := s.repo.QueryComponentReleases(r.Context(), idType, idValue, pp.SortField, pp.SortOrder, pp.Cursor, pp.PageSize+1)
+	page, hasNext, err := filterAuthorized(
+		func(cursor *pagination.Cursor, limit int) ([]tea.ComponentRelease, error) {
+			return s.repo.QueryComponentReleases(r.Context(), idType, idValue, pp.SortField, pp.SortOrder, cursor, limit)
+		},
+		func(cr tea.ComponentRelease) pagination.Cursor {
+			return pagination.Cursor{SortField: pp.SortField, SortOrder: pp.SortOrder, LastValue: componentReleaseSortValue(cr, pp.SortField), LastUUID: cr.UUID}
+		},
+		func(cr tea.ComponentRelease) (bool, error) {
+			return s.decide(r, authz.CapReleaseRead, authz.Resource{ComponentReleaseUUID: cr.UUID})
+		},
+		pp.Cursor, pp.PageSize,
+	)
 	if err != nil {
 		httpx.InternalError(w, r, err)
 		return
 	}
-	page, hasNext := splitPage(rows, pp.PageSize)
 
 	resp := tea.PaginatedComponentReleases{Results: page}
 	resp.HasNext = hasNext

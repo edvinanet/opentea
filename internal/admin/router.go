@@ -59,4 +59,37 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// future publisher API. See docs/bundle-format.md.
 	mux.HandleFunc("GET /admin/v1/products/{uuid}/export", s.requireRole(admin, s.exportProduct))
 	mux.HandleFunc("POST /admin/v1/products/import", s.requireRole(admin, s.importProduct))
+
+	// Consumer-API (/tea/v1) authorization management: templates,
+	// entitlements, product/release groups. See
+	// ~/TEA_AUTHENTICATION_AUTHORIZATION_SPECIFICATION.md and
+	// internal/db/migrations/0005_authz.sql. JSON API only in this phase --
+	// no /admin/ui pages yet.
+	mux.HandleFunc("POST /admin/v1/templates", s.requireRole(admin, s.createTemplate))
+	mux.HandleFunc("GET /admin/v1/templates", s.requireRole(consumer, s.listTemplates))
+	mux.HandleFunc("GET /admin/v1/templates/{uuid}", s.requireRole(consumer, s.getTemplate))
+	mux.HandleFunc("POST /admin/v1/templates/{uuid}/revisions", s.requireRole(admin, s.createTemplateRevision))
+	mux.HandleFunc("POST /admin/v1/templates/{uuid}/activate", s.requireRole(admin, s.activateTemplateRevision))
+	mux.HandleFunc("DELETE /admin/v1/templates/{uuid}", s.requireRole(admin, s.deleteTemplate))
+
+	mux.HandleFunc("POST /admin/v1/entitlements", s.requireRole(admin, s.createEntitlement))
+	mux.HandleFunc("GET /admin/v1/entitlements", s.requireRole(consumer, s.listEntitlements))
+	mux.HandleFunc("GET /admin/v1/entitlements/{uuid}", s.requireRole(consumer, s.getEntitlement))
+	mux.HandleFunc("PATCH /admin/v1/entitlements/{uuid}/status", s.requireRole(admin, s.updateEntitlementStatus))
+	mux.HandleFunc("PATCH /admin/v1/entitlements/{uuid}/validity", s.requireRole(admin, s.updateEntitlementValidity))
+	mux.HandleFunc("DELETE /admin/v1/entitlements/{uuid}", s.requireRole(admin, s.deleteEntitlement))
+
+	mux.HandleFunc("POST /admin/v1/productGroups", s.requireRole(admin, s.createProductGroup))
+	mux.HandleFunc("GET /admin/v1/productGroups", s.requireRole(consumer, s.listProductGroups))
+	mux.HandleFunc("GET /admin/v1/productGroups/{uuid}", s.requireRole(consumer, s.getProductGroup))
+	mux.HandleFunc("DELETE /admin/v1/productGroups/{uuid}", s.requireRole(admin, s.deleteProductGroup))
+	mux.HandleFunc("POST /admin/v1/productGroups/{uuid}/members", s.requireRole(admin, s.addProductGroupMember))
+	mux.HandleFunc("DELETE /admin/v1/productGroups/{uuid}/members/{productUuid}", s.requireRole(admin, s.removeProductGroupMember))
+
+	mux.HandleFunc("POST /admin/v1/releaseGroups", s.requireRole(admin, s.createReleaseGroup))
+	mux.HandleFunc("GET /admin/v1/releaseGroups", s.requireRole(consumer, s.listReleaseGroups))
+	mux.HandleFunc("GET /admin/v1/releaseGroups/{uuid}", s.requireRole(consumer, s.getReleaseGroup))
+	mux.HandleFunc("DELETE /admin/v1/releaseGroups/{uuid}", s.requireRole(admin, s.deleteReleaseGroup))
+	mux.HandleFunc("POST /admin/v1/releaseGroups/{uuid}/members", s.requireRole(admin, s.addReleaseGroupMember))
+	mux.HandleFunc("DELETE /admin/v1/releaseGroups/{uuid}/members/{releaseUuid}", s.requireRole(admin, s.removeReleaseGroupMember))
 }

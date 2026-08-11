@@ -5,7 +5,9 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/oej/opentea/internal/authz"
 	"github.com/oej/opentea/internal/httpx"
+	"github.com/oej/opentea/internal/pagination"
 	"github.com/oej/opentea/internal/repo"
 	"github.com/oej/opentea/pkg/tea"
 )
@@ -29,7 +31,10 @@ func (s *Server) getProduct(w http.ResponseWriter, r *http.Request) {
 		httpx.InternalError(w, r, err)
 		return
 	}
-	if httpx.WriteConditional(w, r, httpx.BuildETag("product", uuid), cacheControlRevalidate) {
+	if !s.authorize(w, r, authz.CapProductRead, authz.Resource{ProductUUID: uuid}) {
+		return
+	}
+	if s.conditional(w, r, cacheControlRevalidate, "product", uuid) {
 		return
 	}
 
@@ -60,6 +65,13 @@ func (s *Server) listReleasesByProduct(w http.ResponseWriter, r *http.Request) {
 		httpx.InternalError(w, r, err)
 		return
 	}
+	// Parent existence gate: if the caller can't even discover this
+	// product, its release list is equally hidden (spec Sec 18). Each row
+	// is then independently filtered by release.read below -- product
+	// access does NOT imply seeing every release (spec Sec 16.1).
+	if !s.authorize(w, r, authz.CapProductDiscover, authz.Resource{ProductUUID: uuid}) {
+		return
+	}
 
 	pp, ok := parsePageParams(w, r, productReleaseSortFields)
 	if !ok {
@@ -71,17 +83,26 @@ func (s *Server) listReleasesByProduct(w http.ResponseWriter, r *http.Request) {
 		httpx.InternalError(w, r, err)
 		return
 	}
-	etag := httpx.BuildETag("productReleases", uuid, pp.SortField, pp.SortOrder, cursorPart(pp.Cursor), strconv.FormatInt(watermark, 10))
-	if httpx.WriteConditional(w, r, etag, cacheControlRevalidate) {
+	if s.conditional(w, r, cacheControlRevalidate, "productReleases", uuid, pp.SortField, pp.SortOrder, cursorPart(pp.Cursor), strconv.FormatInt(watermark, 10)) {
 		return
 	}
 
-	rows, err := s.repo.ListProductReleasesByProduct(r.Context(), uuid, pp.SortField, pp.SortOrder, pp.Cursor, pp.PageSize+1)
+	page, hasNext, err := filterAuthorized(
+		func(cursor *pagination.Cursor, limit int) ([]tea.ProductRelease, error) {
+			return s.repo.ListProductReleasesByProduct(r.Context(), uuid, pp.SortField, pp.SortOrder, cursor, limit)
+		},
+		func(pr tea.ProductRelease) pagination.Cursor {
+			return pagination.Cursor{SortField: pp.SortField, SortOrder: pp.SortOrder, LastValue: productReleaseSortValue(pr, pp.SortField), LastUUID: pr.UUID}
+		},
+		func(pr tea.ProductRelease) (bool, error) {
+			return s.decide(r, authz.CapReleaseRead, authz.Resource{ProductReleaseUUID: pr.UUID})
+		},
+		pp.Cursor, pp.PageSize,
+	)
 	if err != nil {
 		httpx.InternalError(w, r, err)
 		return
 	}
-	page, hasNext := splitPage(rows, pp.PageSize)
 
 	resp := tea.PaginatedProductReleases{Results: page}
 	resp.HasNext = hasNext
@@ -110,17 +131,26 @@ func (s *Server) queryProducts(w http.ResponseWriter, r *http.Request) {
 		httpx.InternalError(w, r, err)
 		return
 	}
-	etag := httpx.BuildETag("products", idType, idValue, pp.SortField, pp.SortOrder, cursorPart(pp.Cursor), strconv.FormatInt(watermark, 10))
-	if httpx.WriteConditional(w, r, etag, cacheControlRevalidate) {
+	if s.conditional(w, r, cacheControlRevalidate, "products", idType, idValue, pp.SortField, pp.SortOrder, cursorPart(pp.Cursor), strconv.FormatInt(watermark, 10)) {
 		return
 	}
 
-	rows, err := s.repo.QueryProducts(r.Context(), idType, idValue, pp.SortField, pp.SortOrder, pp.Cursor, pp.PageSize+1)
+	page, hasNext, err := filterAuthorized(
+		func(cursor *pagination.Cursor, limit int) ([]tea.Product, error) {
+			return s.repo.QueryProducts(r.Context(), idType, idValue, pp.SortField, pp.SortOrder, cursor, limit)
+		},
+		func(p tea.Product) pagination.Cursor {
+			return pagination.Cursor{SortField: pp.SortField, SortOrder: pp.SortOrder, LastValue: p.Name, LastUUID: p.UUID}
+		},
+		func(p tea.Product) (bool, error) {
+			return s.decide(r, authz.CapProductRead, authz.Resource{ProductUUID: p.UUID})
+		},
+		pp.Cursor, pp.PageSize,
+	)
 	if err != nil {
 		httpx.InternalError(w, r, err)
 		return
 	}
-	page, hasNext := splitPage(rows, pp.PageSize)
 
 	resp := tea.PaginatedProducts{Results: page}
 	resp.HasNext = hasNext

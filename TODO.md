@@ -36,18 +36,41 @@ they don't get lost.
       checking with the user first, since the trust-model spec may change the shape entirely.
 - [ ] **Trust architecture overlay** (from oej's `tea-trust-architecture` repo) — evidence
       bundles, Ed25519 ephemeral certs, DNS trust anchors (TAPS), optional transparency logs
-      (Rekor/Sigsum/SCITT), staged/commit publisher workflow. No fixed schema exists yet for
-      this, so nothing to build against — revisit once that design is formalized.
-      **Known gap for the bundle format once this exists** (found 2026-07-05, not yet fixed):
-      `ReleaseDistribution`/`ArtifactFormat.SignatureURL` isn't wired up by any admin handler
-      today, and even once it is, the current export/import logic won't handle it correctly --
-      `export.go`'s hash collection only looks at the main file's `Checksums`, so a detached
-      signature file has no checksum slot of its own and wouldn't be captured into the bundle's
-      `files/`; and import only rewrites `URL` against the destination server, not
-      `SignatureURL`, which would leak the source server's address after a migration.
-      Transparency-log entries don't exist in the schema at all yet, so nothing to
-      export/import there either. Revisit the checksum/signature model and
-      `internal/bundle`'s export/import together with the trust-architecture design.
+      (Rekor/Sigsum/SCITT), staged/commit publisher workflow. The design repo has since grown
+      to 34 docs/schemas including a concrete `evidence-bundle-schema.json` (found 2026-08-21;
+      superseded the "no fixed schema exists yet" note this entry used to carry). A phased
+      implementation plan now exists (six phases); **Phase 1 shipped 2026-08-21**: Ed25519
+      signing/verification, ephemeral-key lifecycle, fingerprint identity, and the full
+      evidence-bundle data model, in `internal/trust` (pure crypto logic, no DB/HTTP imports,
+      mirrors `internal/authz`'s shape but is a deliberately separate subsystem -- trust
+      answers "is this evidence valid," authz answers "can this caller read this," and neither
+      imports the other) + `internal/repo/evidencebundle.go` + `internal/db/migrations/
+      0006_trust.sql` + `pkg/tea/trust.go`'s wire types + minimal attach-only admin endpoints
+      (`internal/admin/evidencebundle.go`: `POST /admin/v1/artifacts/{uuid}/{version}/
+      evidenceBundle`, `POST /admin/v1/collections/{uuid}/{version}/evidenceBundle`,
+      `GET /admin/v1/evidenceBundles/{uuid}`, gated by plain `requireRole`, not `authz.Decide`).
+      Server-side verify-before-store is enforced (spec Sec 5.4/15.3): a bad signature is
+      rejected before any DB write, tested by `cmd/opentea/trust_evidencebundle_test.go`.
+      Bundles stay `status: "draft"` (not spec-conformant -- the schema's `timestamps`/
+      `transparency` arrays are `minItems: 1` and required) until Phase 2 (RFC 3161 timestamps)
+      and Phase 3 (Rekor/Sigsum transparency-log entries) land; `MarkEvidenceBundleComplete`
+      enforces this. Phases 2-6 (timestamps, transparency log, MFA-approved publish/commit
+      workflow, CI/CD OIDC/mTLS auth, discovery v2 + DNS/TAPS, conformance docs) remain
+      unbuilt, each with open decisions for the user (default TSA, Rekor-vs-Sigsum priority,
+      what "MFA-approved" means in this deployment, OIDC-vs-mTLS default, whether TAPS is ever
+      claimed) — see the phased plan for detail.
+      **Known gap for the bundle format, still open**: `ReleaseDistribution`/
+      `ArtifactFormat.SignatureURL` (a legacy/simple detached-signature pointer, unrelated to
+      the trust-architecture `EvidenceBundle` fields added alongside it) still isn't wired up
+      by any admin handler, and even once it is, the current export/import logic won't handle
+      it correctly -- `export.go`'s hash collection only looks at the main file's `Checksums`,
+      so a detached signature file has no checksum slot of its own and wouldn't be captured
+      into the bundle's `files/`; and import only rewrites `URL` against the destination
+      server, not `SignatureURL`, which would leak the source server's address after a
+      migration. Separately, `internal/bundle` (product import/export ZIP) doesn't carry
+      `EvidenceBundle`/`EvidenceBundleRef` data at all yet either. Revisit the checksum/
+      signature model and `internal/bundle`'s export/import together once more of the
+      trust-architecture phases land.
 - [ ] **Authorization** via OpenIDConnect/Oauth2
 - [ ] **Multitenant** — **on hold (2026-08-10), per explicit user decision.** No tenant concept
       exists anywhere in the schema or request path today (confirmed 2026-08-06 while scoping

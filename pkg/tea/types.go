@@ -68,8 +68,13 @@ type ReleaseDistribution struct {
 	Description    string       `json:"description,omitempty"`
 	Identifiers    []Identifier `json:"identifiers,omitempty"`
 	URL            string       `json:"url,omitempty"`
-	SignatureURL   string       `json:"signatureUrl,omitempty"`
-	Checksums      []Checksum   `json:"checksums,omitempty"`
+	// SignatureURL: see ArtifactFormat.SignatureURL's doc comment -- a
+	// legacy/simple pointer, not part of the TEA Trust Architecture
+	// overlay. Distributions are software artifacts, not TEA Artifacts, so
+	// they aren't currently a trust-architecture evidence-bundle owner type
+	// (see 0006_trust.sql); this field is unaffected either way.
+	SignatureURL string     `json:"signatureUrl,omitempty"`
+	Checksums    []Checksum `json:"checksums,omitempty"`
 }
 
 // ComponentRelease corresponds to the spec's "release" schema (a TEA Component Release).
@@ -111,16 +116,39 @@ type Collection struct {
 	BelongsTo    string        `json:"belongsTo"`
 	UpdateReason *UpdateReason `json:"updateReason,omitempty"`
 	Artifacts    []Artifact    `json:"artifacts"`
+
+	// EvidenceBundle/EvidenceBundleRef are the TEA Trust Architecture
+	// overlay's cryptographic evidence of this collection's origin and
+	// integrity (see internal/trust and pkg/tea/trust.go). Mutually
+	// exclusive; both nil means no trust-architecture evidence exists for
+	// this collection, which is the common case for a deployment not
+	// claiming that profile. Per the spec, collection evidence MUST NOT be
+	// reused across versions of the same collection uuid (enforced by the
+	// Phase 4 publish/commit workflow, not yet built).
+	EvidenceBundle    *EvidenceBundle    `json:"evidenceBundle,omitempty"`
+	EvidenceBundleRef *EvidenceBundleRef `json:"evidenceBundleRef,omitempty"`
 }
 
 // ArtifactFormat is one downloadable representation of an Artifact (e.g.
 // the same SBOM offered as both CycloneDX XML and JSON).
 type ArtifactFormat struct {
-	MediaType    string     `json:"mediaType"`
-	Description  string     `json:"description,omitempty"`
-	URL          string     `json:"url,omitempty"`
+	MediaType   string `json:"mediaType"`
+	Description string `json:"description,omitempty"`
+	URL         string `json:"url,omitempty"`
+	// SignatureURL is a legacy/simple detached-signature pointer for
+	// deployments that don't claim the TEA Trust Architecture profile --
+	// it is not verified or otherwise interpreted by this server. Retained
+	// for backward wire compatibility rather than replaced outright.
+	// EvidenceBundle/EvidenceBundleRef below are what make a deployment
+	// trust-architecture-conformant.
 	SignatureURL string     `json:"signatureUrl,omitempty"`
 	Checksums    []Checksum `json:"checksums,omitempty"`
+
+	// EvidenceBundle/EvidenceBundleRef: see Collection's fields of the same
+	// name. Per the spec, artifact evidence MAY be reused across a
+	// document's versions (unlike collection evidence).
+	EvidenceBundle    *EvidenceBundle    `json:"evidenceBundle,omitempty"`
+	EvidenceBundleRef *EvidenceBundleRef `json:"evidenceBundleRef,omitempty"`
 }
 
 // Artifact is a security-related document (SBOM, VEX, attestation, license,

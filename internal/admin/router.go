@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/oej/opentea/internal/model"
+	"github.com/oej/opentea/internal/trust"
 )
 
 // registerRoutes wires every admin endpoint behind requireRole: GET (read)
@@ -92,4 +93,18 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /admin/v1/releaseGroups/{uuid}", s.requireRole(admin, s.deleteReleaseGroup))
 	mux.HandleFunc("POST /admin/v1/releaseGroups/{uuid}/members", s.requireRole(admin, s.addReleaseGroupMember))
 	mux.HandleFunc("DELETE /admin/v1/releaseGroups/{uuid}/members/{releaseUuid}", s.requireRole(admin, s.removeReleaseGroupMember))
+
+	// TEA Trust Architecture overlay (github.com/oej/tea-trust-architecture):
+	// cryptographic evidence of an artifact/collection's origin and
+	// integrity. Deliberately separate from the authz routes above -- authz
+	// answers "can this caller read this," trust answers "is this evidence
+	// valid." See internal/trust and internal/db/migrations/0006_trust.sql.
+	// A collection is looked up by its own (uuid, version) identity here
+	// (collection.uuid IS its owning product_release/component_release
+	// uuid, per 0001_init.sql), not nested under productReleases/
+	// componentReleases like collection creation is -- evidence attachment
+	// doesn't need that route context.
+	mux.HandleFunc("POST /admin/v1/artifacts/{uuid}/{version}/evidenceBundle", s.requireRole(admin, s.createEvidenceBundleForOwner("ARTIFACT", trust.ObjectTypeArtifact)))
+	mux.HandleFunc("POST /admin/v1/collections/{uuid}/{version}/evidenceBundle", s.requireRole(admin, s.createEvidenceBundleForOwner("COLLECTION", trust.ObjectTypeCollection)))
+	mux.HandleFunc("GET /admin/v1/evidenceBundles/{uuid}", s.requireRole(consumer, s.getEvidenceBundle))
 }

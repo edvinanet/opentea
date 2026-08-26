@@ -200,6 +200,28 @@ they don't get lost.
 - [ ] BLAKE3 checksum verification isn't implemented in `pkg/teaclient` (no stdlib or
       `golang.org/x/crypto` implementation without adding a new dependency) — reported as an
       explicit "unsupported algorithm" error rather than silently skipped.
+- [ ] **`teaclient` has no TEA Trust Architecture evidence-bundle verification** (found
+      2026-08-27, confirmed via code search: zero references to `EvidenceBundle`/Ed25519/
+      certificates anywhere in `pkg/teaclient`/`cmd/teaclient`). Bearer-token authentication is
+      already supported (`teaclient.WithBearerToken`, `cmd/teaclient`'s `-token` flag) and is a
+      separate, unrelated concern -- this gap is specifically about the trust overlay added
+      2026-08-21 (`internal/trust`, `pkg/tea/trust.go`). The client's existing "verify"
+      functionality (`DownloadAndVerify`/`DownloadAndVerifyTo`, `pkg/teaclient/artifacts.go`)
+      only checks basic checksums (`ArtifactFormat.Checksums`, MD5/SHA1/SHA256) against
+      downloaded bytes -- it never fetches, parses, or verifies an `Artifact`/`Collection`'s
+      `EvidenceBundle`/`EvidenceBundleRef` fields at all. A conformant client-side verifier would
+      need to: (1) parse the embedded `EvidenceBundle` or dereference an `EvidenceBundleRef` and
+      fetch+digest-check the external bundle; (2) verify the Ed25519 signature against the
+      embedded certificate (mirrors `internal/trust.Verify`/`ParseCertificatePublicKey`, but
+      client-side, so probably a shared/duplicated helper rather than importing the server's
+      internal package -- `internal/...` isn't importable outside this module); (3) once Phase
+      2/3 land server-side, also verify the RFC 3161 timestamp and transparency-log inclusion
+      proof, not just the signature; (4) decide what "verified" should mean for a bundle still in
+      `status: "draft"` (no timestamp/transparency yet) vs `"complete"` -- note `status` itself is
+      `json:"-"` (internal-only, see `pkg/tea/trust.go`), so the client can't even observe that
+      distinction from the wire today, only whether `evidenceBundle`/`evidenceBundleRef` is
+      present. Not scoped to any phase of the server-side trust-architecture plan yet -- revisit
+      once client-side verification priority is decided.
 - [ ] The fixtures replay tool's `{{name.field}}` templating only substitutes into JSON string
       values — an int-typed field (artifact `version`, CLE `eventId`) can't be filled from a
       placeholder. Worked around in `testdata/fixtures/edge-cases.json` by relying on

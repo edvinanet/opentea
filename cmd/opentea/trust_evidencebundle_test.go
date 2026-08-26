@@ -239,3 +239,32 @@ func TestCreateArtifactEvidenceBundleRejectsDigestMismatch(t *testing.T) {
 		t.Fatalf("GetEvidenceBundleForOwner after rejected upload: err = %v, want ErrNotFound (row must not have been stored)", err)
 	}
 }
+
+// TestCreateArtifactEvidenceBundleRejectsUnimplementedSignatureFormat is
+// the regression test for another finding from the same external security
+// review: the handler used to accept "cms-detached"/"dsse-envelope"/
+// "cose-sign1" as evidence.signatureFormat even though verification always
+// just base64-decodes SignatureValue and checks it as a raw Ed25519
+// signature -- never actually parsing any of those formats' real envelope
+// structure. A caller could store evidence mislabeled as e.g. "cms-detached"
+// while containing no CMS structure at all. Only "jws-detached" -- the one
+// format this phase actually verifies -- is accepted now; a request with
+// an otherwise fully valid signature but a different declared format must
+// still be rejected before any DB write.
+func TestCreateArtifactEvidenceBundleRejectsUnimplementedSignatureFormat(t *testing.T) {
+	srv := newTestServer(t)
+	artifactUUID, artifactVersion := createTestArtifact(t, srv)
+
+	body, _ := signedEvidenceRequest(t, srv, "ARTIFACT", artifactUUID, artifactVersion)
+	body["evidence"].(map[string]any)["signatureFormat"] = "cms-detached"
+
+	status, raw := jsonRequest(t, srv, http.MethodPost,
+		"/admin/v1/artifacts/"+artifactUUID+"/1/evidenceBundle", body)
+	if status != http.StatusBadRequest {
+		t.Fatalf("cms-detached evidence bundle: status=%d, want 400; body=%s", status, raw)
+	}
+
+	if _, err := srv.repo.GetEvidenceBundleForOwner(t.Context(), "ARTIFACT", artifactUUID, artifactVersion); err != repo.ErrNotFound {
+		t.Fatalf("GetEvidenceBundleForOwner after rejected upload: err = %v, want ErrNotFound (row must not have been stored)", err)
+	}
+}

@@ -50,8 +50,22 @@ type evidenceBundleRefMaterial struct {
 	DigestValue string `json:"digestValue"`
 }
 
+// validSignatureFormats is the set this API actually accepts -- narrower
+// than internal/trust.SignatureFormat's full closed vocabulary
+// (cms-detached/dsse-envelope/jws-detached/cose-sign1) and the DB CHECK
+// constraint in 0006_trust.sql, both of which stay broader on purpose so a
+// later phase adding real CMS/DSSE/COSE support doesn't need a migration.
+// This map is the live security boundary: verification below only ever
+// does one thing (decode SignatureValue as raw base64 and check it as a
+// raw Ed25519 signature over the digest bytes) -- it does not parse a real
+// CMS/DSSE/COSE envelope structure for any of those labels. Accepting a
+// label this handler doesn't actually verify as that format would let a
+// caller store evidence mislabeled as (say) "cms-detached" while
+// containing no CMS structure at all, misleading any consumer that trusts
+// the label (found by external security review). Widen this only in step
+// with adding a real per-format parser/verifier below.
 var validSignatureFormats = map[string]bool{
-	"cms-detached": true, "dsse-envelope": true, "jws-detached": true, "cose-sign1": true,
+	string(trust.SignatureFormatJWSDetached): true,
 }
 
 func (req createEvidenceBundleRequest) validate() string {
@@ -64,7 +78,7 @@ func (req createEvidenceBundleRequest) validate() string {
 			return "evidence.objectDigestValue is required"
 		}
 		if !validSignatureFormats[e.SignatureFormat] {
-			return "evidence.signatureFormat must be a valid signature-format enum value"
+			return "evidence.signatureFormat: only \"jws-detached\" is implemented in this phase"
 		}
 		if e.SignatureValue == "" {
 			return "evidence.signatureValue is required"

@@ -48,6 +48,15 @@ Session-cookie based; a plain HTML login form, no JavaScript.
 Session cookies (`opentea_session`) are `HttpOnly`, `SameSite=Lax`, and expire 24h after login
 (fixed, not renewed on activity — log in again after that).
 
+Every page's nav bar shows a "Default TEA" / "Trusted TEA" badge reflecting the
+`TEA_TRUST_ARCHITECTURE` config setting (see `README.md`'s config table) — this deployment's
+declared profile, display-only (it doesn't enforce anything). Independently, each artifact and
+collection on a product/component release's detail page shows its own trust-architecture evidence
+status (Signed / Draft / no badge for "none attached"), based on whether an evidence bundle has
+actually been attached via `POST /admin/v1/artifacts/{uuid}/{version}/evidenceBundle` or
+`POST /admin/v1/collections/{uuid}/{version}/evidenceBundle` — independent of the nav bar's
+deployment-wide setting, since evidence can exist (or be missing) regardless of what's declared.
+
 ## 4. `/admin/v1` JSON API
 
 **Every** endpoint now requires a valid session cookie (`opentea_session`) — there is no

@@ -31,16 +31,17 @@
 <h2>Collections</h2>
 {{if .Collections}}
 {{range .Collections}}
-<h3>Version {{.Version}} &mdash; {{.Date.Format "2006-01-02 15:04"}}</h3>
+<h3>Version {{.Version}} &mdash; {{.Date.Format "2006-01-02 15:04"}} {{template "evidenceBadge" .Evidence}}</h3>
 {{if .UpdateReason}}<p>Update reason: {{.UpdateReason.Type}}{{if .UpdateReason.Comment}} &mdash; {{.UpdateReason.Comment}}{{end}}</p>{{end}}
 {{if .Artifacts}}
 <table>
-<tr><th>Type</th><th>Name</th><th>Formats</th></tr>
+<tr><th>Type</th><th>Name</th><th>Formats</th><th>Trust</th></tr>
 {{range .Artifacts}}
 <tr>
   <td>{{.Type}}</td>
   <td>{{.Name}}</td>
   <td>{{range .Formats}}<code>{{.MediaType}}</code> {{end}}</td>
+  <td>{{template "evidenceBadge" .Evidence}}</td>
 </tr>
 {{end}}
 </table>

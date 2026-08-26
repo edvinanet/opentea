@@ -59,6 +59,7 @@ config file (default path `/etc/opentea/opentea.conf`, override with `TEA_CONFIG
 | `TEA_ROOT_URL` | `http://localhost:8080` | This server's own root URL, used in discovery responses and generated file URLs |
 | `TEA_VERSIONS` | `0.4.0` | Comma-separated list of supported TEA API versions, reported by discovery |
 | `TEA_ORG_NAME` | *(none)* | Organisation name; shown in the admin GUI and `GET /admin/v1/stats` when set |
+| `TEA_TRUST_ARCHITECTURE` | `false` | Declares this deployment's profile as "Trusted TEA" (oej's TEA Trust Architecture overlay) rather than plain TEA. Display-only in the admin GUI nav bar — does not enforce evidence-bundle requirements on any write path |
 | `TEA_TLS_CERT_FILE` / `TEA_TLS_KEY_FILE` | *(none)* | If both are set, the server listens with HTTPS instead of plain HTTP. Setting only one is a startup error |
 | `TEA_CONFIG_FILE` | `/etc/opentea/opentea.conf` | Path to the config file itself. A missing *default* path is fine (skipped); an explicitly-set path that's missing/malformed is a startup error |
 

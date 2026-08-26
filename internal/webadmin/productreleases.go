@@ -70,6 +70,6 @@ func (s *Server) productReleaseDetailPage(w http.ResponseWriter, r *http.Request
 
 	s.renderAuthenticated(w, "productRelease", pageData{
 		User: user, ProductRelease: release, ProductReleaseCLE: cle,
-		ProductReleaseComponents: components, Collections: collections,
+		ProductReleaseComponents: components, Collections: s.buildCollectionViews(r.Context(), collections),
 	})
 }

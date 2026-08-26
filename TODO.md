@@ -85,6 +85,40 @@ they don't get lost.
       not just per-resource ones. Consumer-API authorization work (below, and the
       `TEA_AUTHENTICATION_AUTHORIZATION_SPECIFICATION.md` design) should proceed single-tenant
       (one organization = this deployment) for now rather than waiting on this.
+      **Per-tenant TEA Trust Architecture support** (found 2026-08-26): the `TEA_TRUST_ARCHITECTURE`
+      config flag added that day (`internal/config/config.go`, surfaced as a "Default TEA"/
+      "Trusted TEA" badge in the admin GUI nav, see `internal/webadmin/templates/layout.html`) is
+      necessarily deployment-wide, the same single-tenant simplification as everything else in
+      this entry -- one opentea instance can only declare one profile today. If multi-tenancy is
+      ever implemented, whether a vendor operates under the trust-architecture overlay needs to
+      become a per-tenant setting (not a single process-wide flag), which means: a tenant dimension
+      on the config/setting itself (likely moving it out of `internal/config` and into a per-tenant
+      row once a tenant table exists, rather than an env var), the nav-bar badge and the
+      per-artifact/collection evidence badges (`internal/webadmin/evidence.go`) scoped to the
+      logged-in user's own tenant rather than the whole server, and `internal/trust`/
+      `internal/admin/evidencebundle.go`'s evidence-bundle endpoints scoped (or at least
+      fingerprint-reuse-checked, see `used_fingerprint` in `0006_trust.sql`) per tenant rather than
+      globally -- a fingerprint reused across two different tenants' artifacts is a different
+      question than reused within one tenant's own signing history. Revisit together with the rest
+      of this Multitenant entry once tenancy is actually scheduled.
+      **Roles need a third tier** (found 2026-08-26, per explicit user decision): today's two
+      admin-domain roles (`model.RoleAdmin`/`model.RoleConsumer`, `internal/model/model.go`) are
+      flat and server-wide -- every admin/consumer account already sees every product/component in
+      the one implicit organization, since there's nothing to scope to. Multi-tenancy needs a
+      **SuperUser** role, authorized to see and manage every tenant (for the vendor/operator running
+      the shared instance), distinct from ordinary **tenant-scoped GUI accounts**, each restricted
+      to a single tenant or an explicit subset of tenants -- not the same axis as `admin`/`consumer`
+      (which is a *within-a-tenant* read/write distinction and stays meaningful once tenancy exists:
+      a tenant will still want its own admins and read-only consumers). Concretely, this touches:
+      `internal/authn`'s identity/session model (a user row needs a tenant-membership set, plus a
+      superuser flag/role independent of it), `internal/webadmin`'s every list/detail handler (each
+      would need to filter by the caller's tenant scope unless they're a superuser, not just role-gate
+      via `requireRole` as today), and `internal/admin`'s equivalent JSON API handlers. `internal/authz`
+      (the *consumer*-facing `/tea/v1` entitlement system) is a separate, already-tenant-agnostic
+      concern per its own file header and is not what this note is about -- this is specifically
+      about `/admin/v1`+`/admin/ui` operator/vendor-staff access, which currently has no tenant
+      concept to restrict at all. Revisit together with the rest of this Multitenant entry once
+      tenancy is actually scheduled.
 - [ ] **Versioning of collections**
 - [ ] **Promotheus API endpoint for metrics**
 - [x] ~~**Consumer API (`/tea/v1`) authorization**~~ — Phase 1 shipped (2026-08-11), per

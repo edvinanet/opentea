@@ -34,6 +34,6 @@ func (s *Server) componentReleaseDetailPage(w http.ResponseWriter, r *http.Reque
 	}
 
 	s.renderAuthenticated(w, "componentRelease", pageData{
-		User: user, ComponentRelease: release, ComponentReleaseCLE: cle, Collections: collections,
+		User: user, ComponentRelease: release, ComponentReleaseCLE: cle, Collections: s.buildCollectionViews(r.Context(), collections),
 	})
 }

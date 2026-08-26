@@ -44,6 +44,15 @@ type Config struct {
 	// is a deployment fact this process can't verify on its own -- only
 	// turn this on if that's actually true of your deployment.
 	TrustProxyHeaders bool
+
+	// TrustArchitectureEnabled declares whether this deployment operates
+	// under oej's TEA Trust Architecture overlay ("Trusted TEA") rather
+	// than plain TEA. Display-only in this phase -- shown in the admin GUI
+	// as the deployment's declared profile, but does not enforce
+	// evidence-bundle requirements on any /admin/v1 write path (see
+	// internal/trust's phased plan; enforcement is a later phase). Off
+	// (plain TEA) by default.
+	TrustArchitectureEnabled bool
 }
 
 // defaultConfigFile is checked automatically if TEA_CONFIG_FILE isn't set.
@@ -61,15 +70,16 @@ func Load() (Config, error) {
 	}
 
 	return Config{
-		ListenAddr:        resolve("TEA_LISTEN_ADDR", fileValues, ":8080"),
-		DBPath:            resolve("TEA_DB_PATH", fileValues, "data/opentea.db"),
-		BlobDir:           resolve("TEA_BLOB_DIR", fileValues, "data/blobs"),
-		RootURL:           resolve("TEA_ROOT_URL", fileValues, "http://localhost:8080"),
-		Versions:          splitCSV(resolve("TEA_VERSIONS", fileValues, "0.4.0")),
-		OrgName:           resolve("TEA_ORG_NAME", fileValues, ""),
-		TLSCertFile:       resolve("TEA_TLS_CERT_FILE", fileValues, ""),
-		TLSKeyFile:        resolve("TEA_TLS_KEY_FILE", fileValues, ""),
-		TrustProxyHeaders: resolve("TEA_TRUST_PROXY_HEADERS", fileValues, "false") == "true",
+		ListenAddr:               resolve("TEA_LISTEN_ADDR", fileValues, ":8080"),
+		DBPath:                   resolve("TEA_DB_PATH", fileValues, "data/opentea.db"),
+		BlobDir:                  resolve("TEA_BLOB_DIR", fileValues, "data/blobs"),
+		RootURL:                  resolve("TEA_ROOT_URL", fileValues, "http://localhost:8080"),
+		Versions:                 splitCSV(resolve("TEA_VERSIONS", fileValues, "0.4.0")),
+		OrgName:                  resolve("TEA_ORG_NAME", fileValues, ""),
+		TLSCertFile:              resolve("TEA_TLS_CERT_FILE", fileValues, ""),
+		TLSKeyFile:               resolve("TEA_TLS_KEY_FILE", fileValues, ""),
+		TrustProxyHeaders:        resolve("TEA_TRUST_PROXY_HEADERS", fileValues, "false") == "true",
+		TrustArchitectureEnabled: resolve("TEA_TRUST_ARCHITECTURE", fileValues, "false") == "true",
 	}, nil
 }
 

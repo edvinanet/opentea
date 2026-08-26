@@ -28,6 +28,10 @@
   button[type=submit] { background: #1a1a2e; color: #fff; border: none; cursor: pointer; margin-top: 1rem; }
   code { background: #eef1f5; padding: 0.1rem 0.35rem; border-radius: 3px; }
   code.token { display: block; background: #1a1a2e; color: #a5f3fc; padding: 1rem; border-radius: 6px; word-break: break-all; margin-top: 0.5rem; }
+  .badge { display: inline-block; padding: 0.15rem 0.55rem; border-radius: 999px; font-size: 0.8rem; font-weight: 600; white-space: nowrap; }
+  .badge-mode-on, .badge-evidence-complete { background: #dcfce7; color: #166534; }
+  .badge-mode-off { background: #e2e8f0; color: #475569; }
+  .badge-evidence-draft { background: #fef3c7; color: #92400e; }
 </style>
 </head>
 <body>
@@ -37,6 +41,7 @@
   <a href="/admin/ui/components">Components</a>
   {{if eq .User.Role "admin"}}<a href="/admin/ui/users">Users</a>{{end}}
   <a href="/admin/ui/token">API Token</a>
+  {{if .TrustArchitectureEnabled}}<span class="badge badge-mode-on" title="This deployment operates under the TEA Trust Architecture overlay (Ed25519 signing, evidence bundles)">&#128737; Trusted TEA</span>{{else}}<span class="badge badge-mode-off" title="Plain TEA -- no trust-architecture overlay">Default TEA</span>{{end}}
   {{if .OrgName}}<span style="color:#64748b">{{.OrgName}}</span>{{end}}
   <form class="inline" action="/admin/ui/logout" method="post">
     <button type="submit">Logout ({{.User.Username}}, {{.User.Role}})</button>
@@ -48,3 +53,12 @@
 </body>
 </html>
 {{end}}
+
+{{/* evidenceBadge renders one artifact/collection's trust-architecture
+     evidence status (see internal/webadmin/evidence.go's evidenceBadge
+     type). Shared by productRelease.html and componentRelease.html, parsed
+     together with this file for every page (see loadTemplates in
+     server.go). No-evidence renders as a plain em dash, not a gray badge,
+     so a mostly-unsigned deployment's tables don't get visually noisy --
+     the badge only appears where there's something to say. */}}
+{{define "evidenceBadge"}}{{if .Present}}{{if eq .Status "complete"}}<span class="badge badge-evidence-complete" title="Evidence bundle complete: signature + timestamp + transparency log">&#128737; Signed</span>{{else}}<span class="badge badge-evidence-draft" title="Evidence bundle present but not yet complete (no timestamp/transparency log yet)">&#128737; Draft</span>{{end}}{{else}}&mdash;{{end}}{{end}}

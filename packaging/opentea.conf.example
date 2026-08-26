@@ -36,3 +36,9 @@ TEA_ORG_NAME=Acme Corp
 # by a reverse proxy in front of this server instead.
 #TEA_TLS_CERT_FILE=/etc/opentea/tls/cert.pem
 #TEA_TLS_KEY_FILE=/etc/opentea/tls/key.pem
+
+# Declares this deployment's profile as "Trusted TEA" (oej's TEA Trust
+# Architecture overlay -- Ed25519 signing, evidence bundles) rather than
+# plain TEA. Shown as a badge in the admin GUI nav bar; display-only, does
+# not enforce evidence-bundle requirements on any write path. Off by default.
+#TEA_TRUST_ARCHITECTURE=true

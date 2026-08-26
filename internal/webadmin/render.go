@@ -18,6 +18,12 @@ type pageData struct {
 	RootURL string
 	OrgName string
 
+	// TrustArchitectureEnabled mirrors config.Config.TrustArchitectureEnabled
+	// -- shown as a "Trusted TEA"/"Default TEA" badge in layout.html's nav,
+	// on every page, set below alongside OrgName/RootURL rather than by
+	// each handler individually.
+	TrustArchitectureEnabled bool
+
 	Stats model.Stats
 
 	Users []model.User
@@ -35,8 +41,12 @@ type pageData struct {
 	ProductReleaseComponents []componentRefView // linked components, resolved to a name
 
 	// Collections is shared by both the productRelease and componentRelease
-	// detail pages -- each Collection already carries its own Artifacts.
-	Collections []tea.Collection
+	// detail pages -- each collectionView already carries its own
+	// artifactViews. A view type, not []tea.Collection directly, so each
+	// item can carry its resolved evidence-bundle badge (see evidence.go)
+	// without touching tea.Collection/tea.Artifact's own EvidenceBundle
+	// fields, which stay unpopulated by repo Get/List calls in this phase.
+	Collections []collectionView
 
 	Components        []tea.Component
 	Component         tea.Component
@@ -50,6 +60,7 @@ type pageData struct {
 func (s *Server) renderAuthenticated(w http.ResponseWriter, page string, data pageData) {
 	data.RootURL = s.cfg.RootURL
 	data.OrgName = s.cfg.OrgName
+	data.TrustArchitectureEnabled = s.cfg.TrustArchitectureEnabled
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.templates[page].ExecuteTemplate(w, "layout", data); err != nil {
 		slog.Error("render template failed", "page", page, "error", err)

@@ -2,8 +2,11 @@ package trust
 
 import (
 	"bytes"
+	"crypto/rand"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/pem"
+	"math/big"
 	"testing"
 	"time"
 )
@@ -79,7 +82,7 @@ func TestParseCertificateSubject(t *testing.T) {
 		t.Fatalf("BuildCertificate: %v", err)
 	}
 
-	fp, domain, err := ParseCertificateSubject(certPEM)
+	fp, domain, err := ParseCertificateSubject(certPEM, kp.Public)
 	if err != nil {
 		t.Fatalf("ParseCertificateSubject: %v", err)
 	}
@@ -88,5 +91,47 @@ func TestParseCertificateSubject(t *testing.T) {
 	}
 	if domain != "trust.example.com" {
 		t.Fatalf("trustDomain = %s, want trust.example.com", domain)
+	}
+}
+
+// TestParseCertificateSubjectRejectsFingerprintMismatch is the regression
+// test for a real vulnerability: ParseCertificateSubject used to return
+// whatever fingerprint string appeared in the certificate's SAN without
+// checking it was actually derived from the certificate's own key. Since a
+// self-signed certificate's SAN is just a string its own subject chose, a
+// caller submitting evidence via internal/admin's evidence-bundle handler
+// could sign with one key while claiming an arbitrary, unrelated
+// fingerprint string -- defeating the used_fingerprint reuse ledger this
+// function's result feeds (a signer could reuse the same key under
+// many different claimed fingerprints, or collide with someone else's
+// claimed fingerprint). This builds a certificate, self-signed by a real
+// key, whose SAN claims a fingerprint that does NOT match that key.
+func TestParseCertificateSubjectRejectsFingerprintMismatch(t *testing.T) {
+	kp, err := GenerateEphemeralKey(time.Hour)
+	if err != nil {
+		t.Fatalf("GenerateEphemeralKey: %v", err)
+	}
+
+	forgedSAN := "0000000000000000000000000000000000000000000000000000000000000000.trust.example.com"
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		t.Fatalf("generate serial: %v", err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: serial,
+		Subject:      pkix.Name{CommonName: forgedSAN},
+		DNSNames:     []string{forgedSAN},
+		NotBefore:    kp.NotBefore,
+		NotAfter:     kp.NotAfter,
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, kp.Public, kp.Private)
+	if err != nil {
+		t.Fatalf("x509.CreateCertificate: %v", err)
+	}
+	certPEM := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
+
+	if _, _, err := ParseCertificateSubject(certPEM, kp.Public); err == nil {
+		t.Fatal("ParseCertificateSubject accepted a SAN fingerprint that does not match the certificate's own public key")
 	}
 }

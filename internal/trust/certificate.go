@@ -83,11 +83,24 @@ func ParseCertificatePublicKey(certPEM string, at time.Time) (ed25519.PublicKey,
 
 // ParseCertificateSubject extracts the (fingerprint, trustDomain) pair
 // encoded in a certificate's SAN, the "<fingerprint>.<trustDomain>" shape
-// BuildCertificate produces. Used by internal/admin's evidence-bundle
-// handler so a caller submitting signing material doesn't separately
-// declare a trust domain that could disagree with what the certificate
-// itself asserts -- the certificate's SAN is the one source of truth.
-func ParseCertificateSubject(certPEM string) (Fingerprint, TrustDomain, error) {
+// BuildCertificate produces -- and requires the SAN's claimed fingerprint
+// equal FingerprintOf(pub), the fingerprint actually derived from the
+// certificate's own signing key. pub must be the same key
+// ParseCertificatePublicKey already extracted and verified the signature
+// against; callers must not skip that step and call this with an
+// unverified key.
+//
+// This check is the whole point of the function: a certificate's SAN is
+// just a string field the certificate's own subject chose -- self-signed,
+// nothing else attests to it -- so trusting it at face value would let a
+// caller register any fingerprint string it likes in the reuse ledger
+// (internal/repo's used_fingerprint table) while actually signing with a
+// different, unrelated key, defeating fingerprint-reuse detection
+// entirely (spec 01-tea-trust-architecture.md Sec 9: "prevent reuse of
+// known fingerprints"). Returning FingerprintOf(pub) below (not the raw
+// SAN text) makes the caller's stored fingerprint the one this function
+// itself verified, not merely the one that happened to parse.
+func ParseCertificateSubject(certPEM string, pub ed25519.PublicKey) (Fingerprint, TrustDomain, error) {
 	cert, err := parseCertificate(certPEM)
 	if err != nil {
 		return "", "", err
@@ -100,5 +113,10 @@ func ParseCertificateSubject(certPEM string) (Fingerprint, TrustDomain, error) {
 	if idx <= 0 || idx == len(san)-1 {
 		return "", "", fmt.Errorf("trust: SAN %q is not of the form <fingerprint>.<trustDomain>", san)
 	}
-	return Fingerprint(san[:idx]), TrustDomain(san[idx+1:]), nil
+	claimed := Fingerprint(san[:idx])
+	computed := FingerprintOf(pub)
+	if claimed != computed {
+		return "", "", fmt.Errorf("trust: certificate SAN fingerprint %q does not match SHA-256 of its own public key (%q)", claimed, computed)
+	}
+	return computed, TrustDomain(san[idx+1:]), nil
 }

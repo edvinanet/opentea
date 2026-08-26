@@ -160,7 +160,7 @@ func (s *Server) createEvidenceBundleForOwner(ownerType string, objectType trust
 			httpx.BadRequest(w, "evidence.signatureValue does not verify against evidence.certificatePem and evidence.objectDigestValue")
 			return
 		}
-		fingerprint, trustDomain, err := trust.ParseCertificateSubject(e.CertificatePEM)
+		fingerprint, trustDomain, err := trust.ParseCertificateSubject(e.CertificatePEM, pub)
 		if err != nil {
 			httpx.BadRequest(w, "evidence.certificatePem: "+err.Error())
 			return

@@ -28,10 +28,29 @@ func createTestArtifact(t *testing.T, srv *testServer) (uuid string, version int
 	return a.UUID, a.Version
 }
 
+// realObjectDigest computes the same canonical-JSON SHA-256 digest the
+// server itself independently computes and requires
+// evidence.objectDigestValue to equal (createEvidenceBundleForOwner,
+// internal/admin/evidencebundle.go) -- a regression test for the
+// digest-binding fix must sign over this exact value to get a 201, and
+// deliberately sign over something else to prove the mismatch is rejected.
+func realObjectDigest(t *testing.T, srv *testServer, ownerType, ownerUUID string, ownerVersion int) string {
+	t.Helper()
+	owner, err := srv.repo.GetEvidenceOwnerObject(t.Context(), ownerType, ownerUUID, ownerVersion)
+	if err != nil {
+		t.Fatalf("GetEvidenceOwnerObject: %v", err)
+	}
+	canonical, err := trust.Canonicalize(owner)
+	if err != nil {
+		t.Fatalf("Canonicalize: %v", err)
+	}
+	return trust.SHA256Hex(canonical)
+}
+
 // signedEvidenceRequest generates a fresh ephemeral key/certificate, signs
-// digestHex's raw bytes, and returns the request body
-// createEvidenceBundleForOwner expects.
-func signedEvidenceRequest(t *testing.T, digestHex string) (body map[string]any, kp trust.KeyPair) {
+// the server's own real digest of (ownerType, ownerUUID, ownerVersion), and
+// returns the request body createEvidenceBundleForOwner expects.
+func signedEvidenceRequest(t *testing.T, srv *testServer, ownerType, ownerUUID string, ownerVersion int) (body map[string]any, kp trust.KeyPair) {
 	t.Helper()
 	kp, err := trust.GenerateEphemeralKey(time.Hour)
 	if err != nil {
@@ -41,6 +60,7 @@ func signedEvidenceRequest(t *testing.T, digestHex string) (body map[string]any,
 	if err != nil {
 		t.Fatalf("BuildCertificate: %v", err)
 	}
+	digestHex := realObjectDigest(t, srv, ownerType, ownerUUID, ownerVersion)
 	digestBytes, err := hex.DecodeString(digestHex)
 	if err != nil {
 		t.Fatalf("decode digestHex: %v", err)
@@ -60,15 +80,14 @@ func signedEvidenceRequest(t *testing.T, digestHex string) (body map[string]any,
 // TestCreateArtifactEvidenceBundleRoundTrip drives the full Phase 1
 // evidence-bundle flow through the real admin HTTP handlers (not just the
 // repo layer, which internal/repo/evidencebundle_test.go already covers
-// directly): create an artifact, sign a digest of it, POST the evidence,
-// and independently re-verify what comes back from GET without trusting
-// the server's own say-so.
+// directly): create an artifact, sign the server's own digest of it, POST
+// the evidence, and independently re-verify what comes back from GET
+// without trusting the server's own say-so.
 func TestCreateArtifactEvidenceBundleRoundTrip(t *testing.T) {
 	srv := newTestServer(t)
 	artifactUUID, artifactVersion := createTestArtifact(t, srv)
 
-	digestHex := trust.SHA256Hex([]byte("artifact object bytes"))
-	body, kp := signedEvidenceRequest(t, digestHex)
+	body, kp := signedEvidenceRequest(t, srv, "ARTIFACT", artifactUUID, artifactVersion)
 
 	status, raw := jsonRequest(t, srv, http.MethodPost,
 		"/admin/v1/artifacts/"+artifactUUID+"/1/evidenceBundle", body)
@@ -130,7 +149,8 @@ func TestCreateArtifactEvidenceBundleRejectsFingerprintReuse(t *testing.T) {
 		t.Fatalf("BuildCertificate: %v", err)
 	}
 
-	makeBody := func(digestHex string) map[string]any {
+	makeBody := func(ownerUUID string) map[string]any {
+		digestHex := realObjectDigest(t, srv, "ARTIFACT", ownerUUID, 1)
 		digestBytes, _ := hex.DecodeString(digestHex)
 		sig := trust.Sign(kp.Private, digestBytes)
 		return map[string]any{
@@ -145,14 +165,14 @@ func TestCreateArtifactEvidenceBundleRejectsFingerprintReuse(t *testing.T) {
 
 	uuid1, _ := createTestArtifact(t, srv)
 	status, raw := jsonRequest(t, srv, http.MethodPost,
-		"/admin/v1/artifacts/"+uuid1+"/1/evidenceBundle", makeBody(trust.SHA256Hex([]byte("object 1"))))
+		"/admin/v1/artifacts/"+uuid1+"/1/evidenceBundle", makeBody(uuid1))
 	if status != http.StatusCreated {
 		t.Fatalf("first evidence bundle: status=%d body=%s", status, raw)
 	}
 
 	uuid2, _ := createTestArtifact(t, srv)
 	status, raw = jsonRequest(t, srv, http.MethodPost,
-		"/admin/v1/artifacts/"+uuid2+"/1/evidenceBundle", makeBody(trust.SHA256Hex([]byte("object 2"))))
+		"/admin/v1/artifacts/"+uuid2+"/1/evidenceBundle", makeBody(uuid2))
 	if status != http.StatusBadRequest {
 		t.Fatalf("second evidence bundle (reused fingerprint): status=%d, want 400; body=%s", status, raw)
 	}
@@ -167,8 +187,7 @@ func TestCreateArtifactEvidenceBundleRejectsTamperedSignature(t *testing.T) {
 	srv := newTestServer(t)
 	artifactUUID, artifactVersion := createTestArtifact(t, srv)
 
-	digestHex := trust.SHA256Hex([]byte("artifact object bytes"))
-	body, _ := signedEvidenceRequest(t, digestHex)
+	body, _ := signedEvidenceRequest(t, srv, "ARTIFACT", artifactUUID, artifactVersion)
 
 	evidence := body["evidence"].(map[string]any)
 	sigBytes, err := base64.StdEncoding.DecodeString(evidence["signatureValue"].(string))
@@ -185,6 +204,38 @@ func TestCreateArtifactEvidenceBundleRejectsTamperedSignature(t *testing.T) {
 	}
 
 	if _, err := srv.repo.GetEvidenceBundleForOwner(t.Context(), "ARTIFACT", artifactUUID, artifactVersion); err != repo.ErrNotFound {
+		t.Fatalf("GetEvidenceBundleForOwner after rejected upload: err = %v, want ErrNotFound (row must not have been stored)", err)
+	}
+}
+
+// TestCreateArtifactEvidenceBundleRejectsDigestMismatch is the regression
+// test for a real vulnerability found by external security review: the
+// handler used to verify a signature against whatever digest the caller
+// submitted, without ever checking that digest against the server's own
+// computation of the actual target object -- so a caller (any admin, or a
+// compromised/malicious CI credential with admin access) could sign
+// arbitrary self-consistent bytes and attach the result to any artifact,
+// with the "evidence" proving nothing about that artifact's real content.
+// This signs over a real digest -- just the wrong artifact's -- and
+// confirms it's rejected with no row stored.
+func TestCreateArtifactEvidenceBundleRejectsDigestMismatch(t *testing.T) {
+	srv := newTestServer(t)
+	targetUUID, targetVersion := createTestArtifact(t, srv)
+	otherUUID, otherVersion := createTestArtifact(t, srv)
+
+	// Sign the *other* artifact's real digest, then submit it against the
+	// target artifact -- internally self-consistent (signature verifies
+	// against the submitted digest), but that digest doesn't match the
+	// target's actual content.
+	body, _ := signedEvidenceRequest(t, srv, "ARTIFACT", otherUUID, otherVersion)
+
+	status, raw := jsonRequest(t, srv, http.MethodPost,
+		"/admin/v1/artifacts/"+targetUUID+"/1/evidenceBundle", body)
+	if status != http.StatusBadRequest {
+		t.Fatalf("digest-mismatch evidence bundle: status=%d, want 400; body=%s", status, raw)
+	}
+
+	if _, err := srv.repo.GetEvidenceBundleForOwner(t.Context(), "ARTIFACT", targetUUID, targetVersion); err != repo.ErrNotFound {
 		t.Fatalf("GetEvidenceBundleForOwner after rejected upload: err = %v, want ErrNotFound (row must not have been stored)", err)
 	}
 }

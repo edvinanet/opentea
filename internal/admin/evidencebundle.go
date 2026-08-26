@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/oej/opentea/internal/httpx"
@@ -22,12 +23,19 @@ type createEvidenceBundleRequest struct {
 
 // evidenceMaterial is the raw signing material for an evidence bundle this
 // server holds locally. ObjectDigestValue is the hex SHA-256 digest of the
-// object bytes that were signed; SignatureValue is the base64-encoded
-// Ed25519 signature computed directly over those digest bytes (not the
-// object bytes themselves -- this lets the server verify without needing
-// the, potentially large or externally-hosted, object bytes on hand, the
-// same reasoning the schema's own objectRef.location field already
-// anticipates).
+// object bytes that were signed -- and MUST equal this server's own
+// SHA-256(Canonicalize(...)) of the actual current tea.Artifact/
+// tea.Collection identified by the request path (checked in
+// createEvidenceBundleForOwner before verifying the signature); a
+// submission whose digest doesn't match is rejected, not just one whose
+// signature doesn't verify. This is what makes the signature mean
+// something about *this* object rather than merely being self-consistent
+// with an arbitrary caller-chosen digest. SignatureValue is the
+// base64-encoded Ed25519 signature computed directly over those digest
+// bytes (not the object bytes themselves -- this lets the server verify
+// without needing the, potentially large, object bytes on hand a second
+// time, the same reasoning the schema's own objectRef.location field
+// anticipates for *fetching* the object, just not for what gets signed).
 type evidenceMaterial struct {
 	ObjectDigestValue string `json:"objectDigestValue"`
 	ObjectMediaType   string `json:"objectMediaType,omitempty"`
@@ -145,6 +153,36 @@ func (s *Server) createEvidenceBundleForOwner(ownerType string, objectType trust
 		sigBytes, err := base64.StdEncoding.DecodeString(e.SignatureValue)
 		if err != nil {
 			httpx.BadRequest(w, "evidence.signatureValue must be base64-encoded")
+			return
+		}
+
+		// The submitted digest must equal this server's own computed digest
+		// of the real target object -- otherwise a caller could sign
+		// arbitrary self-consistent bytes and attach the result to any
+		// artifact/collection without the signature proving anything about
+		// that object's actual content. (Found by external security review:
+		// the signature was previously verified only against whatever
+		// digest the caller supplied, never checked against the real
+		// object -- so evidence could be internally valid while attesting
+		// to nothing.) This is itself part of the verify-before-store
+		// requirement below, not a separate concern -- a digest is
+		// "submitted evidence" too.
+		owner, err := s.repo.GetEvidenceOwnerObject(r.Context(), ownerType, ownerUUID, ownerVersion)
+		if errors.Is(err, repo.ErrNotFound) {
+			httpx.NotFound(w)
+			return
+		}
+		if err != nil {
+			httpx.InternalError(w, r, err)
+			return
+		}
+		canonicalOwner, err := trust.Canonicalize(owner)
+		if err != nil {
+			httpx.InternalError(w, r, err)
+			return
+		}
+		if computed := trust.SHA256Hex(canonicalOwner); !strings.EqualFold(computed, e.ObjectDigestValue) {
+			httpx.BadRequest(w, "evidence.objectDigestValue does not match the server-computed digest of the target object")
 			return
 		}
 

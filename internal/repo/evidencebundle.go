@@ -94,6 +94,44 @@ func (r *Repo) CreateEvidenceBundle(ctx context.Context, in EvidenceBundleInput)
 	})
 }
 
+// GetEvidenceOwnerObject fetches the actual TEA object -- a tea.Artifact or
+// a tea.Collection -- identified by (ownerType, ownerUUID, ownerVersion),
+// for internal/admin's evidence-bundle handler to compute the object's own
+// canonical-JSON digest server-side rather than trusting a caller-submitted
+// one (spec 08-evidence-bundle.md Sec 5.4/15.3's verify-before-store
+// requirement extends to the digest itself, not just the signature over
+// it). Returns ErrNotFound if the owner doesn't exist or ownerType is
+// unrecognized.
+func (r *Repo) GetEvidenceOwnerObject(ctx context.Context, ownerType, ownerUUID string, ownerVersion int) (any, error) {
+	switch ownerType {
+	case "ARTIFACT":
+		return r.GetArtifactByVersion(ctx, ownerUUID, ownerVersion)
+	case "COLLECTION":
+		return getCollectionRegardlessOfBelongsToTx(ctx, r.conn(), ownerUUID, ownerVersion)
+	default:
+		return nil, ErrNotFound
+	}
+}
+
+// getCollectionRegardlessOfBelongsToTx fetches a collection by (uuid,
+// version) alone -- evidence bundles attach to a collection by its own
+// identity (internal/admin/router.go's evidence-bundle routes aren't split
+// by product/component release, since collection.uuid already IS its
+// owning release's uuid), unlike GetCollectionByVersion's normal callers,
+// which already know which release type they're browsing and pass
+// belongsTo explicitly.
+func getCollectionRegardlessOfBelongsToTx(ctx context.Context, q dbtx, uuid string, version int) (tea.Collection, error) {
+	var belongsTo string
+	err := q.QueryRowContext(ctx, `SELECT belongs_to FROM collection WHERE uuid = ? AND version = ?`, uuid, version).Scan(&belongsTo)
+	if errors.Is(err, sql.ErrNoRows) {
+		return tea.Collection{}, ErrNotFound
+	}
+	if err != nil {
+		return tea.Collection{}, err
+	}
+	return getCollectionByVersionTx(ctx, q, uuid, version, belongsTo)
+}
+
 // ownerExistsTx reports whether the (ownerType, ownerUUID, ownerVersion)
 // tuple an evidence bundle would attach to actually exists.
 func ownerExistsTx(ctx context.Context, q dbtx, ownerType, ownerUUID string, ownerVersion int) (bool, error) {

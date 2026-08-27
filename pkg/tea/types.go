@@ -193,6 +193,33 @@ type DiscoveryInfo struct {
 	Servers            []ServerInfo `json:"servers"`
 }
 
+// WellKnownDocument is the JSON body served at
+// https://<tei-authority>/.well-known/tea, the entry point of TEA's
+// TEI-authority bootstrap discovery flow (see
+// pkg/teaclient.BootstrapDiscover): the first step in going from a bare
+// TEI to a server that can answer GET /discovery for it. Matches
+// CycloneDX/transparency-exchange-api's discovery/tea-well-known.schema.json.
+type WellKnownDocument struct {
+	SchemaVersion int                 `json:"schemaVersion"`
+	Endpoints     []WellKnownEndpoint `json:"endpoints"`
+}
+
+// WellKnownEndpoint is one candidate TEA server listed in a
+// WellKnownDocument -- distinct from ServerInfo (which describes a server
+// already known, via /tea/v1/discovery, to host a specific product
+// release): a WellKnownEndpoint is a candidate the client hasn't queried
+// yet.
+type WellKnownEndpoint struct {
+	URL      string   `json:"url"`
+	Versions []string `json:"versions"`
+	// Priority: 0-1, higher tried first. A pointer (matching ServerInfo's
+	// own Priority field above) because the schema's default of 1 when
+	// absent is different from an explicit priority of 0 (lowest) -- a
+	// plain float64 can't distinguish "not present" from "present and
+	// zero" on decode; omitempty only affects encoding, not decoding.
+	Priority *float64 `json:"priority,omitempty"`
+}
+
 // CLEVersionSpecifier names either a single version or a version range a
 // CLEEvent applies to.
 type CLEVersionSpecifier struct {

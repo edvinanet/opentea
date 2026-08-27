@@ -59,14 +59,20 @@ func resolveWellKnownTarget(ctx context.Context, authority string) (host string,
 func resolveWellKnownTargetWithConfig(ctx context.Context, cfg *dns.ClientConfig, authority string) (host string, port int, usedSVCB bool) {
 	server := net.JoinHostPort(cfg.Servers[0], cfg.Port)
 
-	// SVCB/HTTPS records are queried against the bare hostname -- a TEI
-	// authority may include an explicit port for direct connection, but
-	// DNS queries never do. fallbackHost/fallbackPort split that same
-	// explicit port back out for the no-SVCB-record case below, so the
-	// return contract (host is always bare, port is always numeric) holds
-	// on every path, not just the SVCB-success one -- the caller
-	// (fetchWellKnown) always does net.JoinHostPort(host, port) itself and
-	// must never receive a host that already contains a port.
+	// SVCB/HTTPS records are queried against the bare hostname -- DNS
+	// queries never carry a port. A real TEI's authority can't carry one
+	// either (pkg/tea.ExtractTEIAuthority rejects it, per the TEA discovery
+	// spec: "the port number is not part of the TEI"), so in production
+	// fetchWellKnown never actually passes an authority with a port here.
+	// This function stays defensive about it anyway -- it's a general-
+	// purpose resolver, not something that should assume its input already
+	// went through TEI validation -- and it's directly exercised with a
+	// port-bearing authority by svcb_test.go's own tests. fallbackHost/
+	// fallbackPort split any such port back out for the no-SVCB-record case
+	// below, so the return contract (host is always bare, port is always
+	// numeric) holds on every path, not just the SVCB-success one -- the
+	// caller (fetchWellKnown) always does net.JoinHostPort(host, port)
+	// itself and must never receive a host that already contains a port.
 	fallbackHost, fallbackPort := authority, defaultWellKnownPort
 	if h, p, err := net.SplitHostPort(authority); err == nil {
 		fallbackHost = h

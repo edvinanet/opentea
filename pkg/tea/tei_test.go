@@ -10,7 +10,8 @@ func TestExtractTEIAuthority(t *testing.T) {
 		wantErr bool
 	}{
 		{"plain host", "tei://products.example.com/uuid/d4d9f54a-abcf-11ee-ac79-1a52914d44b1", "products.example.com", false},
-		{"host with port", "tei://127.0.0.1:8443/uuid/d4d9f54a-abcf-11ee-ac79-1a52914d44b1", "127.0.0.1:8443", false},
+		{"host with port rejected", "tei://127.0.0.1:8443/uuid/d4d9f54a-abcf-11ee-ac79-1a52914d44b1", "", true},
+		{"IPv6 host with port rejected", "tei://[2001:db8::1]:8443/uuid/d4d9f54a-abcf-11ee-ac79-1a52914d44b1", "", true},
 		{"purl type with slashes in identifier", "tei://cyclonedx.org/purl/pkg:pypi/cyclonedx-python-lib@8.4.0", "cyclonedx.org", false},
 		{"old urn syntax rejected", "urn:tei:uuid:products.example.com:d4d9f54a-abcf-11ee-ac79-1a52914d44b1", "", true},
 		{"wrong scheme rejected", "https://products.example.com/uuid/d4d9f54a-abcf-11ee-ac79-1a52914d44b1", "", true},

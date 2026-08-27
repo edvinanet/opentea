@@ -248,22 +248,38 @@ they don't get lost.
       previously asserted the opposite (a port-bearing TEI, fallback must preserve it). **Fixed
       2026-08-27**: TEST-14 now asserts a port-bearing TEI is rejected before any resolution
       attempt; added TEST-22 as the positive case (non-default port via `endpoints[].url`).
-      **Still open, not fixed**: `pkg/tea.ExtractTEIAuthority` doesn't actually enforce this --
-      it passes a port-bearing `Host` through unmodified (confirmed by reading the code), so the
-      reference client is more permissive than the doc now claims is required. Not a security bug
-      (permissiveness, not unsafe behavior), but the client and the doc disagree; decide whether to
-      make `ExtractTEIAuthority` reject a port-bearing TEI to match, which would also let
-      `pkg/teaclient/svcb.go`'s `fallbackHost`/`fallbackPort`-preserving logic (added for the old
-      TEST-14) be simplified away, since the scenario it exists for is no longer spec-conformant
-      input.
-      The same review also confirmed a real credential-isolation gap in `BootstrapDiscover`
+      **Fixed 2026-08-27**: `pkg/tea.ExtractTEIAuthority` now rejects a port-bearing TEI outright
+      (`u.Port() != ""` check, returning a `*TEIError`), matching TEST-14 and the spec text.
+      `pkg/teaclient/svcb.go`'s `fallbackHost`/`fallbackPort`-preserving logic was deliberately
+      left in place rather than deleted -- `resolveWellKnownTargetWithConfig` is a general-purpose
+      resolver that shouldn't assume its caller already validated a TEI, and it's directly
+      exercised with a port-bearing authority by `svcb_test.go`'s own tests; only its doc comment
+      was updated to note production callers never actually feed it one anymore. The 7
+      `TestBootstrapDiscover*` flow-logic tests in `wellknown_test.go` (priority, version
+      negotiation, failover, retry, 401/403) still need a directly-dialable `host:port` to reach a
+      local `httptest` server without standing up a fake DNS server just to redirect a
+      spec-conformant, port-free authority there -- they now call a new unexported
+      `bootstrapDiscoverWithAuthority(ctx, authority, tei, opts...)` directly (authority already
+      extracted, bypassing the new check) rather than the public `BootstrapDiscover`.
+      `TestBootstrapDiscoverRejectsPortInTEI` (new) exercises the full public entry point instead,
+      asserting a port-bearing TEI is rejected before any network I/O. `ExtractTEIAuthority`'s own
+      port rejection is covered directly in `pkg/tea/tei_test.go` (plain host, IPv6-literal
+      variants).
+      The same review also confirmed a real credential-reuse behavior in `BootstrapDiscover`
       (`pkg/teaclient/wellknown.go`): a caller-supplied `WithBearerToken` is threaded through the
       same `opts` to every candidate endpoint's `NewClient` call in the failover loop, so the same
       token is resent to endpoint B after endpoint A fails or is skipped -- not a leak to
       `.well-known/tea` itself (that fetch uses the raw `http.Client`, not `do()`, so no
       `Authorization` header goes there), but real reuse across different candidate servers within
-      one `BootstrapDiscover` call. Whether that's acceptable for a reference/interop-testing
-      client or needs per-endpoint credential scoping is an open design question, not decided here.
+      one `BootstrapDiscover` call. **Documented, not changed, 2026-08-27**: the spec itself
+      defines no credential-scoping policy for multi-endpoint failover, and `BootstrapDiscover`'s
+      `opts ...Option` signature has no way to express "different credentials per candidate" even
+      if it wanted to reject reuse by default -- doing so would break the common case (one
+      operator's own redundant/mirrored servers behind one TEI) to guard a rarer one (candidates
+      run by mutually-untrusting parties). `BootstrapDiscover`'s doc comment now states this
+      explicitly and tells a caller who can't assume mutual trust across candidates to call
+      `Discover` directly per server instead of relying on this. Revisit if a real caller needs
+      per-endpoint credential scoping badly enough to justify a signature change.
       Remaining findings in the review (caching/freshness tests, full OpenAPI response-body
       validation, SVCB edge cases, TEI encoding edge cases, additional candidate transport-failure
       cases, a missing 401 companion to TEST-09) are plausible test-coverage gaps for a rig

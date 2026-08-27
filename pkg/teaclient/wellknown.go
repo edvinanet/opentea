@@ -217,12 +217,39 @@ type BootstrapDiscoverResult struct {
 // trigger failover); any other failure -- including no mutually supported
 // version -- moves on to the next endpoint. Returns an aggregated error if
 // every endpoint fails.
+//
+// opts (including WithBearerToken) apply uniformly to the .well-known/tea
+// fetch and to every candidate endpoint tried -- there's no way to scope a
+// credential to just one candidate. A bearer token therefore is NOT sent to
+// the .well-known/tea fetch itself (fetchWellKnown uses the raw http.Client,
+// bypassing Client.do's Authorization header), but IS resent to endpoint B
+// if endpoint A fails or is skipped and B is tried next. Fine for the
+// common case (one operator's own redundant/mirrored servers behind one
+// TEI), but a caller that can't assume every candidate endpoint is
+// operated by a mutually-trusting party should not pass a bearer token
+// here -- call Discover directly per server instead.
 func BootstrapDiscover(ctx context.Context, tei string, opts ...Option) (BootstrapDiscoverResult, error) {
 	authority, err := tea.ExtractTEIAuthority(tei)
 	if err != nil {
 		return BootstrapDiscoverResult{}, err
 	}
+	return bootstrapDiscoverWithAuthority(ctx, authority, tei, opts...)
+}
 
+// bootstrapDiscoverWithAuthority is BootstrapDiscover with authority already
+// extracted (and, in production, already validated by ExtractTEIAuthority --
+// see BootstrapDiscover). Split out so tests can exercise this flow's logic
+// (priority ordering, version negotiation, failover, retry, 401/403
+// handling) against a directly-dialable host:port authority pointing at a
+// local httptest server, without standing up a fake DNS server just to
+// redirect a spec-conformant, port-free TEI authority there -- a real TEI's
+// authority can never carry a port (ExtractTEIAuthority rejects one), so a
+// test authority that does isn't something the public entry point above
+// would ever pass through. ExtractTEIAuthority's own port rejection is
+// covered directly by pkg/tea's tests and by
+// TestBootstrapDiscoverRejectsPortInTEI, which does exercise the full
+// public BootstrapDiscover.
+func bootstrapDiscoverWithAuthority(ctx context.Context, authority, tei string, opts ...Option) (BootstrapDiscoverResult, error) {
 	base := NewClient("", opts...)
 	doc, err := fetchWellKnown(ctx, base.httpClient, authority)
 	if err != nil {

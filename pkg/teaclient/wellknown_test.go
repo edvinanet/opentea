@@ -21,7 +21,7 @@ import (
 )
 
 // newFakeWellKnownAuthority starts an httptest.NewTLSServer whose host:port
-// is used directly as the TEI authority -- since resolveWellKnownTarget's
+// is used directly as a test "authority" -- since resolveWellKnownTarget's
 // real (non-test-injectable) entry point does a genuine SVCB lookup
 // against the actual system resolver, and a bogus test hostname like
 // "products.example.com" won't have any HTTPS records in real DNS, it
@@ -29,6 +29,12 @@ import (
 // port) exactly as intended -- no DNS mocking needed for these tests,
 // which are about the fetch/retry/bootstrap logic layered on top, not SVCB
 // itself (already covered directly in svcb_test.go).
+//
+// The returned authority carries a port, which a real TEI's authority never
+// can (ExtractTEIAuthority rejects one -- see TestBootstrapDiscoverRejectsPortInTEI).
+// Callers here pass it to bootstrapDiscoverWithAuthority, not the public
+// BootstrapDiscover, precisely to bypass that check and reach a directly-
+// dialable local server without a fake DNS server in every test.
 //
 // srv.Client() is NOT used here on purpose: fetchWellKnown builds its own
 // http.Client with an overridden DialContext, so what actually matters for
@@ -91,7 +97,7 @@ func TestBootstrapDiscoverSuccessWithVersionNegotiation(t *testing.T) {
 	t.Cleanup(func() { SupportedVersions = oldSupported })
 
 	tei := "tei://" + authority + "/uuid/d4d9f54a-abcf-11ee-ac79-1a52914d44b1"
-	result, err := BootstrapDiscover(context.Background(), tei, trustingOption(wkSrv), trustingOption(apiSrv))
+	result, err := bootstrapDiscoverWithAuthority(context.Background(), authority, tei, trustingOption(wkSrv), trustingOption(apiSrv))
 	if err != nil {
 		t.Fatalf("BootstrapDiscover: %v", err)
 	}
@@ -129,7 +135,7 @@ func TestBootstrapDiscoverPriorityOrdering(t *testing.T) {
 	t.Cleanup(func() { SupportedVersions = oldSupported })
 
 	tei := "tei://" + authority + "/uuid/d4d9f54a-abcf-11ee-ac79-1a52914d44b1"
-	result, err := BootstrapDiscover(context.Background(), tei, trustingOption(wkSrv), trustingOption(highSrv), trustingOption(lowSrv))
+	result, err := bootstrapDiscoverWithAuthority(context.Background(), authority, tei, trustingOption(wkSrv), trustingOption(highSrv), trustingOption(lowSrv))
 	if err != nil {
 		t.Fatalf("BootstrapDiscover: %v", err)
 	}
@@ -161,7 +167,7 @@ func TestBootstrapDiscoverFailoverOnServerError(t *testing.T) {
 	t.Cleanup(func() { SupportedVersions = oldSupported })
 
 	tei := "tei://" + authority + "/uuid/d4d9f54a-abcf-11ee-ac79-1a52914d44b1"
-	result, err := BootstrapDiscover(context.Background(), tei, trustingOption(wkSrv), trustingOption(failingSrv), trustingOption(workingSrv))
+	result, err := bootstrapDiscoverWithAuthority(context.Background(), authority, tei, trustingOption(wkSrv), trustingOption(failingSrv), trustingOption(workingSrv))
 	if err != nil {
 		t.Fatalf("BootstrapDiscover: %v", err)
 	}
@@ -198,7 +204,7 @@ func TestBootstrapDiscoverFailoverOn503(t *testing.T) {
 	t.Cleanup(func() { SupportedVersions = oldSupported })
 
 	tei := "tei://" + authority + "/uuid/d4d9f54a-abcf-11ee-ac79-1a52914d44b1"
-	result, err := BootstrapDiscover(context.Background(), tei, trustingOption(wkSrv), trustingOption(unavailableSrv), trustingOption(workingSrv))
+	result, err := bootstrapDiscoverWithAuthority(context.Background(), authority, tei, trustingOption(wkSrv), trustingOption(unavailableSrv), trustingOption(workingSrv))
 	if err != nil {
 		t.Fatalf("BootstrapDiscover: %v", err)
 	}
@@ -230,7 +236,7 @@ func TestBootstrapDiscoverNoFailoverOnForbidden(t *testing.T) {
 	t.Cleanup(func() { SupportedVersions = oldSupported })
 
 	tei := "tei://" + authority + "/uuid/d4d9f54a-abcf-11ee-ac79-1a52914d44b1"
-	_, err := BootstrapDiscover(context.Background(), tei, trustingOption(wkSrv), trustingOption(forbiddenSrv), trustingOption(neverTriedSrv))
+	_, err := bootstrapDiscoverWithAuthority(context.Background(), authority, tei, trustingOption(wkSrv), trustingOption(forbiddenSrv), trustingOption(neverTriedSrv))
 	if err == nil {
 		t.Fatal("expected BootstrapDiscover to fail after a 403 rather than fail over")
 	}
@@ -259,7 +265,7 @@ func TestBootstrapDiscoverEndpointWithNoMutualVersionSkipped(t *testing.T) {
 	t.Cleanup(func() { SupportedVersions = oldSupported })
 
 	tei := "tei://" + authority + "/uuid/d4d9f54a-abcf-11ee-ac79-1a52914d44b1"
-	result, err := BootstrapDiscover(context.Background(), tei, trustingOption(wkSrv), trustingOption(incompatibleSrv), trustingOption(compatibleSrv))
+	result, err := bootstrapDiscoverWithAuthority(context.Background(), authority, tei, trustingOption(wkSrv), trustingOption(incompatibleSrv), trustingOption(compatibleSrv))
 	if err != nil {
 		t.Fatalf("BootstrapDiscover: %v", err)
 	}
@@ -284,9 +290,26 @@ func TestBootstrapDiscoverTLSFailureNoRetry(t *testing.T) {
 	// Deliberately NOT using trustingOption(wkSrv) here -- the default
 	// http.Client won't trust httptest's self-signed certificate, so this
 	// must fail as a TLS validation error, not hang retrying.
-	_, err = BootstrapDiscover(context.Background(), tei)
+	_, err = bootstrapDiscoverWithAuthority(context.Background(), authority, tei)
 	if err == nil {
 		t.Fatal("expected an error for an untrusted certificate")
+	}
+}
+
+// TestBootstrapDiscoverRejectsPortInTEI is the regression test for the
+// public BootstrapDiscover entry point specifically: a TEI whose authority
+// carries a port must be rejected immediately, before any network I/O --
+// the TEA discovery spec is explicit that a port is never part of the TEI
+// (see pkg/tea.ExtractTEIAuthority's doc comment). No server is started
+// here; a real network attempt on failure would itself be a test bug.
+func TestBootstrapDiscoverRejectsPortInTEI(t *testing.T) {
+	_, err := BootstrapDiscover(context.Background(), "tei://products.example.com:8443/uuid/d4d9f54a-abcf-11ee-ac79-1a52914d44b1")
+	if err == nil {
+		t.Fatal("expected an error for a TEI authority with a port")
+	}
+	var teiErr *tea.TEIError
+	if !errors.As(err, &teiErr) {
+		t.Fatalf("error = %v (%T), want a *tea.TEIError", err, err)
 	}
 }
 

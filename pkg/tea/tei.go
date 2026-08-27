@@ -16,6 +16,15 @@ import "net/url"
 // BASE64URL-encoded), matching how a direct (non-bootstrap) Discover call
 // already works.
 //
+// A port in the authority is rejected: the TEA discovery spec is explicit
+// that "the port number is not part of the TEI" -- a non-default port is
+// only ever learned from an HTTPS/SVCB DNS record or an endpoints[].url in
+// the fetched .well-known/tea document, never from the TEI itself (verified
+// against CycloneDX/transparency-exchange-api's discovery/readme.md at the
+// exact commit this package was built against, be64bc7; found via an
+// external review of docs/discovery-test-rig.md, 2026-08-27, whose original
+// TEST-14 incorrectly modeled the opposite).
+//
 // Built against the TEI URL syntax from CycloneDX/transparency-exchange-api
 // PR #261 (unmerged at the time this was written) -- the prior URN syntax
 // (urn:tei:<type>:<domain>:<id>) is not accepted here; if that PR's syntax
@@ -30,6 +39,9 @@ func ExtractTEIAuthority(tei string) (string, error) {
 	}
 	if u.Host == "" {
 		return "", &TEIError{TEI: tei, Reason: "missing authority (domain-name) component"}
+	}
+	if u.Port() != "" {
+		return "", &TEIError{TEI: tei, Reason: "authority must not include a port -- a port comes from an HTTPS/SVCB record or endpoints[].url during discovery, never the TEI itself"}
 	}
 	return u.Host, nil
 }

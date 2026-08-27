@@ -1,10 +1,22 @@
 openapi: 3.1.0
 info:
   title: TEA Publisher API
-  version: 0.4.0-draft
+  version: 0.5.0-draft
   description: |
-    **Status: draft v0.4, for discussion. Not implemented anywhere. Not approved by
+    **Status: draft v0.5, for discussion. Not implemented anywhere. Not approved by
     CycloneDX or any TEA working group.**
+
+    v0.5: real `approve`/`reject` operations for a collection draft
+    (design/publisher-service.md §7.9/§13), tracked server-side as `collection-draft`'s
+    `revision` and `approval` fields rather than asserted in commit's own request body.
+    `prepareCollectionCommit` now requires a current approval (409 otherwise) — the one
+    place approval is actually enforced, not `approve` itself and not
+    `commitCollectionDraft`. Maker-checker is a real, checked rule: `approve`/`reject`'s
+    `actor` must differ from the draft's own `draftedBy` (403 on a self-approval), both
+    asserted by the publisher software from its own Layer A session
+    (design/publisher-service.md §10.1). `commit-request` is gone — with approval moved
+    out of it, it was identical to `evidence-submission`, which `commitCollectionDraft`
+    now takes directly.
 
     v0.4: a second signing mode (design/publisher-service.md §9.5) — Web PKI certificates,
     possibly HSM/PKCS#11-backed, possibly fully air-gapped, alongside the original
@@ -110,7 +122,7 @@ info:
     on `artifact-format`/`collection`, not why the *submission* operation's request shape
     exists — that's simply new, there being nothing to base it on),
     `prepare-artifact-evidence-response`, `collection-draft`,
-    `collection-draft-artifact-list`, `prepare-commit-response`, `commit-request`.
+    `collection-draft-artifact-list`, `prepare-commit-response`, `approval-decision`.
 
     ## Signing and the evidence package
 
@@ -129,8 +141,10 @@ info:
     2. **Sign** — entirely inside the publisher software, against that digest. Not a
        protocol operation; the target server isn't a participant in this step at all.
     3. **Submit** (`submitArtifactEvidence` / `commitCollectionDraft`) — the evidence
-       package (`evidence-submission`, composed by `commit-request` for the collection
-       case) goes back to the target server, which **re-derives the digest itself** from
+       package (`evidence-submission`, the same shape for both operations — collection
+       commit needs nothing beyond it, since approval (§7.9) is now its own tracked
+       decision, checked by `prepareCollectionCommit`, not asserted here) goes back to the
+       target server, which **re-derives the digest itself** from
        the object's current state and verifies against that, never against a caller's
        unchecked claim of what the digest was.
 
@@ -455,6 +469,10 @@ paths:
         disagreeing. The eventual committed `collection` (see commit's response below)
         embeds full `artifact` objects, exactly matching what `/tea/v1` itself would
         serve — only the *draft's* request shape differs, and only for this reason.
+
+        Bumps `revision` and resets `approval` to `{status: none}` — editing a draft
+        invalidates whatever approval decision (§7.9) was on record for its previous
+        content.
       x-open-question: >-
         Whether draft state lives on the target server (as modeled by this resource) or
         entirely client-side on the publisher server, with only the final commit ever
@@ -503,20 +521,87 @@ paths:
         '204': { description: Deleted. }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /productReleases/{productReleaseUuid}/collectionDraft/approve:
+    post:
+      operationId: approveCollectionDraft
+      tags: [Collections]
+      summary: >-
+        Record approval of the draft's *current* content (oej workflow phase 6,
+        design/publisher-service.md §7.9/§13) — a content-review gate, not a
+        cryptographic operation. Sets `approval` to `{status: approved, decidedBy: actor,
+        decidedAtRevision: <current revision>}`. `actor` must differ from the draft's
+        `draftedBy` (maker-checker) — a self-approval is rejected, not merely discouraged.
+        Callable on an unlocked draft only; approving exactly what's about to be signed
+        is what `prepareCollectionCommit`'s own precondition check (below) enforces, not
+        this operation directly.
+      parameters:
+        - $ref: '#/components/parameters/ProductReleaseUuid'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/approval-decision' }
+      responses:
+        '200':
+          description: Updated draft, now approved at its current revision.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/collection-draft' }
+        '403':
+          description: actor equals the draft's own draftedBy — self-approval is rejected.
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The draft is locked by an outstanding prepareCollectionCommit.
+
+  /productReleases/{productReleaseUuid}/collectionDraft/reject:
+    post:
+      operationId: rejectCollectionDraft
+      tags: [Collections]
+      summary: >-
+        Record rejection of the draft's current content (§7.9/§13) — symmetric with
+        approve. Sets `approval` to `{status: rejected, ...}`, which also blocks
+        `prepareCollectionCommit` until a subsequent `putCollectionDraft` (implicitly
+        resetting `approval` to "none") and a fresh `approve`.
+      parameters:
+        - $ref: '#/components/parameters/ProductReleaseUuid'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/approval-decision' }
+      responses:
+        '200':
+          description: Updated draft, now rejected at its current revision.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/collection-draft' }
+        '403':
+          description: actor equals the draft's own draftedBy.
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The draft is locked by an outstanding prepareCollectionCommit.
+
   /productReleases/{productReleaseUuid}/collectionDraft/prepareCommit:
     post:
       operationId: prepareCollectionCommit
       tags: [Collections]
       summary: >-
-        Collection Signing, part 1 (oej workflow phase 5). The server builds the
-        `collection` the draft would become (uuid is always productReleaseUuid, next
-        version number, current artifact list — now as full `artifact` objects, resolved
-        from the draft's references — updateReason, current timestamp) without persisting
-        it, and returns its canonical digest for the caller to sign — the server never
-        needs to hold or use a collection-signing key (design/publisher-service.md §9).
-        This response is also the to-be-signed (TBS) package for offline/air-gapped
-        signing (§9.5) — save it as-is rather than assuming it's only ever consumed
-        synchronously in the same call chain.
+        Collection Signing, part 1 (oej workflow phase 5). Requires `approval.status ==
+        approved` at the draft's *current* `revision` (§7.9) — 409 otherwise, whether
+        because nothing has been approved yet, the last decision was a rejection, or the
+        draft changed since the approval that's on record. This is deliberately the one
+        place approval is actually enforced, not `approve` itself (which only records a
+        decision) and not `commitCollectionDraft` (which only ever sees a draft that
+        already passed this check, once locked).
+
+        On success, the server builds the `collection` the draft would become (uuid is
+        always productReleaseUuid, next version number, current artifact list — now as
+        full `artifact` objects, resolved from the draft's references — updateReason,
+        current timestamp) without persisting it, and returns its canonical digest for the
+        caller to sign — the server never needs to hold or use a collection-signing key
+        (design/publisher-service.md §9). This response is also the to-be-signed (TBS)
+        package for offline/air-gapped signing (§9.5) — save it as-is rather than
+        assuming it's only ever consumed synchronously in the same call chain.
 
         **Locks the draft** against further `putCollectionDraft` calls until either
         `commitCollectionDraft` succeeds or `cancelPrepare` releases it (§9.5) — uniform
@@ -531,6 +616,8 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/prepare-commit-response' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: No current approval on record for this draft (see summary).
 
   /productReleases/{productReleaseUuid}/collectionDraft/cancelPrepare:
     post:
@@ -540,7 +627,10 @@ paths:
         Release the lock prepareCollectionCommit placed (§9.5) without deleting the draft
         itself — for an abandoned or failed signing attempt (e.g. an air-gapped ceremony
         that was called off). Re-opens the draft for `putCollectionDraft`. Distinct from
-        `deleteCollectionDraft`, which abandons the draft's contents entirely.
+        `deleteCollectionDraft`, which abandons the draft's contents entirely. Leaves the
+        recorded `approval` untouched (only `putCollectionDraft` resets it) — content
+        wasn't changed, only the signing attempt was, so a fresh `prepareCollectionCommit`
+        doesn't need a fresh approval.
       parameters:
         - $ref: '#/components/parameters/ProductReleaseUuid'
       responses:
@@ -553,27 +643,27 @@ paths:
       operationId: commitCollectionDraft
       tags: [Collections]
       summary: >-
-        Collection Signing, part 2 + Approval + Commit (oej workflow phases 5–7), atomic.
-        The server re-derives the same digest prepareCommit returned (defense against a
-        stale/mismatched prepare response), verifies the submitted signature, then in one
-        transaction: creates the real `collection`, creates its evidence bundle, deletes
-        the draft, and records one audit entry. If any step fails, none of it happens — no
-        collection can become live, on a server implementing this operation correctly,
-        without its evidence.
+        Collection Signing, part 2 + Commit (oej workflow phase 5 + 7), atomic. Approval
+        (phase 6) was already checked, once, by `prepareCollectionCommit` — this operation
+        only ever runs against a draft that already passed that gate, so it has nothing
+        further to check there. The server re-derives the same digest prepareCommit
+        returned (defense against a stale/mismatched prepare response), verifies the
+        submitted signature, then in one transaction: creates the real `collection`,
+        creates its evidence bundle, deletes the draft, and records one audit entry. If any
+        step fails, none of it happens — no collection can become live, on a server
+        implementing this operation correctly, without its evidence.
       x-open-question: >-
         Whether commit can also carry along newly-validated artifact versions and pending
         CLE updates in the same atomic call (oej's phase 7 lists all three together) —
         this draft scopes commit to one collection at a time only. See
-        design/publisher-service.md §11.2. Also open: whether an approvedBy field here
-        should be server-enforced or left to the calling publisher service to have
-        checked before ever reaching this operation — §11.4 there.
+        design/publisher-service.md §11.2.
       parameters:
         - $ref: '#/components/parameters/ProductReleaseUuid'
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/commit-request' }
+            schema: { $ref: '#/components/schemas/evidence-submission' }
       responses:
         '201':
           description: Published — the real `collection`, matching exactly what /tea/v1 would now serve for it.
@@ -1237,7 +1327,8 @@ components:
         An **evidence package** (design/publisher-service.md §9.3 — same concept as
         `evidence-bundle`, request-shaped): everything needed to verify one signature over
         one object. The single request shape used everywhere a signature is submitted in
-        this API — `commit-request` below composes this rather than duplicating it.
+        this API — `commitCollectionDraft` takes this directly, with nothing added,
+        since approval (§7.9) moved to its own tracked decision.
       required: [objectDigestValue, signatureFormat, signatureValue, certificatePem]
       properties:
         objectDigestValue:
@@ -1292,7 +1383,18 @@ components:
 
     collection-draft-artifact-list:
       type: object
+      required: [actor]
       properties:
+        actor:
+          type: string
+          description: >-
+            Identity of the staff member or CI/CD system making this change, as asserted
+            by the publisher software from its own Layer A session
+            (design/publisher-service.md §10.1) — the target server has no independent way
+            to verify this beyond trusting the publisher software's assertion, the same
+            trust boundary §4's architecture already rests on. Recorded as the draft's
+            `draftedBy` and checked against `approve`/`reject`'s own `actor` for
+            maker-checker (§7.9).
         artifacts:
           type: array
           description: References to already-created, already-validated artifacts — see setCollectionDraftArtifacts's summary for why this isn't a list of full artifact objects.
@@ -1310,7 +1412,7 @@ components:
         No independent id — ownerUuid is always the eventual collection's own uuid too
         (spec/openapi.yaml's collection.uuid "matches the UUID of the associated...
         Release object"); see design/publisher-service.md §7.7.
-      required: [ownerType, ownerUuid]
+      required: [ownerType, ownerUuid, revision]
       properties:
         ownerType: { $ref: '#/components/schemas/collection-belongs-to-type' }
         ownerUuid: { $ref: '#/components/schemas/uuid' }
@@ -1329,6 +1431,41 @@ components:
           properties:
             added: { type: array, items: { $ref: '#/components/schemas/uuid' } }
             removed: { type: array, items: { $ref: '#/components/schemas/uuid' } }
+        draftedBy:
+          type: string
+          description: Most recent putCollectionDraft's actor (§7.9).
+        revision:
+          type: integer
+          description: >-
+            Starts at 1, incremented on every putCollectionDraft. Ties an approval
+            decision (below) to the exact content it was made against — an edit after
+            approval invalidates it (approval.status resets to "none"), rather than
+            silently letting a stale approval cover different content than what was
+            actually reviewed.
+        approval:
+          type: object
+          description: Absent/status "none" until the first approve or reject call (§7.9).
+          properties:
+            status: { type: string, enum: [none, approved, rejected] }
+            decidedBy: { type: string }
+            decidedAt: { type: string, format: date-time }
+            decidedAtRevision:
+              type: integer
+              description: The revision that was actually reviewed — compared against the current revision to detect staleness.
+            comment: { type: string }
+
+    approval-decision:
+      type: object
+      description: Request body for approve/reject (§7.9). No consumer-spec equivalent (see info.description).
+      required: [actor]
+      properties:
+        actor:
+          type: string
+          description: >-
+            Identity of the approver, asserted the same way collection-draft-artifact-list's
+            own `actor` is (§10.1). Must differ from the draft's current `draftedBy` —
+            maker-checker (§7.9); rejected with 403 otherwise.
+        comment: { type: string }
 
     prepare-commit-response:
       type: object
@@ -1339,18 +1476,7 @@ components:
           description: Hex SHA-256 of RFC 8785-canonicalized wouldBeCollection — sign exactly these bytes.
         wouldBeCollection: { $ref: '#/components/schemas/collection' }
 
-    commit-request:
-      description: >-
-        The evidence package (`evidence-submission`) for the collection built by
-        prepareCollectionCommit, plus commit-specific approval metadata. Composes rather
-        than duplicates — see design/publisher-service.md §9.3.
-      allOf:
-        - $ref: '#/components/schemas/evidence-submission'
-        - type: object
-          properties:
-            approvedBy:
-              type: string
-              description: >-
-                Identity of the human/system approver (oej workflow phase 6). Whether this
-                is server-checked or purely advisory in v1 is open — see
-                commitCollectionDraft's x-open-question.
+    # commit-request was removed: approval moved to its own tracked decision (approve/
+    # reject, collection-draft.approval), checked by prepareCollectionCommit rather than
+    # asserted in commit's own request body (§7.9). commitCollectionDraft's request body
+    # is therefore exactly evidence-submission now, with nothing to add on top of it.

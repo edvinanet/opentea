@@ -1,6 +1,6 @@
 # TEA Publisher — protocol and service design
 
-**Status:** draft v0.8, for discussion. Nothing here is scheduled or approved; no
+**Status:** draft v0.9, for discussion. Nothing here is scheduled or approved; no
 implementation exists yet. This document is the design opentea's `TODO.md` "Reference
 publisher" entry has been blocked on since 2026-07-04.
 
@@ -94,6 +94,17 @@ than repeated here.
   category-by-category mapping (§13.3) checks the proposed events against every operation
   this design already has — the close fit across most rows is a reasonable sanity check on
   §7/§8's shape. Not yet reflected in `design/publisher-openapi.yaml`.
+- **v0.9 (this revision)** designs the `approve`/`reject` operations §7.9/§13.3 had left
+  as a named-but-undesigned gap, and reflects them in
+  `design/publisher-openapi.yaml`: `collection-draft` gains `revision` (bumped on every
+  `putCollectionDraft`, which now also resets any prior `approval`) and `approval`
+  (`status`/`decidedBy`/`decidedAtRevision`/`comment`). Approval is enforced exactly once,
+  at `prepareCollectionCommit` (409 without a current, matching approval) — not at
+  `approve` itself (records a decision, nothing more) and not at `commitCollectionDraft`
+  (only ever reached after prepare already checked). Maker-checker is a real, checked
+  rule (403 on `actor == draftedBy`), not a convention. `commit-request` — the schema
+  that used to carry `approvedBy` — is gone; with approval moved out, it was identical to
+  `evidence-submission`, which `commitCollectionDraft` now takes directly.
 
 ## 1. Problem statement
 
@@ -365,21 +376,28 @@ decision is baked into the protocol itself.
 ### 7.9 Approval (oej phase 6)
 
 A human review/approval step, gating commit, separate from both signing steps above. Scope
-of enforcement (publisher-only vs. protocol-enforced) is open (§11).
+of enforcement (publisher-only vs. protocol-enforced) is open (§11) — resolved in favor of
+protocol-enforced by the design immediately below, though whether that's the *right* call
+long-term is still fair to revisit.
 
 **Reshaped by §13's event model into a real async workflow, not just a request-body
-field.** The earlier assumption — `commit`'s `approvedBy` field, checked or not per
-§10.3 — treated approval as something already decided by the time `commit` is called.
-oej's separate event-delivery proposal (§13) implies a cleaner shape: a locked draft
-(§9.5) fires `approval.required`; an external system or human reviews it and responds;
-`approval.granted` or `approval.rejected` fires back. That needs one new operation this
-design didn't have before — something like `POST .../collectionDraft/approve` (and a
-`.../reject`) — that records the decision *before* commit is ever attempted, rather than
-commit's request body being the first place approval is expressed at all. `commit` itself
-would then check for a recorded approval rather than accept a caller's bare claim of one.
-Not fully designed here — §13 introduces the concept, this paragraph only reconciles it
-with what §7.9/§10.3 already said; the actual operation shape is follow-on work, and
-`design/publisher-openapi.yaml` doesn't yet reflect it.
+field — now designed in `design/publisher-openapi.yaml`.** The earlier assumption —
+`commit`'s `approvedBy` field, checked or not per §10.3 — treated approval as something
+already decided by the time `commit` is called. oej's separate event-delivery proposal
+(§13) implies a cleaner shape, now built: `POST .../collectionDraft/approve` and
+`.../reject` record a decision against the draft's *current* `revision` (a monotonic
+counter, bumped on every `putCollectionDraft`, which also resets `approval` back to
+`none` — editing invalidates whatever was approved before). Maker-checker is enforced,
+not advisory: `approve`/`reject`'s `actor` must differ from the draft's own `draftedBy`,
+both asserted by the publisher software from its own Layer A session (§10.1) — a
+self-approval is rejected with 403, not merely discouraged. The actual enforcement point
+is `prepareCollectionCommit`, not `approve` or `commitCollectionDraft`: prepare now
+requires a current, matching approval to succeed at all (409 otherwise) — the draft is
+locked immediately afterward (§9.5), so by the time signing and `commitCollectionDraft`
+happen, approval has already been checked once and doesn't need checking again.
+`commit-request` (the schema that used to carry `approvedBy`) is gone —
+`commitCollectionDraft` takes `evidence-submission` directly now, since nothing was left
+to add on top of it.
 
 ### 7.10 Commit (oej phase 7)
 
@@ -888,12 +906,14 @@ with nothing sensible to map to.
 - Whether eventing is worth building at all for a v1 that's otherwise still a sketch (§12's
   Phase 7 placement reflects treating it as a real but late priority, not a core-path
   blocker).
-- The `approve`/`reject` operations §7.9/§13.3 both now imply are not yet designed in any
-  detail — path, request/response shape, and whether they're scoped per-draft (matching
-  everything else in §7.7–7.10) are all open.
+- ~~The `approve`/`reject` operations §7.9/§13.3 imply~~ — designed, see §7.9's update and
+  `design/publisher-openapi.yaml` directly (`approveCollectionDraft`/`rejectCollectionDraft`,
+  scoped per-draft like everything else in §7.7–7.10).
 
-Not yet reflected in `design/publisher-openapi.yaml` — this section is design-only for now;
-the OpenAPI draft's endpoints and schemas don't yet include eventing.
+Still not reflected in `design/publisher-openapi.yaml`: the eventing/webhook mechanism
+itself (envelope, signing, `/event-keys`, `/event-subscriptions`) — only the
+`approve`/`reject` operations §13 motivated were added. This section otherwise remains
+design-only.
 
 ## 14. Cross-references
 

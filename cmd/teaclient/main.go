@@ -46,11 +46,13 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, `teaclient: reference CLI for the TEA consumer read API
 
 Usage:
-  teaclient discover <tei> -server=<url> [-token=<token>] [-json]
+  teaclient discover <tei> [-server=<url>] [-token=<token>] [-json]
   teaclient get <product|product-release|component|component-release|product-release-collection|component-release-collection|artifact> <uuid> -server=<url> [-version=N] [-token=<token>] [-json]
   teaclient list <products|product-releases|components|component-releases> -server=<url> [-all] [-id-type=X -id-value=Y] [-page-size=N] [-token=<token>] [-json]
   teaclient verify artifact <uuid> -server=<url> [-version=N] [-token=<token>] [-json]
   teaclient check -server=<url> [-sample=N] [-token=<token>] [-json]
 
--server is required for every command. -token attaches an Authorization: Bearer header.`)
+-server is required for every command except discover, where omitting it triggers TEI-authority
+.well-known bootstrap discovery instead of querying one known server directly. -token attaches an
+Authorization: Bearer header.`)
 }

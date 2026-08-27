@@ -193,10 +193,36 @@ they don't get lost.
       required-field presence, enum validity (`pkg/tea/enums.go` now has the canonical value
       lists to check against), cross-reference integrity (e.g. a product release's linked
       component/release actually exist), and CLE ordering/validity rules.
-- [ ] `teaclient`'s `Discover` only queries the single server it's pointed at (self-authoritative
+- [x] ~~`teaclient`'s `Discover` only queries the single server it's pointed at (self-authoritative
       lookup) — it doesn't implement the full TEI-authority `.well-known` bootstrap discovery
-      flow (`discovery/readme.md`): extract authority from the TEI → fetch a well-known
-      document from that authority → query one of the servers it lists.
+      flow~~ — done (2026-08-27): `teaclient.BootstrapDiscover` (`pkg/teaclient/wellknown.go`)
+      implements the full flow -- `tea.ExtractTEIAuthority` (`pkg/tea/tei.go`) extracts the
+      authority, fetches `.well-known/tea`, sorts candidate endpoints by priority, and tries each
+      via the existing `Discover` until one succeeds. `cmd/teaclient discover <tei>` now makes
+      `-server` optional: given, unchanged direct-query behavior; omitted, triggers this flow.
+      Built against the user's own **unmerged** upstream PR
+      (`CycloneDX/transparency-exchange-api#261`, head `be64bc7` at the time) -- the TEI format
+      moves from `urn:tei:<type>:<domain>:<id>` to `tei://<domain>/<type>/<id>` (identifier is
+      plain URL/percent-encoding, not BASE64URL despite that PR's diff having base64url-looking
+      examples -- confirmed directly with the user). **Revisit if that PR's syntax changes before
+      merging.**
+
+      Also implements two things the spec text turned out to require beyond the bootstrap flow
+      itself, found by reading past the initially-excerpted "Port resolution" section into the
+      unchanged "Connecting to the API" section: (1) **version negotiation** -- `teaclient` now
+      has its own `SupportedVersions` (`pkg/teaclient/semver.go`, hand-rolled SemVer 2.0.0
+      precedence comparator, no new dependency) and picks the highest version mutually supported
+      with each candidate endpoint, constructing `<endpoint.url>/v<version>/discovery?tei=...`
+      per the spec's MUST-level wording -- **this surfaces a real, separate gap: opentea's own
+      server mounts its API at a fixed `/tea/v1`, not `/v{exact-semver}/`, so this client can't
+      yet bootstrap-discover opentea itself.** Not addressed here; a distinct server-side task.
+      (2) **HTTPS/SVCB DNS record support** (`pkg/teaclient/svcb.go`) for the "Port resolution"
+      section's optional failover/load-balancing guidance -- added `github.com/miekg/dns` as a
+      new dependency (stdlib has no SVCB/RFC 9460 parsing at all; evaluated via the
+      `dependency-review` skill, zero new CVEs, SBOMs regenerated). Deliberately out of scope
+      within that: ECH config, ipv4hint/ipv6hint, ALPN enforcement beyond Go's TLS stack, and
+      AliasForm chains longer than one hop. No native Windows/macOS system-resolver-config
+      integration -- `/etc/resolv.conf` or a fixed public-resolver fallback only.
 - [ ] BLAKE3 checksum verification isn't implemented in `pkg/teaclient` (no stdlib or
       `golang.org/x/crypto` implementation without adding a new dependency) — reported as an
       explicit "unsupported algorithm" error rather than silently skipped.

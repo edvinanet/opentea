@@ -12,11 +12,12 @@ import (
 // more candidate servers for the TEI.
 //
 // Note: this only queries the single server baseURL points at (its own
-// self-authoritative discovery endpoint). It does not perform the full
-// TEI-authority ".well-known" bootstrap discovery described in
-// discovery/readme.md -- that's a heavier flow (extract authority from the
-// TEI, fetch a well-known document from that authority, then query one of
-// the servers it lists) tracked as a follow-up, not implemented yet.
+// self-authoritative discovery endpoint) -- for the full TEI-authority
+// ".well-known" bootstrap flow (extract authority from the TEI, fetch a
+// well-known document from that authority, then query one of the servers
+// it lists, per CycloneDX/transparency-exchange-api's discovery/readme.md),
+// use BootstrapDiscover instead. BootstrapDiscover itself calls this
+// method once it has resolved which server to ask.
 func (c *Client) Discover(ctx context.Context, tei string) ([]tea.DiscoveryInfo, error) {
 	var out []tea.DiscoveryInfo
 	err := c.do(ctx, "GET", "/discovery", url.Values{"tei": {tei}}, &out)

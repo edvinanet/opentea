@@ -51,11 +51,35 @@ Every read endpoint in the spec has a corresponding method: `GetProduct`/`QueryP
 `GetLatestArtifact`/`GetArtifactByVersion`, the four `GetCLEBy*` owner-type getters, and
 `Discover`.
 
-**Known limitation**: `Discover` only queries the single server `baseURL` points at (its
-self-authoritative `/discovery` endpoint) — it does not implement the full TEI-authority
-`.well-known` bootstrap discovery flow described in `discovery/readme.md` (extract authority
-from the TEI → fetch a well-known document from that authority → query one of the servers it
-lists). Tracked in `TODO.md`.
+`Discover` queries a single, already-known server's own `/discovery` endpoint. For the full
+TEI-authority bootstrap flow — extract authority from the TEI, fetch its `.well-known/tea`
+document, try each listed server in priority order — use `BootstrapDiscover` instead, which
+needs no server URL at all, just a TEI:
+
+```go
+result, err := teaclient.BootstrapDiscover(ctx, "tei://products.example.com/uuid/d4d9f54a-...",
+    teaclient.WithBearerToken("optional-token"),
+)
+// result.ServerURL is the versioned base URL that answered, e.g.
+// "https://api.teaexample.com/v1.0.0"; result.Info is Discover's own result from that server.
+```
+
+`BootstrapDiscover` picks the highest TEA API version both this client (`teaclient.SupportedVersions`)
+and a candidate endpoint support (SemVer 2.0.0 precedence), tries endpoints in priority order (a
+401/403 from one stops the whole attempt rather than trying the next, per spec), and retries
+transient failures (5xx, network errors — not 4xx or TLS certificate failures) with backoff. It
+also does a best-effort HTTPS/SVCB (RFC 9460) DNS lookup for the `.well-known/tea` fetch itself,
+falling back silently to the authority's own host on port 443 if none is found.
+
+`cmd/teaclient discover <tei>` uses this automatically when `-server` is omitted; give `-server`
+to keep the older, single-server-only behavior.
+
+Built against the TEI URL syntax (`tei://<domain>/<type>/<id>`) from
+`CycloneDX/transparency-exchange-api` PR #261, **unmerged** at the time this was written — the
+prior URN syntax (`urn:tei:<type>:<domain>:<id>`) isn't accepted. See `TODO.md` for what's
+deliberately out of scope (ECH config, IP hints, alias chains beyond one hop, and — a real,
+separate gap this surfaced — opentea's own server doesn't yet serve at the `/v{version}/` path
+this flow constructs, so it can't bootstrap-discover opentea itself yet).
 
 **Known limitation**: checksum verification supports MD5, SHA-1/256/384/512, SHA3-256/384/512,
 and BLAKE2b-256/384/512 (all available from the stdlib or the already-present

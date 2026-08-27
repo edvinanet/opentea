@@ -24,6 +24,12 @@ func IsNotFound(err error) bool { return hasStatus(err, 404) }
 // (e.g. an invalid or expired bearer token).
 func IsUnauthorized(err error) bool { return hasStatus(err, 401) }
 
+// IsForbidden reports whether err is an APIError for a 403 response.
+// BootstrapDiscover treats this the same as IsUnauthorized: an
+// authentication/authorization error from one candidate endpoint must not
+// trigger failover to the next one (TEA discovery spec).
+func IsForbidden(err error) bool { return hasStatus(err, 403) }
+
 // IsBadRequest reports whether err is an APIError for a 400 response.
 func IsBadRequest(err error) bool { return hasStatus(err, 400) }
 

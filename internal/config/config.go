@@ -18,6 +18,20 @@ type Config struct {
 	RootURL    string
 	Versions   []string
 
+	// AdminListenAddr, if set, makes cmd/opentea bind a second, independent
+	// http.Server for the operator-facing surface -- the admin web GUI
+	// (/admin/ui) and the admin JSON API (/admin/v1), which share session-
+	// cookie auth and admin-role gating -- separately from ListenAddr, which
+	// then serves only the consumer-facing surface (/tea/v1 + /files). Empty
+	// (the default) keeps today's behavior: one process, one listener, one
+	// mux serving everything. Set this to put the admin surface on a
+	// different port and/or a different bind address than the public API --
+	// e.g. an internal-only interface -- without running two separate
+	// deployments. Both listeners share the same TLS cert/key pair (below)
+	// when TLS is enabled; there's no way to terminate TLS differently per
+	// listener in this pass.
+	AdminListenAddr string
+
 	// APIBasePath is the URL path prefix this process's own mux serves the
 	// consumer read API under (e.g. "/tea/v1", the default -- or "/v0.4.0"
 	// for a standalone deployment that wants to answer literally at the
@@ -92,6 +106,7 @@ func Load() (Config, error) {
 
 	return Config{
 		ListenAddr:               resolve("TEA_LISTEN_ADDR", fileValues, ":8080"),
+		AdminListenAddr:          resolve("TEA_ADMIN_LISTEN_ADDR", fileValues, ""),
 		DBPath:                   resolve("TEA_DB_PATH", fileValues, "data/opentea.db"),
 		BlobDir:                  resolve("TEA_BLOB_DIR", fileValues, "data/blobs"),
 		RootURL:                  resolve("TEA_ROOT_URL", fileValues, "http://localhost:8080"),

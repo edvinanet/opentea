@@ -1,19 +1,25 @@
 // Command opentea runs the TEA consumer read API (spec-conformant, at
-// /tea/v1 by default -- see TEA_API_BASE_PATH), the unofficial admin ingestion API (/admin/v1), the admin web
-// GUI (/admin/ui), and a blob server (/files/{sha256}) from a single
-// process. Run `opentea createadmin -username=... -password=...` to
-// bootstrap the first admin user before logging into the GUI.
+// /tea/v1 by default -- see TEA_API_BASE_PATH) plus a blob server
+// (/files/{sha256}), and the operator-facing surface -- the unofficial admin
+// ingestion API (/admin/v1) and the admin web GUI (/admin/ui) -- from a
+// single process. Both surfaces share one listener (TEA_LISTEN_ADDR) unless
+// TEA_ADMIN_LISTEN_ADDR is set, in which case the admin surface binds
+// separately -- see config.Config.AdminListenAddr. Run
+// `opentea createadmin -username=... -password=...` to bootstrap the first
+// admin user before logging into the GUI.
 package main
 
 import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"log"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -61,44 +67,33 @@ func main() {
 	}
 
 	r := repo.New(sqlDB)
-	mux := newMux(r, blobStore, cfg, startedAt)
-
 	tlsEnabled := cfg.TLSCertFile != ""
-	slog.Info("opentea server starting", "addr", cfg.ListenAddr, "rootURL", cfg.RootURL, "dbPath", cfg.DBPath, "blobDir", cfg.BlobDir, "tls", tlsEnabled)
 
-	// ReadHeaderTimeout guards against slow-header (slowloris-style)
-	// connections; ReadTimeout/WriteTimeout are deliberately left at the
-	// zero value (no limit) since this server streams large blob
-	// uploads/downloads (up to 1 GiB, see internal/admin/upload.go) that a
-	// blanket whole-request timeout would risk truncating on a slow but
-	// legitimate connection. IdleTimeout still bounds genuinely idle
-	// keep-alive connections.
-	srv := &http.Server{
-		Addr:              cfg.ListenAddr,
-		Handler:           mux,
-		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       120 * time.Second,
-	}
-	if tlsEnabled {
-		// Pinned explicitly rather than left at crypto/tls's own default so
-		// this server's minimum doesn't silently change if that default
-		// ever does; 1.2 is still the current floor most TEA client
-		// tooling can be expected to support, with 1.3 negotiated
-		// automatically whenever both ends support it.
-		srv.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	var servers []*http.Server
+	if cfg.AdminListenAddr == "" {
+		servers = []*http.Server{buildServer(cfg.ListenAddr, newMux(r, blobStore, cfg, startedAt), tlsEnabled)}
+		slog.Info("opentea server starting", "addr", cfg.ListenAddr, "rootURL", cfg.RootURL, "dbPath", cfg.DBPath, "blobDir", cfg.BlobDir, "tls", tlsEnabled)
+	} else {
+		servers = []*http.Server{
+			buildServer(cfg.ListenAddr, newAPIMux(r, blobStore, cfg), tlsEnabled),
+			buildServer(cfg.AdminListenAddr, newAdminMux(r, blobStore, cfg, startedAt), tlsEnabled),
+		}
+		slog.Info("opentea server starting", "apiAddr", cfg.ListenAddr, "adminAddr", cfg.AdminListenAddr, "rootURL", cfg.RootURL, "dbPath", cfg.DBPath, "blobDir", cfg.BlobDir, "tls", tlsEnabled)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	serveErr := make(chan error, 1)
-	go func() {
-		if tlsEnabled {
-			serveErr <- srv.ListenAndServeTLS(cfg.TLSCertFile, cfg.TLSKeyFile)
-		} else {
-			serveErr <- srv.ListenAndServe()
-		}
-	}()
+	serveErr := make(chan error, len(servers))
+	for _, srv := range servers {
+		go func(srv *http.Server) {
+			if tlsEnabled {
+				serveErr <- srv.ListenAndServeTLS(cfg.TLSCertFile, cfg.TLSKeyFile)
+			} else {
+				serveErr <- srv.ListenAndServe()
+			}
+		}(srv)
+	}
 
 	select {
 	case err := <-serveErr:
@@ -110,23 +105,93 @@ func main() {
 		slog.Info("shutdown signal received, waiting for in-flight requests", "grace", shutdownGrace)
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
 		defer cancel()
-		if err := srv.Shutdown(shutdownCtx); err != nil {
-			log.Fatalf("graceful shutdown failed: %v", err)
+		var wg sync.WaitGroup
+		var mu sync.Mutex
+		var shutdownErrs []error
+		for _, srv := range servers {
+			wg.Add(1)
+			go func(srv *http.Server) {
+				defer wg.Done()
+				if err := srv.Shutdown(shutdownCtx); err != nil {
+					mu.Lock()
+					shutdownErrs = append(shutdownErrs, fmt.Errorf("%s: %w", srv.Addr, err))
+					mu.Unlock()
+				}
+			}(srv)
+		}
+		wg.Wait()
+		if len(shutdownErrs) > 0 {
+			log.Fatalf("graceful shutdown failed: %v", errors.Join(shutdownErrs...))
 		}
 		slog.Info("server stopped cleanly")
 	}
 }
 
-// newMux wires the sub-routers together. Factored out so the integration
-// test can build the exact same handler tree against an httptest.Server
-// without duplicating the wiring.
+// buildServer applies the shared http.Server tuning (timeouts, TLS minimum
+// version) to one listener. Factored out since a deployment with
+// config.Config.AdminListenAddr set runs two of these concurrently -- see
+// main -- and they must be tuned identically.
+func buildServer(addr string, handler http.Handler, tlsEnabled bool) *http.Server {
+	// ReadHeaderTimeout guards against slow-header (slowloris-style)
+	// connections; ReadTimeout/WriteTimeout are deliberately left at the
+	// zero value (no limit) since this server streams large blob
+	// uploads/downloads (up to 1 GiB, see internal/admin/upload.go) that a
+	// blanket whole-request timeout would risk truncating on a slow but
+	// legitimate connection. IdleTimeout still bounds genuinely idle
+	// keep-alive connections.
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+	if tlsEnabled {
+		// Pinned explicitly rather than left at crypto/tls's own default so
+		// this server's minimum doesn't silently change if that default
+		// ever does; 1.2 is still the current floor most TEA client
+		// tooling can be expected to support, with 1.3 negotiated
+		// automatically whenever both ends support it.
+		srv.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	}
+	return srv
+}
+
+// newMux wires every sub-router onto a single mux -- config.Config.AdminListenAddr
+// unset, today's default single-listener behavior. Factored out so the
+// integration test can build the exact same handler tree against an
+// httptest.Server without duplicating the wiring.
 func newMux(r *repo.Repo, blobStore storage.Storage, cfg config.Config, startedAt time.Time) http.Handler {
 	mux := http.NewServeMux()
+	registerAPIRoutes(mux, r, blobStore, cfg)
+	registerAdminRoutes(mux, r, blobStore, cfg, startedAt)
+	return httpx.WithRequestID(securityHeaders(mux, cfg))
+}
+
+// newAPIMux wires only the consumer-facing surface (/tea/v1 + /files) --
+// used for the ListenAddr listener when AdminListenAddr splits the admin
+// surface onto its own listener.
+func newAPIMux(r *repo.Repo, blobStore storage.Storage, cfg config.Config) http.Handler {
+	mux := http.NewServeMux()
+	registerAPIRoutes(mux, r, blobStore, cfg)
+	return httpx.WithRequestID(securityHeaders(mux, cfg))
+}
+
+// newAdminMux wires only the operator-facing surface (/admin/v1 + /admin/ui)
+// -- used for the AdminListenAddr listener when it's set.
+func newAdminMux(r *repo.Repo, blobStore storage.Storage, cfg config.Config, startedAt time.Time) http.Handler {
+	mux := http.NewServeMux()
+	registerAdminRoutes(mux, r, blobStore, cfg, startedAt)
+	return httpx.WithRequestID(securityHeaders(mux, cfg))
+}
+
+func registerAPIRoutes(mux *http.ServeMux, r *repo.Repo, blobStore storage.Storage, cfg config.Config) {
 	mux.Handle(cfg.APIBasePath+"/", api.NewRouter(r, cfg))
+	mux.Handle("/files/", files.NewHandler(r, blobStore))
+}
+
+func registerAdminRoutes(mux *http.ServeMux, r *repo.Repo, blobStore storage.Storage, cfg config.Config, startedAt time.Time) {
 	mux.Handle("/admin/v1/", admin.NewRouter(r, blobStore, cfg, startedAt))
 	mux.Handle("/admin/ui/", webadmin.NewRouter(r, cfg))
-	mux.Handle("/files/", files.NewHandler(r, blobStore))
-	return httpx.WithRequestID(securityHeaders(mux, cfg))
 }
 
 // adminCSP has no script-src at all -- internal/webadmin's templates never

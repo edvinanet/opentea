@@ -485,6 +485,26 @@ they don't get lost.
       polls cheap.
 
 ## Config / deployment (this feature)
+- [x] ~~Separate the webadmin/admin-API surface from the consumer API onto different
+      ports/addresses~~ -- done (2026-08-27), per explicit user request ("those are two
+      different things and may in some installations bind to different ports and IP
+      addresses"). `config.Config.AdminListenAddr` (`TEA_ADMIN_LISTEN_ADDR`, empty by default)
+      splits `/admin/v1` + `/admin/ui` (operator-facing, session-cookie auth) onto their own
+      `http.Server`, separately from `TEA_LISTEN_ADDR`'s `/tea/v1` + `/files` (consumer-facing).
+      Empty (default) keeps today's single-listener behavior exactly (`cmd/opentea/main.go`'s
+      `newMux`, unchanged wiring); set, `main()` runs two `http.Server`s concurrently
+      (`newAPIMux`/`newAdminMux`, `buildServer`), shut down together on SIGINT/SIGTERM. Both
+      listeners share one TLS cert/key pair when TLS is on -- no per-listener TLS config in this
+      pass (a deliberate scope cut, see `internal/config/config.go`'s `AdminListenAddr` doc
+      comment; revisit if a deployment needs different TLS termination per surface). Also fixed
+      a real consequence of the split: `internal/webadmin/templates/dashboard.html`'s
+      "Product/Component Release (API)" cards linked to `{{.APIBasePath}}/...` as a
+      same-origin-relative path, which only worked because the GUI and the API happened to share
+      an origin before this -- now `{{.RootURL}}{{.APIBasePath}}/...`, correct whether or not the
+      two are actually the same origin. Regression test:
+      `TestSplitListenersIsolateRoutes` (`cmd/opentea/integration_test.go`), proving each
+      listener's mux serves only its own routes (404, not just "unauthenticated", for the other
+      surface's routes).
 - [ ] Add HTTPS proxy settings to the config file (requested 2026-08-11, not yet scoped) --
       needs a decision on what this covers: outbound HTTPS-proxy support (e.g. `HTTPS_PROXY`/
       `NO_PROXY`-style config for any outbound calls this server or `teaclient` makes), vs.

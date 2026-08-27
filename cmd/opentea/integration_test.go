@@ -430,6 +430,63 @@ func TestConfigurableAPIBasePath(t *testing.T) {
 	}
 }
 
+// TestSplitListenersIsolateRoutes is the regression test for
+// config.Config.AdminListenAddr: when the admin surface is split onto its
+// own listener, each listener's mux must carry only its own routes -- the
+// API listener must not still expose /admin/v1 or /admin/ui, and the admin
+// listener must not still expose the consumer API or /files. Uses
+// newAPIMux/newAdminMux directly (not newMux) since that's exactly the
+// split main() takes when AdminListenAddr is set.
+func TestSplitListenersIsolateRoutes(t *testing.T) {
+	dir := t.TempDir()
+	sqlDB, err := db.Open(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	blobStore, err := storage.NewFSStorage(filepath.Join(dir, "blobs"))
+	if err != nil {
+		t.Fatalf("NewFSStorage: %v", err)
+	}
+	r := repo.New(sqlDB)
+	cfg := config.Config{Versions: []string{"0.4.0"}, APIBasePath: "/tea/v1"}
+
+	apiSrv := httptest.NewServer(newAPIMux(r, blobStore, cfg))
+	t.Cleanup(apiSrv.Close)
+	adminSrv := httptest.NewServer(newAdminMux(r, blobStore, cfg, time.Now()))
+	t.Cleanup(adminSrv.Close)
+
+	get := func(base, path string) int {
+		t.Helper()
+		resp, err := http.Get(base + path)
+		if err != nil {
+			t.Fatalf("GET %s%s: %v", base, path, err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		return resp.StatusCode
+	}
+
+	if status := get(apiSrv.URL, "/tea/v1/products"); status != http.StatusOK {
+		t.Errorf("API listener GET /tea/v1/products: status = %d, want 200", status)
+	}
+	if status := get(apiSrv.URL, "/admin/ui/login"); status != http.StatusNotFound {
+		t.Errorf("API listener GET /admin/ui/login: status = %d, want 404 (admin surface must not be reachable here)", status)
+	}
+	if status := get(apiSrv.URL, "/admin/v1/stats"); status != http.StatusNotFound {
+		t.Errorf("API listener GET /admin/v1/stats: status = %d, want 404", status)
+	}
+
+	if status := get(adminSrv.URL, "/admin/ui/login"); status != http.StatusOK {
+		t.Errorf("admin listener GET /admin/ui/login: status = %d, want 200", status)
+	}
+	if status := get(adminSrv.URL, "/tea/v1/products"); status != http.StatusNotFound {
+		t.Errorf("admin listener GET /tea/v1/products: status = %d, want 404 (consumer API must not be reachable here)", status)
+	}
+	if status := get(adminSrv.URL, "/files/deadbeef"); status != http.StatusNotFound {
+		t.Errorf("admin listener GET /files/deadbeef: status = %d, want 404", status)
+	}
+}
+
 // TestCreateUserRejectsShortPassword is the regression test for the finding
 // that admin-created accounts had no password strength requirement (only
 // non-empty). Exercises the rejection through both the JSON admin API and

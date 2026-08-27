@@ -2,9 +2,9 @@
 <h1>Overview</h1>
 <div class="cards">
   <a class="card" href="/admin/ui/products"><div class="n">{{.Stats.Products}}</div><div class="l">Products</div></a>
-  <a class="card" href="{{.APIBasePath}}/productReleases"><div class="n">{{.Stats.ProductReleases}}</div><div class="l">Product Releases (API)</div></a>
+  <a class="card" href="{{.RootURL}}{{.APIBasePath}}/productReleases"><div class="n">{{.Stats.ProductReleases}}</div><div class="l">Product Releases (API)</div></a>
   <a class="card" href="/admin/ui/components"><div class="n">{{.Stats.Components}}</div><div class="l">Components</div></a>
-  <a class="card" href="{{.APIBasePath}}/componentReleases"><div class="n">{{.Stats.ComponentReleases}}</div><div class="l">Component Releases (API)</div></a>
+  <a class="card" href="{{.RootURL}}{{.APIBasePath}}/componentReleases"><div class="n">{{.Stats.ComponentReleases}}</div><div class="l">Component Releases (API)</div></a>
   <div class="card"><div class="n">{{.Stats.Collections}}</div><div class="l">Collections</div></div>
   <div class="card"><div class="n">{{.Stats.Artifacts}}</div><div class="l">Artifacts</div></div>
 </div>

@@ -53,7 +53,8 @@ config file (default path `/etc/opentea/opentea.conf`, override with `TEA_CONFIG
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `TEA_LISTEN_ADDR` | `:8080` | HTTP(S) listen address |
+| `TEA_LISTEN_ADDR` | `:8080` | HTTP(S) listen address for the consumer-facing surface (`/tea/v1` + `/files`) — or for everything, if `TEA_ADMIN_LISTEN_ADDR` is unset |
+| `TEA_ADMIN_LISTEN_ADDR` | *(none)* | If set, binds a second, independent listener for the operator-facing surface (`/admin/v1` + `/admin/ui`), separately from `TEA_LISTEN_ADDR` — e.g. an internal-only interface/port for admin access while the consumer API stays on a public one. Both listeners share the same TLS cert/key pair below when TLS is on. Leave unset for today's default: one listener serving everything |
 | `TEA_DB_PATH` | `data/opentea.db` | SQLite database file |
 | `TEA_BLOB_DIR` | `data/blobs` | Uploaded file storage directory |
 | `TEA_ROOT_URL` | `http://localhost:8080` | This server's own root URL, used in discovery responses and generated file URLs. Independent of `TEA_API_BASE_PATH` below — set this to whatever origin/path is actually externally reachable (e.g. a fronting reverse proxy's public URL), regardless of where this process itself listens |

@@ -28,6 +28,20 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.APIBasePath != "/tea/v1" {
 		t.Errorf("APIBasePath = %q, want /tea/v1", cfg.APIBasePath)
 	}
+	if cfg.AdminListenAddr != "" {
+		t.Errorf("AdminListenAddr = %q, want empty (single-listener default)", cfg.AdminListenAddr)
+	}
+}
+
+func TestAdminListenAddrFromEnv(t *testing.T) {
+	t.Setenv("TEA_ADMIN_LISTEN_ADDR", "127.0.0.1:9091")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.AdminListenAddr != "127.0.0.1:9091" {
+		t.Errorf("AdminListenAddr = %q, want 127.0.0.1:9091", cfg.AdminListenAddr)
+	}
 }
 
 func TestAPIBasePathNormalization(t *testing.T) {

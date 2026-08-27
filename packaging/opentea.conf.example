@@ -11,9 +11,19 @@
 # default. That means an operator can always override a specific value with
 # an env var (e.g. in the systemd unit, or ad hoc) without editing this file.
 
-# Address the server listens on. Port must stay >1024 (unprivileged) unless
-# you also grant CAP_NET_BIND_SERVICE in the systemd unit.
+# Address the server listens on -- for the consumer-facing surface
+# (/tea/v1 + /files), or for everything, if TEA_ADMIN_LISTEN_ADDR below is
+# left unset. Port must stay >1024 (unprivileged) unless you also grant
+# CAP_NET_BIND_SERVICE in the systemd unit.
 TEA_LISTEN_ADDR=:8080
+
+# If set, binds a second, independent listener for the operator-facing
+# surface (/admin/v1 + /admin/ui) separately from TEA_LISTEN_ADDR above --
+# e.g. an internal-only interface/port for admin access while the consumer
+# API stays reachable publicly. Both listeners share the TLS cert/key pair
+# below when TLS is on. Leave unset (the default) for one listener serving
+# everything, matching today's behavior.
+#TEA_ADMIN_LISTEN_ADDR=127.0.0.1:8081
 
 # Paths, if non-standard. Relative paths resolve against the process's
 # working directory (WorkingDirectory= in the systemd unit).

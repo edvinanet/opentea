@@ -39,7 +39,7 @@ client must do), not the internals of a particular implementation.
 | [TEST-11](#test-11-nxdomain-no-well-known-document-at-all) | `tea11.example.com` | no records at all | — | Authority doesn't resolve / has nothing → clean, permanent failure |
 | [TEST-12](#test-12-tls-certificate-untrusted) | `tea12.example.com` | `A` only | 1 endpoint, but untrusted cert | Certificate chain doesn't validate → permanent, no retry |
 | [TEST-13](#test-13-malformed-well-known-document) | `tea13.example.com` | `A` only | invalid JSON body | Schema-invalid response (bad `schemaVersion`, empty `endpoints`) → permanent, no retry |
-| [TEST-14](#test-14-explicit-port-in-the-tei-authority-no-svcb) | `tea14.example.com:8443` | `A` only | 1 endpoint | TEI authority carries its own port; fallback must preserve it, not default to 443 |
+| [TEST-14](#test-14-port-in-the-tei-authority-is-rejected) | `tea14.example.com:8443` | n/a — rejected before resolution | n/a | TEI authority carries a port (never allowed per spec) → client rejects it, no DNS/HTTP attempted |
 | [TEST-15](#test-15-cname-on-the-tei-authority) | `tea15.example.com` | `CNAME` → `tea15-canonical.example.com`, which has `HTTPS` (ServiceForm) | 1 endpoint | Authority itself is a CNAME; `Target: "."` must resolve against the record's real owner, not the alias |
 | [TEST-16](#test-16-cname-on-the-api-server) | `tea16.example.com` | `A` only | 1 endpoint whose `url` hostname is itself a `CNAME` | The *resolved API server's* hostname (not the TEI authority) is a CNAME |
 | [TEST-17](#test-17-trusted-certificate-wrong-hostname-in-san) | `tea17.example.com` | `A` only | 1 endpoint | Certificate chain is trusted, but its SAN doesn't cover the requested hostname → permanent, no retry |
@@ -47,6 +47,7 @@ client must do), not the internals of a particular implementation.
 | [TEST-19](#test-19-well-known-endpoint-returns-unparseable-json) | `tea19.example.com` | `A` only | `.well-known/tea` returns `200` with a body that isn't valid JSON at all | Distinct from TEST-13 (valid JSON, wrong content) → permanent, no retry |
 | [TEST-20](#test-20-no-well-known-endpoint-on-the-resolved-server) | `tea20.example.com` | `A` only | `.well-known/tea` returns `404` | Authority resolves and responds, but has no discovery endpoint at all → permanent, no retry |
 | [TEST-21](#test-21-well-formed-well-known-document-first-server-503-second-server-works) | `tea21.example.com` | `A` only | 2 endpoints, well-formed document | First (highest-priority) server returns exactly `503` (the spec's own named example), second works |
+| [TEST-22](#test-22-non-default-port-learned-from-endpointsurl) | `tea22.example.com` | `A` only, no port | 1 endpoint, `url` has a non-default port | The spec-sanctioned way to reach a non-default port: `endpoints[].url`, not the TEI |
 
 ## TEST-01: IPv4-only, no SVCB, single endpoint
 
@@ -401,34 +402,26 @@ tea13.example.com.       300  IN  A      192.0.2.130
 
 **Expected**: both variants are rejected immediately, with no retries.
 
-## TEST-14: Explicit port in the TEI authority, no SVCB
+## TEST-14: Port in the TEI authority is rejected
 
-The TEI itself carries an explicit port (used for direct connection to a non-default-port
-deployment) — the fallback path (no SVCB record) must preserve that port, not silently default to
-443.
+The TEI itself must never carry a port. Per the TEA discovery specification's "Port resolution"
+section: "Currently, the port number is not part of the TEI but it is needed to connect to the
+API. The TEA API server may be hosted on any port, but the server that is part of the first step
+of discovery will by default be running on the default HTTPS port 443." A non-default port is
+learned exactly two spec-sanctioned ways — an HTTPS/SVCB DNS record redirecting the initial
+`.well-known/tea` fetch (TEST-03), or an `endpoints[].url` in the well-known document itself
+(TEST-22) — never from the TEI string. A TEI that embeds a port anyway is malformed input to
+reject, not a capability for the client to honor.
 
 **TEI**: `tei://tea14.example.com:8443/uuid/d4d9f54a-abcf-11ee-ac79-1a52914d44b1`
 
-**DNS zone**:
-```
-tea14.example.com.       300  IN  A      192.0.2.140
-```
-(No `HTTPS` record; note the DNS query itself is still for the bare name `tea14.example.com`,
-never `tea14.example.com:8443` — a port is never part of a DNS query name.)
+**DNS zone**: n/a — a conformant client must reject the TEI before attempting any resolution.
 
-**`.well-known/tea`** (fetched from `https://tea14.example.com:8443/.well-known/tea`):
-```json
-{
-  "schemaVersion": 1,
-  "endpoints": [
-    {"url": "https://api.tea14.example.com", "versions": ["0.4.0"], "priority": 1}
-  ]
-}
-```
+**`.well-known/tea`**: n/a — never reached.
 
-**Expected**: the client fetches `.well-known/tea` from `tea14.example.com` on port **8443** (the
-TEI's own explicit port), not port 443 — the default only applies when the TEI carries no port at
-all.
+**Expected**: the client rejects the TEI as malformed, with a clear parsing error, before issuing
+any DNS query or HTTP request. It must not silently strip the port and proceed as if it had been
+absent, and must not connect to port 8443 (or any port) on the strength of the TEI string alone.
 
 ## TEST-15: CNAME on the TEI authority
 
@@ -642,3 +635,35 @@ time it's queried; `api-secondary.tea21.example.com`'s answers normally.
 **Expected**: `api-primary` is genuinely attempted first (highest priority) — reasonably retried a
 small bounded number of times with backoff, since `503` is explicitly transient — then the client
 fails over to `api-secondary`, and the final result comes from there.
+
+## TEST-22: Non-default port learned from `endpoints[].url`
+
+The TEI authority carries no port at all (as required — see TEST-14) and publishes no
+`HTTPS`/SVCB record, so the initial `.well-known/tea` fetch uses the plain default of port 443.
+The well-known document's `endpoints[].url` itself names a non-default port — the spec-sanctioned
+way a client ends up talking to a port other than 443, distinct from both TEST-03 (SVCB
+redirecting the *`.well-known/tea` fetch itself* to a different port) and TEST-14 (rejected: a
+port can never come from the TEI).
+
+**TEI**: `tei://tea22.example.com/uuid/d4d9f54a-abcf-11ee-ac79-1a52914d44b1`
+
+**DNS zone**:
+```
+tea22.example.com.       300  IN  A      192.0.2.220
+```
+(No `HTTPS` record.)
+
+**`.well-known/tea`** (fetched from `tea22.example.com:443`, the plain default):
+```json
+{
+  "schemaVersion": 1,
+  "endpoints": [
+    {"url": "https://api.tea22.example.com:9443", "versions": ["0.4.0"], "priority": 1}
+  ]
+}
+```
+
+**Expected**: the client fetches `.well-known/tea` from the default port 443 (no SVCB involved,
+no port in the TEI), then makes its `/discovery` call to
+`https://api.tea22.example.com:9443/v0.4.0/discovery?tei=...` — the non-default port comes
+entirely from `endpoints[].url`, never from the TEI or a special-cased fallback.

@@ -238,6 +238,37 @@ they don't get lost.
       within that: ECH config, ipv4hint/ipv6hint, ALPN enforcement beyond Go's TLS stack, and
       AliasForm chains longer than one hop. No native Windows/macOS system-resolver-config
       integration -- `/etc/resolv.conf` or a fixed public-resolver fallback only.
+- [x] ~~External security review of `docs/discovery-test-rig.md`
+      (`docs/security-review-disc-tests-260827.md`, 2026-08-27) flagged TEST-14 as testing a
+      scenario the spec forbids~~ -- verified against the live spec text at the exact PR #261
+      commit (`be64bc7`) this work was built against: "Currently, the port number is not part of
+      the TEI but it is needed to connect to the API... the server that is part of the first step
+      of discovery will by default be running on the default HTTPS port 443" -- a non-default port
+      can only come from an HTTPS/SVCB record or `endpoints[].url`, never the TEI itself. TEST-14
+      previously asserted the opposite (a port-bearing TEI, fallback must preserve it). **Fixed
+      2026-08-27**: TEST-14 now asserts a port-bearing TEI is rejected before any resolution
+      attempt; added TEST-22 as the positive case (non-default port via `endpoints[].url`).
+      **Still open, not fixed**: `pkg/tea.ExtractTEIAuthority` doesn't actually enforce this --
+      it passes a port-bearing `Host` through unmodified (confirmed by reading the code), so the
+      reference client is more permissive than the doc now claims is required. Not a security bug
+      (permissiveness, not unsafe behavior), but the client and the doc disagree; decide whether to
+      make `ExtractTEIAuthority` reject a port-bearing TEI to match, which would also let
+      `pkg/teaclient/svcb.go`'s `fallbackHost`/`fallbackPort`-preserving logic (added for the old
+      TEST-14) be simplified away, since the scenario it exists for is no longer spec-conformant
+      input.
+      The same review also confirmed a real credential-isolation gap in `BootstrapDiscover`
+      (`pkg/teaclient/wellknown.go`): a caller-supplied `WithBearerToken` is threaded through the
+      same `opts` to every candidate endpoint's `NewClient` call in the failover loop, so the same
+      token is resent to endpoint B after endpoint A fails or is skipped -- not a leak to
+      `.well-known/tea` itself (that fetch uses the raw `http.Client`, not `do()`, so no
+      `Authorization` header goes there), but real reuse across different candidate servers within
+      one `BootstrapDiscover` call. Whether that's acceptable for a reference/interop-testing
+      client or needs per-endpoint credential scoping is an open design question, not decided here.
+      Remaining findings in the review (caching/freshness tests, full OpenAPI response-body
+      validation, SVCB edge cases, TEI encoding edge cases, additional candidate transport-failure
+      cases, a missing 401 companion to TEST-09) are plausible test-coverage gaps for a rig
+      "meant to become real infrastructure" but weren't independently re-verified one by one, and
+      aren't addressed here -- revisit as a batch if/when this rig is actually stood up.
 - [ ] BLAKE3 checksum verification isn't implemented in `pkg/teaclient` (no stdlib or
       `golang.org/x/crypto` implementation without adding a new dependency) — reported as an
       explicit "unsupported algorithm" error rather than silently skipped.

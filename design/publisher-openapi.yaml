@@ -1,0 +1,1294 @@
+openapi: 3.1.0
+info:
+  title: TEA Publisher API
+  version: 0.3.0-draft
+  description: |
+    **Status: draft v0.3, for discussion. Not implemented anywhere. Not approved by
+    CycloneDX or any TEA working group.**
+
+    v0.3: collection drafts are now a singleton per owning release, addressed by the
+    release's own UUID — no separately-issued draft id. Prompted by an explicit question
+    ("what if the publisher API can request a UUID for a new collection? an updated
+    collection, new version, has the same UUID?") whose answer turned out to already be
+    settled by the consumer spec itself: `collection.uuid` always equals the owning
+    release's UUID, so there's nothing to request or allocate. Also added a symmetric
+    prepare step for artifact evidence (not just collection commit) and unified the
+    signature-submission request shape into one reused "evidence package" — see "Signing
+    and the evidence package" below.
+
+    A standard write/publish API for the CycloneDX Transparency Exchange API (TEA),
+    conventionally mounted at `/publisher/v1` on any conformant TEA server, the same way
+    every conformant server already serves the read-only consumer API at `/tea/v1`
+    (`spec/openapi.yaml`, `CycloneDX/transparency-exchange-api`). This document exists to
+    fill the gap TEA's own roadmap names but hasn't yet specified: "the official TEA
+    specification has no publisher/write API defined yet (post-1.0 per the spec's own
+    roadmap)."
+
+    **Provenance.** Two prior artifacts inform this draft:
+
+    - `CycloneDX/transparency-exchange-api`'s own `spec/publisher/` (openapi.json) — an
+      earlier, materially different attempt: `tea_product` → `tea_leaf` → `tea_collection`,
+      no separate Component concept, collections created as one flat POST with artifacts
+      embedded inline, `PATCH`/`DELETE` on collections directly (mutable), no separate
+      artifact-vs-collection signing, `signature_url` as a passive pointer only.
+      Superseded by the spec's later evolution into the current object model (v0.4.0) and
+      by the trust-architecture work below; not used as the schema base for this draft (see
+      "Base objects and deviations" below) — its basic REST/auth conventions carried
+      forward, its resource and mutability model did not.
+    - `oej/tea-trust-architecture`'s `tea-trust-arch/publisher/publisher-workflow.md` — the
+      process model this draft's operations (§ path list below) implement: stable release
+      identity vs. independently-versioned collection/artifact/CLE/compliance streams,
+      append-only immutability, and two separate signing events (CI/CD signs individual
+      artifacts as built; a second signature covers the assembled collection at publish
+      time).
+
+    ## Base objects and deviations
+
+    **Requirement: this API is based on the existing consumer API's objects
+    (`spec/openapi.yaml`'s `components.schemas`), not a fresh reinvention. Every schema
+    below that represents the same real-world object as a consumer-spec schema reuses that
+    schema's exact name and field shape. Every place this draft needed something different
+    is called out explicitly, by name, with the reason — never a silent rename or an
+    implicit field drop.**
+
+    Schemas reused **verbatim**, no changes at all (see each schema's own description for
+    the "as of" spec snapshot this was checked against): `uuid`, `date-time`, `identifier`,
+    `identifier-type`, `checksum`, `checksum-type`, `collection-update-reason`,
+    `collection-update-reason-type`, `collection-belongs-to-type`, `artifact-type`,
+    `cle-event-type`, `component-ref`, `product`, `component`, `productRelease`, `release`
+    (the component-release schema — the consumer spec itself names it `release`, not
+    `componentRelease`, kept as-is here), `release-distribution`, `artifact`, `cle-event`,
+    `cle-support-definition`, `cle-definitions`, `cle`, `error-response`.
+
+    Deviations, each also marked `x-deviation` on the schema itself:
+
+    1. **`artifact-format` and `collection` carry `evidenceBundle`/`evidenceBundleRef`
+       fields the upstream consumer spec does not define.** Not a new deviation this draft
+       introduces — opentea's Trust Architecture Phase 1 already added these (`internal/trust`,
+       `pkg/tea/trust.go`), sourced from oej's separate `tea-trust-architecture`
+       `evidence-bundle-schema.json`, not from CycloneDX's own spec. This draft reuses that
+       existing, already-adopted extension rather than inventing its own evidence
+       modeling — the right call *because* it's precedented, not because this document
+       decided it first.
+    2. **Every `*-create` schema (`product-create`, `component-create`,
+       `productRelease-create`, `release-create`, `artifact-create`,
+       `artifact-format-create`, `cle-event-create`) omits `uuid`** (and, for
+       `productRelease-create`/`release-create`, the parent `product`/`component`
+       reference) versus its base schema. Unavoidable, not a design choice: the consumer
+       schemas describe an object that already exists and has a server-assigned identity;
+       a create request is inherently the pre-creation subset. Every other field matches
+       its base schema's own requiredness exactly, **with two further exceptions**:
+    3. **`productRelease-create` omits `components`**, which the base `productRelease`
+       schema requires (present, possibly empty). Deliberate: `design/publisher-service.md`
+       §5's "process, not object model" principle — a release is created before its
+       component list is necessarily known, and components are linked afterward via a
+       separate operation (`linkComponent`), incrementally, not required up front.
+    4. **`artifact-create`'s nested format objects (`artifact-format-create`) omit
+       `checksums`.** The base `artifact-format` schema doesn't require it, so this isn't
+       technically a requiredness change, but it's worth stating why it's absent from
+       Create specifically: checksums are computed by the server from the actual uploaded
+       bytes (`uploadArtifactFile` below), matching opentea's own existing
+       `/admin/v1` behavior — a caller-supplied checksum before any file exists would be
+       meaningless.
+
+    Schemas with **no consumer-spec equivalent at all** — not alterations of an existing
+    object, because the consumer spec is read-only by design and never modeled a write or
+    staging concept to begin with: `evidence-submission` (the **evidence package** — one
+    shared shape for every signature submission in this API, artifact or collection; see
+    "Signing and the evidence package" below) and the evidence-bundle-detail schemas
+    reused from the trust-architecture extension (deviation 1 above covers why these exist
+    on `artifact-format`/`collection`, not why the *submission* operation's request shape
+    exists — that's simply new, there being nothing to base it on),
+    `prepare-artifact-evidence-response`, `collection-draft`,
+    `collection-draft-artifact-list`, `prepare-commit-response`, `commit-request`.
+
+    ## Signing and the evidence package
+
+    **The manufacturer owns the private key. Signing happens in the publisher
+    software — never in any target server implementing this API.** Every operation whose
+    result is a stored signature follows the same three-step shape, for exactly this
+    reason (full reasoning: `design/publisher-service.md` §9):
+
+    1. **Prepare** (`prepareArtifactEvidence` / `prepareCollectionCommit`) — the target
+       server, the sole authority on the object's exact RFC 8785 canonical form, builds it
+       and returns its digest. No key material in either direction. Artifacts need this
+       step too, not only collections (§9.2) — a caller cannot know an artifact's
+       server-assigned `uuid`/`version` before creation, and asking every publisher-side
+       implementation to independently reimplement canonicalization risks a digest
+       mismatch no signature can fix.
+    2. **Sign** — entirely inside the publisher software, against that digest. Not a
+       protocol operation; the target server isn't a participant in this step at all.
+    3. **Submit** (`submitArtifactEvidence` / `commitCollectionDraft`) — the evidence
+       package (`evidence-submission`, composed by `commit-request` for the collection
+       case) goes back to the target server, which **re-derives the digest itself** from
+       the object's current state and verifies against that, never against a caller's
+       unchecked claim of what the digest was.
+
+    A target server never generates a key on the manufacturer's behalf either — that would
+    still mean a key existing inside its process, however briefly, which is exactly what
+    this three-step shape exists to avoid entirely, not merely minimize.
+
+    See `design/publisher-service.md` for the full narrative design, including which parts
+    remain open questions — several operations below are marked `x-open-question` for
+    exactly that reason.
+
+servers:
+  - url: /publisher/v1
+    description: >-
+      Conventional mount point. A server implementing this API serves it here, alongside
+      its existing /tea/v1 (read) and any proprietary admin surface it may also have.
+
+tags:
+  - name: Products
+    description: Stable release identity, top level (see info.description).
+  - name: Releases
+    description: Stable release identity, one version of a Product or Component.
+  - name: Components
+    description: Reusable pieces a release is built from.
+  - name: Artifacts
+    description: SBOM/VEX/attestation/etc. documents, signed independently of collections.
+  - name: Lifecycle
+    description: CLE (Common Lifecycle Enumeration) events, evolving independently of collections.
+  - name: Collections
+    description: Staged assembly and atomic, evidence-bound commit of a release's artifact set.
+
+security:
+  - bearerAuth: []
+
+paths:
+  # ---------------------------------------------------------------- Products / Releases
+  /products:
+    post:
+      operationId: createProduct
+      tags: [Products]
+      summary: Create a product (stable identity — no staging).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/product-create' }
+      responses:
+        '201':
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/product' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /products/{productUuid}/releases:
+    post:
+      operationId: createProductRelease
+      tags: [Releases]
+      summary: Create a product release (stable identity — no staging).
+      parameters:
+        - $ref: '#/components/parameters/ProductUuid'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/productRelease-create' }
+      responses:
+        '201':
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/productRelease' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ---------------------------------------------------------------- Components
+  /components:
+    get:
+      operationId: findComponents
+      tags: [Components]
+      summary: Search existing components (find-before-create, to avoid duplicate rows for the same real component).
+      parameters:
+        - name: q
+          in: query
+          description: Free-text match against name/identifiers.
+          schema: { type: string }
+      responses:
+        '200':
+          description: Matching components.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/component' }
+    post:
+      operationId: createComponent
+      tags: [Components]
+      summary: Create a component. Only after a search (GET above) confirms none already represents this real component.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/component-create' }
+      responses:
+        '201':
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/component' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /components/{componentUuid}/releases:
+    post:
+      operationId: createComponentRelease
+      tags: [Components]
+      summary: Create a component release.
+      parameters:
+        - $ref: '#/components/parameters/ComponentUuid'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/release-create' }
+      responses:
+        '201':
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/release' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /productReleases/{productReleaseUuid}/components:
+    post:
+      operationId: linkComponent
+      tags: [Components]
+      summary: Link a component to a product release, optionally pinned to a specific component release.
+      parameters:
+        - $ref: '#/components/parameters/ProductReleaseUuid'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/component-ref' }
+      responses:
+        '204': { description: Linked. }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ---------------------------------------------------------------- Artifacts
+  /artifacts:
+    post:
+      operationId: createArtifact
+      tags: [Artifacts]
+      summary: >-
+        Create an artifact (metadata only — file content and evidence are attached by the
+        two operations below). Corresponds to oej's workflow phase 1/2 boundary: this
+        operation itself is not a signing event.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/artifact-create' }
+      responses:
+        '201':
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/artifact' }
+
+  /artifacts/{artifactUuid}/{version}/files:
+    post:
+      operationId: uploadArtifactFile
+      tags: [Artifacts]
+      summary: >-
+        Upload the artifact's actual file content for one of its formats. Server computes
+        checksums from the uploaded bytes (see info.description, deviation 4) — a caller
+        never supplies them directly.
+      parameters:
+        - $ref: '#/components/parameters/ArtifactUuid'
+        - $ref: '#/components/parameters/ArtifactVersion'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [formatIndex, file]
+              properties:
+                formatIndex: { type: integer, minimum: 0 }
+                file: { type: string, format: binary }
+      responses:
+        '204': { description: Uploaded. }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /artifacts/{artifactUuid}/{version}/evidence/prepare:
+    post:
+      operationId: prepareArtifactEvidence
+      tags: [Artifacts]
+      summary: >-
+        Prepare-to-sign (new in this revision — see design/publisher-service.md §9.2 for
+        why artifacts need this, not just collections). The target server is the sole
+        authority on the artifact's exact RFC 8785 canonical form (it's what verification
+        will recompute against regardless); this returns that form's digest so the caller
+        never has to reimplement canonicalization independently. No key material involved
+        in either direction. Callable repeatedly — reflects current state each time, does
+        not lock anything; only the submit operation below finalizes anything.
+      parameters:
+        - $ref: '#/components/parameters/ArtifactUuid'
+        - $ref: '#/components/parameters/ArtifactVersion'
+      responses:
+        '200':
+          description: The current artifact and its digest to sign.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/prepare-artifact-evidence-response' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /artifacts/{artifactUuid}/{version}/evidence:
+    post:
+      operationId: submitArtifactEvidence
+      tags: [Artifacts]
+      summary: >-
+        Artifact Validation (oej workflow phase 3) — submit the evidence package (§9.3)
+        produced by signing prepareArtifactEvidence's digest. The typical caller is a
+        CI/CD system, not a human through a GUI — this operation is deliberately usable
+        headlessly, with no dependency on any collection-drafting workflow. The server
+        re-derives the digest itself from the artifact's actual current content (§9.1 step
+        3 — never trusts a caller-supplied digest, and this may legitimately differ from
+        what prepare returned if the artifact changed in between) and rejects (does not
+        store) anything that fails verification — mirrors opentea's existing
+        verify-before-store contract (`internal/admin/evidencebundle.go`). No
+        consumer-spec equivalent (see info.description) — produces an `evidence-bundle`,
+        reusing the trust-architecture extension already present on `artifact-format`.
+      parameters:
+        - $ref: '#/components/parameters/ArtifactUuid'
+        - $ref: '#/components/parameters/ArtifactVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/evidence-submission' }
+      responses:
+        '201':
+          description: Verified and stored.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/evidence-bundle' }
+        '400':
+          description: Verification failed (bad signature, digest mismatch, or expired/malformed certificate) — nothing was stored.
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ---------------------------------------------------------------- Lifecycle (CLE)
+  /products/{productUuid}/cle/events:
+    post:
+      operationId: createProductCLEEvent
+      tags: [Lifecycle]
+      summary: >-
+        Record a lifecycle event (oej workflow: evolves independently of any release or
+        collection publish). See the componentUuid/productReleaseUuid/componentReleaseUuid
+        equivalents below — identical shape, different owner.
+      parameters:
+        - $ref: '#/components/parameters/ProductUuid'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/cle-event-create' }
+      responses:
+        '201':
+          description: Recorded.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/cle-event' }
+
+  /productReleases/{productReleaseUuid}/cle/events:
+    post:
+      operationId: createProductReleaseCLEEvent
+      tags: [Lifecycle]
+      summary: Record a lifecycle event for a product release. Same shape as the product-level operation above.
+      parameters:
+        - $ref: '#/components/parameters/ProductReleaseUuid'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/cle-event-create' }
+      responses:
+        '201':
+          description: Recorded.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/cle-event' }
+
+  # (componentUuid/componentReleaseUuid CLE-event equivalents, and the four owner types'
+  # own /cle/definitions operations, follow the same shape as the two above — omitted
+  # here to keep this draft's length manageable; not a design decision to leave them out
+  # of the real spec.)
+
+  # ---------------------------------------------------------------- Collections (staging + atomic commit)
+  # A collection's uuid always equals its owning release's uuid (spec/openapi.yaml's own
+  # collection.uuid: "matches the UUID of the associated TEA Component Release or TEA
+  # Product Release object" — verified verbatim). A new version never gets a new UUID, so
+  # there is nothing to reserve or allocate ahead of time, and a draft is naturally a
+  # singleton per owner: keyed by the owning release's UUID directly, not a separately-
+  # issued draft id. (componentReleaseUuid equivalents of the three operations below
+  # follow the identical shape — omitted here to keep this draft's length manageable, not
+  # a design decision to leave them out of the real spec.)
+  /productReleases/{productReleaseUuid}/collectionDraft:
+    put:
+      operationId: putCollectionDraft
+      tags: [Collections]
+      summary: >-
+        Create-or-replace the draft's artifact list (oej workflow phase 4, "Collection
+        Assembly") — each entry must already exist and, per oej's workflow, already be
+        validated (see submitArtifactEvidence above). Idempotent; callable repeatedly as
+        artifacts arrive over however many sessions assembly takes. No separate "start a
+        draft" call — a `PUT` with no prior draft creates one, a `PUT` against an existing
+        one replaces its artifact list. No consumer-spec equivalent (see info.description).
+        References artifacts by (uuid, version) rather than embedding full `artifact`
+        objects the way the read-side `collection.artifacts` does — deliberate: the
+        artifacts already exist and were already validated separately (§7.4), so
+        embedding a second, possibly-stale copy here would invite the two ever
+        disagreeing. The eventual committed `collection` (see commit's response below)
+        embeds full `artifact` objects, exactly matching what `/tea/v1` itself would
+        serve — only the *draft's* request shape differs, and only for this reason.
+      x-open-question: >-
+        Whether draft state lives on the target server (as modeled by this resource) or
+        entirely client-side on the publisher server, with only the final commit ever
+        reaching the target — see design/publisher-service.md §11.1.
+      parameters:
+        - $ref: '#/components/parameters/ProductReleaseUuid'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/collection-draft-artifact-list' }
+      responses:
+        '200':
+          description: Updated (or newly created) draft.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/collection-draft' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    get:
+      operationId: getCollectionDraft
+      tags: [Collections]
+      summary: >-
+        Review the draft, including a diff against the owner's current live collection
+        (added/removed/changed artifacts) — collections are append-only new versions, so
+        "what's different this time" is the primary review question.
+      parameters:
+        - $ref: '#/components/parameters/ProductReleaseUuid'
+      responses:
+        '200':
+          description: Draft state.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/collection-draft' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      operationId: deleteCollectionDraft
+      tags: [Collections]
+      summary: Abandon the draft without publishing it.
+      parameters:
+        - $ref: '#/components/parameters/ProductReleaseUuid'
+      responses:
+        '204': { description: Deleted. }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /productReleases/{productReleaseUuid}/collectionDraft/prepareCommit:
+    post:
+      operationId: prepareCollectionCommit
+      tags: [Collections]
+      summary: >-
+        Collection Signing, part 1 (oej workflow phase 5). The server builds the
+        `collection` the draft would become (uuid is always productReleaseUuid, next
+        version number, current artifact list — now as full `artifact` objects, resolved
+        from the draft's references — updateReason, current timestamp) without persisting
+        it, and returns its canonical digest for the caller to sign — the server never
+        needs to hold or use a collection-signing key (design/publisher-service.md §9).
+      parameters:
+        - $ref: '#/components/parameters/ProductReleaseUuid'
+      responses:
+        '200':
+          description: The would-be collection and its digest to sign.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/prepare-commit-response' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /productReleases/{productReleaseUuid}/collectionDraft/commit:
+    post:
+      operationId: commitCollectionDraft
+      tags: [Collections]
+      summary: >-
+        Collection Signing, part 2 + Approval + Commit (oej workflow phases 5–7), atomic.
+        The server re-derives the same digest prepareCommit returned (defense against a
+        stale/mismatched prepare response), verifies the submitted signature, then in one
+        transaction: creates the real `collection`, creates its evidence bundle, deletes
+        the draft, and records one audit entry. If any step fails, none of it happens — no
+        collection can become live, on a server implementing this operation correctly,
+        without its evidence.
+      x-open-question: >-
+        Whether commit can also carry along newly-validated artifact versions and pending
+        CLE updates in the same atomic call (oej's phase 7 lists all three together) —
+        this draft scopes commit to one collection at a time only. See
+        design/publisher-service.md §11.2. Also open: whether an approvedBy field here
+        should be server-enforced or left to the calling publisher service to have
+        checked before ever reaching this operation — §11.4 there.
+      parameters:
+        - $ref: '#/components/parameters/ProductReleaseUuid'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/commit-request' }
+      responses:
+        '201':
+          description: Published — the real `collection`, matching exactly what /tea/v1 would now serve for it.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/collection' }
+        '400':
+          description: Signature verification failed, or the draft's digest no longer matches (it changed since prepareCommit) — nothing was published.
+        '404': { $ref: '#/components/responses/NotFound' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: >-
+        Matches spec/publisher's old precedent (bearer/basic) and opentea's own
+        `/admin/v1` token model. Basic auth intentionally not offered here — bearer only,
+        for a write API this sensitive.
+
+  parameters:
+    ProductUuid:
+      name: productUuid
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/uuid' }
+    ProductReleaseUuid:
+      name: productReleaseUuid
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/uuid' }
+    ComponentUuid:
+      name: componentUuid
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/uuid' }
+    ArtifactUuid:
+      name: artifactUuid
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/uuid' }
+    ArtifactVersion:
+      name: version
+      in: path
+      required: true
+      schema: { type: integer, minimum: 1 }
+
+  responses:
+    BadRequest:
+      description: Malformed or invalid request.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/error-response' }
+    NotFound:
+      description: No such resource.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/error-response' }
+
+  schemas:
+    # ================================================================
+    # Reused VERBATIM from spec/openapi.yaml (CycloneDX/transparency-exchange-api,
+    # checked against `main` 2026-08-27, TEA v0.4.0 Beta 2). No field, name, or
+    # requiredness changed from the consumer spec's own definition. Where opentea's own
+    # pkg/tea/enums.go names differ cosmetically from the spec's own enum value strings,
+    # the spec's own strings are used here (this file describes the wire, not the Go
+    # implementation).
+    # ================================================================
+
+    uuid:
+      type: string
+      format: uuid
+
+    date-time:
+      type: string
+      format: date-time
+
+    identifier-type:
+      type: string
+      enum: [CPE, PURL, TEI, COMPLIANCE_DOCUMENT]
+
+    identifier:
+      type: object
+      description: An identifier with a specified type
+      properties:
+        idType:
+          description: 'Type of identifier, e.g. `TEI`, `PURL`, `CPE`'
+          $ref: '#/components/schemas/identifier-type'
+        idValue:
+          description: Identifier value
+          type: string
+
+    checksum-type:
+      type: string
+      enum:
+        - MD5
+        - SHA-1
+        - SHA-256
+        - SHA-384
+        - SHA-512
+        - SHA3-256
+        - SHA3-384
+        - SHA3-512
+        - BLAKE2b-256
+        - BLAKE2b-384
+        - BLAKE2b-512
+        - BLAKE3
+
+    checksum:
+      type: object
+      properties:
+        algType:
+          description: Checksum algorithm
+          $ref: '#/components/schemas/checksum-type'
+        algValue:
+          type: string
+          description: Checksum value
+      required: [algType, algValue]
+
+    collection-belongs-to-type:
+      type: string
+      enum: [PRODUCT_RELEASE, COMPONENT_RELEASE]
+
+    collection-update-reason-type:
+      type: string
+      enum: [INITIAL_RELEASE, VEX_UPDATED, ARTIFACT_UPDATED, ARTIFACT_ADDED, ARTIFACT_REMOVED]
+
+    collection-update-reason:
+      type: object
+      description: Reason for the update to the TEA collection
+      properties:
+        type:
+          description: Type of update reason.
+          $ref: '#/components/schemas/collection-update-reason-type'
+        comment:
+          type: string
+          description: Free text description
+
+    artifact-type:
+      type: string
+      enum:
+        - ATTESTATION
+        - BOM
+        - BUILD_META
+        - CERTIFICATION
+        - FORMULATION
+        - LICENSE
+        - RELEASE_NOTES
+        - SECURITY_TXT
+        - THREAT_MODEL
+        - VULNERABILITIES
+        - OTHER
+
+    component-ref:
+      type: object
+      description: A reference to a TEA component or specific component release
+      properties:
+        uuid:
+          description: A unique identifier for the TEA component
+          $ref: '#/components/schemas/uuid'
+        release:
+          description: >-
+            Optional UUID of a specific release included in the product in the case where
+            the product always include a specific release of a component.
+          $ref: '#/components/schemas/uuid'
+      required: [uuid]
+
+    product:
+      type: object
+      description: A TEA product
+      properties:
+        uuid:
+          description: A unique identifier for the TEA product
+          $ref: '#/components/schemas/uuid'
+        name:
+          type: string
+          description: Product name
+        identifiers:
+          type: array
+          description: List of identifiers for the product, like TEI, CPE, PURL or other identifiers
+          items: { $ref: '#/components/schemas/identifier' }
+      required: [uuid, name, identifiers]
+
+    component:
+      type: object
+      description: A TEA component
+      properties:
+        uuid:
+          description: A unique identifier for the TEA component
+          $ref: '#/components/schemas/uuid'
+        name:
+          type: string
+          description: Component name
+        identifiers:
+          type: array
+          description: List of identifiers for the component
+          items: { $ref: '#/components/schemas/identifier' }
+      required: [uuid, name, identifiers]
+
+    productRelease:
+      type: object
+      description: A specific release of a TEA product
+      properties:
+        uuid:
+          description: A unique identifier for the TEA Product Release
+          $ref: '#/components/schemas/uuid'
+        product:
+          description: UUID of the TEA Product this release belongs to
+          $ref: '#/components/schemas/uuid'
+        productName:
+          description: Name of the TEA Product this release belongs to
+          type: string
+        version:
+          description: Version number of the product release
+          type: string
+        createdDate:
+          description: Timestamp when this Product Release was created in TEA (for sorting purposes)
+          $ref: '#/components/schemas/date-time'
+        releaseDate:
+          description: Timestamp of the product release
+          $ref: '#/components/schemas/date-time'
+        preRelease:
+          type: boolean
+          description: >-
+            A flag indicating pre-release (or beta) status. May be disabled after creation,
+            but can't be enabled after creation.
+        identifiers:
+          type: array
+          description: List of identifiers for the product release
+          items: { $ref: '#/components/schemas/identifier' }
+        components:
+          type: array
+          description: >-
+            List of component references that compose this product release, optionally
+            pinned to a specific component release.
+          items: { $ref: '#/components/schemas/component-ref' }
+      required: [uuid, version, createdDate, components]
+
+    release:
+      type: object
+      description: >-
+        A TEA Component Release. Named `release` in the consumer spec itself (not
+        `componentRelease`) — kept as-is here rather than renamed for local clarity.
+      properties:
+        uuid:
+          description: A unique identifier for the TEA Component Release
+          $ref: '#/components/schemas/uuid'
+        component:
+          description: UUID of the TEA Component this release belongs to
+          $ref: '#/components/schemas/uuid'
+        componentName:
+          description: Name of the TEA Component this release belongs to
+          type: string
+        version:
+          description: Version number
+          type: string
+        createdDate:
+          description: Timestamp when this Release was created in TEA (for sorting purposes)
+          $ref: '#/components/schemas/date-time'
+        releaseDate:
+          description: Timestamp of the release
+          $ref: '#/components/schemas/date-time'
+        preRelease:
+          type: boolean
+          description: >-
+            A flag indicating pre-release (or beta) status. May be disabled after creation,
+            but can't be enabled after creation.
+        identifiers:
+          type: array
+          description: List of identifiers for the component
+          items: { $ref: '#/components/schemas/identifier' }
+        distributions:
+          type: array
+          description: List of different formats of this component release
+          items: { $ref: '#/components/schemas/release-distribution' }
+      required: [uuid, version, createdDate]
+
+    release-distribution:
+      type: object
+      description: One downloadable artifact (binary, installer, etc.) belonging to a component release.
+      properties:
+        distributionId: { type: string }
+        description: { type: string }
+        identifiers:
+          type: array
+          items: { $ref: '#/components/schemas/identifier' }
+        url: { type: string, format: uri }
+        signatureUrl: { type: string, format: uri }
+        checksums:
+          type: array
+          items: { $ref: '#/components/schemas/checksum' }
+      required: [distributionId]
+
+    artifact-format:
+      type: object
+      description: >-
+        A security-related document in a specific format. Carries evidenceBundle/
+        evidenceBundleRef beyond the upstream consumer schema — see info.description,
+        deviation 1.
+      x-deviation: >-
+        evidenceBundle/evidenceBundleRef are not in CycloneDX's own spec/openapi.yaml;
+        they're opentea's already-adopted trust-architecture extension (Phase 1, shipped
+        2026-08-21), reused here rather than reinvented.
+      properties:
+        mediaType:
+          type: string
+          description: The Media Type of the document
+        description:
+          type: string
+          description: A free text describing the TEA Artifact
+        url:
+          type: string
+          format: uri
+          description: Direct download URL for the TEA Artifact
+        signatureUrl:
+          type: string
+          format: uri
+          description: Direct download URL for an external signature of the TEA Artifact
+        checksums:
+          type: array
+          description: List of checksums for the TEA Artifact
+          items: { $ref: '#/components/schemas/checksum' }
+        evidenceBundle: { $ref: '#/components/schemas/evidence-bundle' }
+        evidenceBundleRef: { $ref: '#/components/schemas/evidence-bundle-ref' }
+
+    artifact:
+      type: object
+      description: A security-related document
+      properties:
+        uuid:
+          description: Together with version, uniquely identifies the TEA Artifact.
+          $ref: '#/components/schemas/uuid'
+        version:
+          type: integer
+          default: 1
+          description: Together with uuid, uniquely identifies the TEA Artifact.
+        name:
+          type: string
+          description: Name of TEA Artifact
+        type:
+          description: Type of TEA Artifact
+          $ref: '#/components/schemas/artifact-type'
+        createdDate:
+          description: The date when the TEA Artifact revision was created.
+          $ref: '#/components/schemas/date-time'
+        distributionIds:
+          type: array
+          description: >-
+            List of TEA Component Release distributions this Artifact applies to. If
+            absent or empty, applies to all distributions.
+          items: { $ref: '#/components/schemas/uuid' }
+        formats:
+          type: array
+          description: List of objects with the same content, but in different formats.
+          items: { $ref: '#/components/schemas/artifact-format' }
+      required: [uuid, type, formats]
+
+    collection:
+      type: object
+      description: A collection of security-related documents
+      x-deviation: >-
+        evidenceBundle/evidenceBundleRef are not in CycloneDX's own spec/openapi.yaml — see
+        artifact-format's x-deviation; same extension, same reasoning.
+      properties:
+        uuid:
+          description: >-
+            UUID of the TEA Collection object. Matches the UUID of the associated
+            Component Release or Product Release object.
+          $ref: '#/components/schemas/uuid'
+        version:
+          type: integer
+          description: TEA Collection version, incremented each time its content changes. Starts at 1.
+        date:
+          description: The date when the TEA Collection version was created.
+          $ref: '#/components/schemas/date-time'
+        belongsTo:
+          description: Whether this collection belongs to a Component Release or a Product Release
+          $ref: '#/components/schemas/collection-belongs-to-type'
+        updateReason:
+          description: Reason for the update/release of the TEA Collection object.
+          $ref: '#/components/schemas/collection-update-reason'
+        artifacts:
+          type: array
+          description: List of TEA Artifact objects.
+          items: { $ref: '#/components/schemas/artifact' }
+        evidenceBundle: { $ref: '#/components/schemas/evidence-bundle' }
+        evidenceBundleRef: { $ref: '#/components/schemas/evidence-bundle-ref' }
+
+    cle-event-type:
+      type: string
+      enum:
+        - released
+        - endOfDevelopment
+        - endOfSupport
+        - endOfLife
+        - endOfDistribution
+        - endOfMarketing
+        - supersededBy
+        - componentRenamed
+        - withdrawn
+
+    cle-event:
+      type: object
+      description: A discrete lifecycle event from the CLE specification
+      properties:
+        id:
+          type: integer
+          description: A unique, auto-incrementing integer identifier for the event
+        type:
+          description: The type of lifecycle event
+          $ref: '#/components/schemas/cle-event-type'
+        effective: { type: string, format: date-time }
+        published: { type: string, format: date-time }
+        version: { type: string, description: Version string (used by released event type) }
+        supportId: { type: string }
+        license: { type: string }
+        supersededByVersion: { type: string }
+        identifiers:
+          type: array
+          items: { $ref: '#/components/schemas/identifier' }
+        eventId: { type: integer, description: ID of the event being withdrawn }
+        reason: { type: string }
+        description: { type: string }
+        references:
+          type: array
+          items: { type: string, format: uri }
+      required: [id, type, effective, published]
+
+    cle-support-definition:
+      type: object
+      description: A support policy definition from CLE
+      properties:
+        id: { type: string }
+        description: { type: string }
+        url: { type: string, format: uri }
+      required: [id, description]
+
+    cle-definitions:
+      type: object
+      description: Container for reusable policy definitions referenced by events
+      properties:
+        support:
+          type: array
+          items: { $ref: '#/components/schemas/cle-support-definition' }
+
+    cle:
+      type: object
+      description: >-
+        Common Lifecycle Enumeration (CLE) object based on ECMA-428 TC54 TG3 CLE
+        Specification v1.0.0.
+      properties:
+        events:
+          type: array
+          items: { $ref: '#/components/schemas/cle-event' }
+        definitions: { $ref: '#/components/schemas/cle-definitions' }
+      required: [events]
+
+    error-response:
+      type: object
+      description: Error response
+      additionalProperties: false
+      properties:
+        error: { type: string }
+      required: [error]
+
+    # ================================================================
+    # Trust-architecture extension (already-adopted precedent, not new — see
+    # artifact-format's x-deviation above). Field shapes mirror pkg/tea/trust.go, which
+    # mirrors oej/tea-trust-architecture's evidence-bundle-schema.json.
+    # ================================================================
+
+    evidence-digest:
+      type: object
+      required: [algorithm, value]
+      properties:
+        algorithm: { type: string, description: Always sha-256 in practice. }
+        value: { type: string }
+
+    evidence-signature:
+      type: object
+      required: [format, value]
+      properties:
+        format: { type: string }
+        value: { type: string }
+        signatureDigest: { $ref: '#/components/schemas/evidence-digest' }
+
+    evidence-certificate:
+      type: object
+      required: [format, certificate]
+      properties:
+        format: { type: string }
+        certificate: { type: string }
+        chain: { type: array, items: { type: string } }
+        fingerprint: { $ref: '#/components/schemas/evidence-digest' }
+
+    evidence-timestamp:
+      type: object
+      description: RFC 3161 timestamp. Empty/absent until Trust Architecture Phase 2 lands server-side.
+      properties:
+        format: { type: string, description: Always rfc3161. }
+        tsaSubjectDn: { type: string }
+        tsaPubkeyFingerprint: { type: string }
+        tsaUri: { type: string }
+        token: { type: string }
+        messageImprintValue: { type: string }
+
+    evidence-transparency:
+      type: object
+      description: Transparency-log entry. Empty/absent until Trust Architecture Phase 3 lands server-side.
+      properties:
+        system: { type: string, description: rekor | sigsum | scitt }
+        evidenceType: { type: string }
+        bindingType: { type: string }
+        bindingDigestValue: { type: string }
+        verification: { type: object, description: System-specific JSON, embedded as-is. }
+
+    evidence-bundle:
+      type: object
+      required: [bundleVersion, object, signature, certificate]
+      properties:
+        bundleVersion: { type: string }
+        object:
+          type: object
+          required: [objectType, digest]
+          properties:
+            objectType: { type: string, description: artifact | tea-collection }
+            mediaType: { type: string }
+            location: { type: string, format: uri }
+            digest: { $ref: '#/components/schemas/evidence-digest' }
+        signature: { $ref: '#/components/schemas/evidence-signature' }
+        certificate: { $ref: '#/components/schemas/evidence-certificate' }
+        timestamps:
+          type: array
+          items: { $ref: '#/components/schemas/evidence-timestamp' }
+        transparency:
+          type: array
+          items: { $ref: '#/components/schemas/evidence-transparency' }
+
+    evidence-bundle-ref:
+      type: object
+      description: The bundle itself is hosted elsewhere; only a URI and digest are carried here.
+      required: [uri, digest]
+      properties:
+        uri: { type: string, format: uri }
+        digest: { $ref: '#/components/schemas/evidence-digest' }
+
+    # ================================================================
+    # Create/write-request variants. See info.description's numbered deviations for the
+    # rationale behind every field difference from the base schemas above.
+    # ================================================================
+
+    product-create:
+      type: object
+      description: Same as `product`, minus the server-assigned uuid (deviation 2).
+      x-deviation: 'Omits uuid — server-assigned on creation. See info.description, deviation 2.'
+      properties:
+        name: { type: string }
+        identifiers:
+          type: array
+          items: { $ref: '#/components/schemas/identifier' }
+      required: [name, identifiers]
+
+    component-create:
+      type: object
+      description: Same as `component`, minus the server-assigned uuid (deviation 2).
+      x-deviation: 'Omits uuid — server-assigned on creation. See info.description, deviation 2.'
+      properties:
+        name: { type: string }
+        identifiers:
+          type: array
+          items: { $ref: '#/components/schemas/identifier' }
+      required: [name, identifiers]
+
+    productRelease-create:
+      type: object
+      description: >-
+        Same as `productRelease`, minus the server-assigned uuid, the path-implied product,
+        and (deviation 3) the components list.
+      x-deviation: >-
+        Omits uuid (server-assigned) and product (path parameter). Omits components,
+        unlike the base schema which requires it — see info.description, deviation 3.
+      properties:
+        version: { type: string }
+        createdDate: { type: string, format: date-time }
+        releaseDate: { type: string, format: date-time }
+        preRelease: { type: boolean }
+        identifiers:
+          type: array
+          items: { $ref: '#/components/schemas/identifier' }
+      required: [version, createdDate]
+
+    release-create:
+      type: object
+      description: >-
+        Same as `release`, minus the server-assigned uuid and the path-implied component.
+      x-deviation: 'Omits uuid (server-assigned) and component (path parameter). See info.description, deviation 2.'
+      properties:
+        version: { type: string }
+        createdDate: { type: string, format: date-time }
+        releaseDate: { type: string, format: date-time }
+        preRelease: { type: boolean }
+        identifiers:
+          type: array
+          items: { $ref: '#/components/schemas/identifier' }
+      required: [version, createdDate]
+
+    artifact-format-create:
+      type: object
+      description: Same as `artifact-format`, minus checksums (deviation 4), url, and evidence fields (attached by later operations).
+      x-deviation: 'Omits checksums (server-computed on file upload, see deviation 4), url, evidenceBundle*, signatureUrl — none exist until later operations attach them.'
+      properties:
+        mediaType: { type: string }
+        description: { type: string }
+      required: [mediaType]
+
+    artifact-create:
+      type: object
+      description: Same as `artifact`, minus the server-assigned uuid/version/createdDate.
+      x-deviation: 'Omits uuid, version (server-assigned, defaults to 1), createdDate. See info.description, deviation 2.'
+      properties:
+        name: { type: string }
+        type: { $ref: '#/components/schemas/artifact-type' }
+        distributionIds:
+          type: array
+          items: { $ref: '#/components/schemas/uuid' }
+        formats:
+          type: array
+          items: { $ref: '#/components/schemas/artifact-format-create' }
+      required: [type, formats]
+
+    cle-event-create:
+      type: object
+      description: Same as `cle-event`, minus the server-assigned id.
+      x-deviation: 'Omits id — server-assigned, auto-incrementing. See info.description, deviation 2.'
+      properties:
+        type: { $ref: '#/components/schemas/cle-event-type' }
+        effective: { type: string, format: date-time }
+        published: { type: string, format: date-time }
+        version: { type: string }
+        supportId: { type: string }
+        license: { type: string }
+        supersededByVersion: { type: string }
+        identifiers:
+          type: array
+          items: { $ref: '#/components/schemas/identifier' }
+        eventId: { type: integer }
+        reason: { type: string }
+        description: { type: string }
+        references:
+          type: array
+          items: { type: string, format: uri }
+      required: [type, effective, published]
+
+    # ================================================================
+    # New in this API — no consumer-spec equivalent (see info.description).
+    # ================================================================
+
+    evidence-submission:
+      type: object
+      description: >-
+        An **evidence package** (design/publisher-service.md §9.3 — same concept as
+        `evidence-bundle`, request-shaped): everything needed to verify one signature over
+        one object. The single request shape used everywhere a signature is submitted in
+        this API — `commit-request` below composes this rather than duplicating it.
+      required: [objectDigestValue, signatureFormat, signatureValue, certificatePem]
+      properties:
+        objectDigestValue:
+          type: string
+          description: >-
+            Hex SHA-256 of RFC 8785-canonicalized object content, as returned by the
+            matching prepare operation. The server independently re-derives this from the
+            object's actual current state and rejects a mismatch (§9.1 step 3) — this
+            field is the caller's own record of what it believed it was signing, checked
+            against reality, never trusted on its own.
+        objectMediaType: { type: string }
+        objectLocation: { type: string, format: uri }
+        signatureFormat:
+          type: string
+          description: 'jws-detached (only format actually verified in opentea Phase 1; cms-detached/dsse-envelope/cose-sign1 reserved, not yet implemented anywhere)'
+        signatureValue: { type: string, description: Base64-encoded Ed25519 signature over the digest bytes. }
+        certificatePem: { type: string }
+
+    prepare-artifact-evidence-response:
+      type: object
+      description: Symmetric with prepare-commit-response, for artifacts — see prepareArtifactEvidence.
+      required: [digestToSign, artifact]
+      properties:
+        digestToSign:
+          type: string
+          description: Hex SHA-256 of RFC 8785-canonicalized artifact — sign exactly these bytes.
+        artifact: { $ref: '#/components/schemas/artifact' }
+
+    collection-draft-artifact-list:
+      type: object
+      properties:
+        artifacts:
+          type: array
+          description: References to already-created, already-validated artifacts — see setCollectionDraftArtifacts's summary for why this isn't a list of full artifact objects.
+          items:
+            type: object
+            required: [uuid, version]
+            properties:
+              uuid: { $ref: '#/components/schemas/uuid' }
+              version: { type: integer }
+        updateReason: { $ref: '#/components/schemas/collection-update-reason' }
+
+    collection-draft:
+      type: object
+      description: >-
+        No independent id — ownerUuid is always the eventual collection's own uuid too
+        (spec/openapi.yaml's collection.uuid "matches the UUID of the associated...
+        Release object"); see design/publisher-service.md §7.7.
+      required: [ownerType, ownerUuid]
+      properties:
+        ownerType: { $ref: '#/components/schemas/collection-belongs-to-type' }
+        ownerUuid: { $ref: '#/components/schemas/uuid' }
+        createdAt: { type: string, format: date-time }
+        artifacts:
+          type: array
+          items:
+            type: object
+            properties:
+              uuid: { $ref: '#/components/schemas/uuid' }
+              version: { type: integer }
+        updateReason: { $ref: '#/components/schemas/collection-update-reason' }
+        diffAgainstCurrent:
+          type: object
+          description: Added/removed artifacts vs. the owner's current live collection, if one exists.
+          properties:
+            added: { type: array, items: { $ref: '#/components/schemas/uuid' } }
+            removed: { type: array, items: { $ref: '#/components/schemas/uuid' } }
+
+    prepare-commit-response:
+      type: object
+      required: [digestToSign, wouldBeCollection]
+      properties:
+        digestToSign:
+          type: string
+          description: Hex SHA-256 of RFC 8785-canonicalized wouldBeCollection — sign exactly these bytes.
+        wouldBeCollection: { $ref: '#/components/schemas/collection' }
+
+    commit-request:
+      description: >-
+        The evidence package (`evidence-submission`) for the collection built by
+        prepareCollectionCommit, plus commit-specific approval metadata. Composes rather
+        than duplicates — see design/publisher-service.md §9.3.
+      allOf:
+        - $ref: '#/components/schemas/evidence-submission'
+        - type: object
+          properties:
+            approvedBy:
+              type: string
+              description: >-
+                Identity of the human/system approver (oej workflow phase 6). Whether this
+                is server-checked or purely advisory in v1 is open — see
+                commitCollectionDraft's x-open-question.

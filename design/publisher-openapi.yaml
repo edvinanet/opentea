@@ -1,10 +1,20 @@
 openapi: 3.1.0
 info:
   title: TEA Publisher API
-  version: 0.3.0-draft
+  version: 0.4.0-draft
   description: |
-    **Status: draft v0.3, for discussion. Not implemented anywhere. Not approved by
+    **Status: draft v0.4, for discussion. Not implemented anywhere. Not approved by
     CycloneDX or any TEA working group.**
+
+    v0.4: a second signing mode (design/publisher-service.md §9.5) — Web PKI certificates,
+    possibly HSM/PKCS#11-backed, possibly fully air-gapped, alongside the original
+    ephemeral-software-key mode. `prepareCollectionCommit` now locks the draft (released by
+    the new `cancelPrepare` operation) so a signature that may take days to come back from
+    an air-gapped ceremony doesn't silently go stale against a draft that changed
+    underneath it. `evidence-submission` gained `certificateChain` (intermediate CAs) and
+    mode-aware guidance on `signatureFormat`/`signatureValue` — Web PKI signatures aren't
+    necessarily Ed25519, and `cms-detached` is the natural format for this mode, not
+    `jws-detached`.
 
     v0.3: collection drafts are now a singleton per owning release, addressed by the
     release's own UUID — no separately-issued draft id. Prompted by an explicit question
@@ -463,6 +473,10 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/collection-draft' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: >-
+            The draft is locked by an outstanding prepareCollectionCommit (§9.5) — call
+            cancelPrepare first, or wait for the pending commit to complete.
     get:
       operationId: getCollectionDraft
       tags: [Collections]
@@ -500,15 +514,39 @@ paths:
         from the draft's references — updateReason, current timestamp) without persisting
         it, and returns its canonical digest for the caller to sign — the server never
         needs to hold or use a collection-signing key (design/publisher-service.md §9).
+        This response is also the to-be-signed (TBS) package for offline/air-gapped
+        signing (§9.5) — save it as-is rather than assuming it's only ever consumed
+        synchronously in the same call chain.
+
+        **Locks the draft** against further `putCollectionDraft` calls until either
+        `commitCollectionDraft` succeeds or `cancelPrepare` releases it (§9.5) — uniform
+        regardless of signing mode; harmless for a same-session software-key signature,
+        and necessary for an air-gapped one that may take days.
       parameters:
         - $ref: '#/components/parameters/ProductReleaseUuid'
       responses:
         '200':
-          description: The would-be collection and its digest to sign.
+          description: The would-be collection and its digest to sign. The draft is now locked.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/prepare-commit-response' }
         '404': { $ref: '#/components/responses/NotFound' }
+
+  /productReleases/{productReleaseUuid}/collectionDraft/cancelPrepare:
+    post:
+      operationId: cancelPrepareCollectionCommit
+      tags: [Collections]
+      summary: >-
+        Release the lock prepareCollectionCommit placed (§9.5) without deleting the draft
+        itself — for an abandoned or failed signing attempt (e.g. an air-gapped ceremony
+        that was called off). Re-opens the draft for `putCollectionDraft`. Distinct from
+        `deleteCollectionDraft`, which abandons the draft's contents entirely.
+      parameters:
+        - $ref: '#/components/parameters/ProductReleaseUuid'
+      responses:
+        '204': { description: Lock released. }
+        '404':
+          description: No such draft, or no lock currently held.
 
   /productReleases/{productReleaseUuid}/collectionDraft/commit:
     post:
@@ -1214,9 +1252,33 @@ components:
         objectLocation: { type: string, format: uri }
         signatureFormat:
           type: string
-          description: 'jws-detached (only format actually verified in opentea Phase 1; cms-detached/dsse-envelope/cose-sign1 reserved, not yet implemented anywhere)'
-        signatureValue: { type: string, description: Base64-encoded Ed25519 signature over the digest bytes. }
-        certificatePem: { type: string }
+          description: >-
+            Which format depends on the signing mode (design/publisher-service.md §9.5):
+            `jws-detached` fits an ephemeral, self-signed software key (the only format
+            opentea's Phase 1 actually verifies today) — the lightweight, same-session
+            case. `cms-detached` is the natural fit for a Web PKI certificate,
+            HSM/PKCS#11-backed or air-gapped signing, since that's what most such tooling
+            already produces natively — reserved in `internal/trust.SignatureFormat`'s
+            vocabulary, not yet implemented anywhere. `dsse-envelope`/`cose-sign1` remain
+            reserved, no concrete use case identified yet.
+        signatureValue:
+          type: string
+          description: >-
+            Base64-encoded signature over the digest bytes, in signatureFormat's encoding.
+            Algorithm follows from the signing certificate's own key type — Ed25519 for
+            opentea's Phase 1 ephemeral certificates, whatever the Web PKI certificate
+            actually uses (commonly RSA or ECDSA) for §9.5's Mode 2 — not fixed by this
+            schema.
+        certificatePem:
+          type: string
+          description: The leaf (signing) certificate.
+        certificateChain:
+          type: array
+          items: { type: string }
+          description: >-
+            Intermediate CA certificates, leaf-to-root order, needed to validate
+            certificatePem against a trust store (§9.5's Mode 2) — normally empty/absent
+            for opentea Phase 1's self-signed certificates, which chain to nothing.
 
     prepare-artifact-evidence-response:
       type: object

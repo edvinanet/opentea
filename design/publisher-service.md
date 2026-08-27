@@ -1,6 +1,6 @@
 # TEA Publisher — protocol and service design
 
-**Status:** draft v0.6, for discussion. Nothing here is scheduled or approved; no
+**Status:** draft v0.7, for discussion. Nothing here is scheduled or approved; no
 implementation exists yet. This document is the design opentea's `TODO.md` "Reference
 publisher" entry has been blocked on since 2026-07-04.
 
@@ -70,6 +70,19 @@ than repeated here.
   bearer-token authentication, per direct correction. Several sub-questions (bare OAuth2 vs.
   OIDC-only, LDAP/AD-bind's actual necessity, multi-IdP support, SAML) remain genuinely
   open, listed in §10.1 rather than resolved by assumption.
+- **v0.7 (this revision)** adds §9.5, a second signing mode alongside §9.1–9.3's
+  ephemeral-software-key one: Web PKI certificates, possibly HSM/PKCS#11-backed, possibly
+  fully air-gapped. The key realization: `prepare`'s existing response already *is* the
+  to-be-signed package needed for an offline/air-gapped ceremony — nothing new there — but
+  a collection draft's mutability means it needs an explicit **lock**, held from
+  `prepareCollectionCommit` until `commitCollectionDraft` succeeds or a new
+  `cancelPrepare` operation releases it, so a signature that takes days to come back
+  doesn't silently go stale against a draft that changed underneath it. Also surfaced two
+  things §9.1–9.3 had implicitly hardcoded to Mode 1 without noticing: certificate
+  verification needs a genuinely different code path (X.509 chain validation against a
+  trust store, not `internal/trust`'s ephemeral-cert fingerprint matching), and the
+  signature algorithm isn't necessarily Ed25519 once the certificate is Web PKI rather
+  than opentea's own self-signed scheme.
 
 ## 1. Problem statement
 
@@ -507,6 +520,83 @@ RFC 3161 timestamp acquisition and transparency-log submission (Trust Architectu
 (`EvidenceTimestamp`/`EvidenceTransparency`, unchanged), and both the artifact-evidence and
 collection-commit submit steps (§9.2, §7.8) are the natural place to add them once they
 exist, but neither this design nor its OpenAPI draft is blocked on that landing first.
+
+### 9.5 Two signing modes: online key vs. Web PKI / HSM / air-gapped
+
+§9.1–9.3 quietly assumed one shape: prepare, sign, submit, all in quick succession, inside
+one continuous session. That's true for a software key the publisher software holds
+directly, but not for every real manufacturer signing setup — a real requirement is a
+**second mode**: signing with a **Web PKI certificate** (CA-issued, long-lived, reused
+across many signatures — not `internal/trust`'s current ephemeral self-signed model),
+where the private key may live in an **HSM**, reachable either live (e.g. over PKCS#11, or
+a network HSM/KMS API — still synchronous, just a different signer behind the "sign" step)
+or **air-gapped**, with no live connection at all. The air-gapped case genuinely can't fit
+the synchronous shape — signing there means physically moving data across the gap, and can
+take anywhere from minutes to days, spanning multiple publisher-software sessions.
+
+**The mechanism this needs already mostly exists — `prepare`'s response *is* the
+to-be-signed (TBS) package.** Nothing new is required to produce it; what's missing is
+treating it as something exportable and re-importable rather than only ever a transient
+API response consumed synchronously in the same call chain:
+
+1. `prepareArtifactEvidence`/`prepareCollectionCommit` (§8, unchanged) — the digest plus
+   the full canonical object. For an air-gapped ceremony, this response is saved to a file
+   and physically carried to the signing environment — the canonical object being included
+   alongside the bare digest matters more here than in the online case: a real signing
+   ceremony wants a human or tool on the air-gapped side to see *what* they're attesting to,
+   not blindly sign an opaque hash.
+2. Signing happens on the air-gapped side, entirely outside this protocol's reach (as with
+   §9.1's synchronous case, the target server was never a participant in signing itself —
+   this mode just stretches the time and the physical distance between prepare and submit,
+   not the trust boundary).
+3. The resulting signature (+ certificate, + chain) is carried back and fed into
+   `submitArtifactEvidence`/`commitCollectionDraft` exactly as in the synchronous case — no
+   protocol change needed there either; those operations already re-derive the digest from
+   current state and verify against it (§9.1 step 3), whenever they're actually called.
+
+**What genuinely is new: locking a collection draft for the duration of an outstanding
+signature.** A collection draft (§7.7) is mutable — `PUT .../collectionDraft/artifacts`
+can be called again at any time. If a `prepareCommit` response has been exported for an
+air-gapped ceremony that might take days, and the draft changes in the meantime, the
+eventually-returned signature will no longer match at submit time and gets rejected
+(correctly — but a wasted, possibly slow, human-involving round trip). `prepareCollectionCommit`
+should therefore **lock** the draft against further `PUT` calls as a side effect of being
+called at all (uniform behavior regardless of mode — harmless for the synchronous case,
+where the lock is held only briefly anyway, and a real correctness improvement over
+today's design even there, closing a small existing race between prepare and commit). A
+new operation releases it: `POST .../collectionDraft/cancelPrepare` — abandons the pending
+signature (not the draft itself) and re-opens it for editing. Artifacts need no equivalent
+lock — an artifact's content is already effectively frozen the moment upload finishes,
+before evidence is ever prepared (§7.4).
+
+**Certificate verification is genuinely a different code path for this mode, not just a
+different input.** `internal/trust.ParseCertificateSubject`'s current logic
+(fingerprint-derived identity, checked against `used_fingerprint` reuse detection) is
+built specifically for Mode 1's ephemeral, single-use, self-signed certificates. A Web PKI
+certificate needs real **X.509 chain validation against a configured trust store**
+(root/intermediate CAs the manufacturer's PKI actually chains to) — and reuse across many
+signatures is the *normal*, correct case for a persistent certificate, not a violation
+`used_fingerprint`-style detection should flag. A target server supporting this mode needs
+its own trust-anchor configuration, entirely separate from anything Trust Architecture
+Phase 1 built.
+
+**Signature format follows from the mode, not from a fixed default.** `jws-detached` (the
+only format `internal/admin/evidencebundle.go` actually verifies today) fits Mode 1's
+lightweight, API-native software-key case well. `cms-detached` — already in
+`internal/trust.SignatureFormat`'s vocabulary, not yet implemented anywhere — is the
+natural fit for Mode 2: CMS/PKCS#7 detached signatures are what most HSM and PKCS#11
+tooling, and most regulated/enterprise signing ceremonies, already produce natively.
+
+**Open, not designed further here:**
+
+- Should the TBS export have a standardized file format/extension (for interop across
+  different publisher-software implementations and different HSM-side tooling), or is an
+  ad hoc JSON file (the `prepare` response, saved as-is) sufficient for a first version?
+- Should `cancelPrepare`'s lock auto-expire after some timeout, so an abandoned air-gapped
+  ceremony (nobody ever explicitly cancels) doesn't leave a draft stuck indefinitely?
+- Is Mode 2 support mandatory for every protocol implementer, or an optional capability a
+  target server may or may not offer — and if optional, how does a publisher discover
+  whether a given target supports it before attempting it?
 
 ## 10. Authorization
 

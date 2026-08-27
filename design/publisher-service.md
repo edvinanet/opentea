@@ -713,14 +713,17 @@ by Layer D immediately below, not answerable in isolation from it.
 
 ### 10.3 Layer C: approval enforcement
 
-Whether the target server itself verifies `commit`'s `approvedBy` field (requiring real
-per-request identity from the target's point of view, not just "this bearer token is
-valid"), or treats it as advisory metadata the *publisher* software is responsible for
-having already enforced (Layer A's maker-checker rule). Leaning advisory-at-the-protocol-
-level for v1 — requiring every protocol implementer to be identity-aware at this level is
-real added weight for a first version — with enforcement living entirely in the publisher
-software, now meaningfully backed by Layer A's real verified identity rather than being
-purely a UI-level courtesy check.
+**Superseded by §7.9/§13's `approve`/`reject` design (v0.9) — settled protocol-enforced,
+not advisory.** This section originally leaned advisory (a flat `approvedBy` field on
+`commit`, trusted from the caller, not independently checked by the target) on the
+reasoning that requiring every protocol implementer to be identity-aware was too much
+weight for a first version. Once `approve`/`reject` existed as real, separate operations
+recording a decision against tracked draft state (§7.9), enforcing it became cheap rather
+than heavy: `prepareCollectionCommit` just checks whether a current, matching approval is
+on record (409 if not) — the target doesn't need to independently verify *who* the
+approver is beyond the `actor` string the publisher software asserts (Layer A, §10.1),
+only that *some* recorded decision exists and isn't the same identity as the drafter. That
+narrower, cheaper check is what made protocol enforcement the right call after all.
 
 ### 10.4 Layer D: CI/CD credentials
 
@@ -749,8 +752,8 @@ assuming away.
    v0.2's original assumption)?
 3. ~~Compliance documents~~ — resolved (§7.6): `COMPLIANCE_DOCUMENT` identifiers, plus the
    existing artifact path when there's real file content to sign.
-4. **Approval enforcement** — leaning publisher-side only for v1 (§10.3), not
-   protocol-enforced; not fully settled.
+4. ~~Approval enforcement~~ — resolved (§10.3, §7.9): protocol-enforced, via
+   `prepareCollectionCommit` requiring a current, matching `approve` decision on record.
 5. ~~Where does collection-signing actually execute~~ — resolved (§9.1): in the publisher
    software, against the manufacturer's own key, never the target server. Still open
    within that: whether v1 is GUI-driven-commit only, or CI/CD-drivable too (a fully
@@ -797,10 +800,10 @@ assuming away.
 - **Phase 4 — CLE and compliance streams** (§7.5–7.6).
 - **Phase 5 — timestamps and transparency log**, once Trust Architecture Phases 2–3 exist
   on at least one real target implementation to integrate against.
-- **Phase 6 — approval workflow**, protocol-level or not per §10.3/§11.4, plus whichever
-  of §10.1's deferred auth mechanisms (LDAP/AD-bind, multi-IdP, SAML) turn out to actually
-  be needed by then. §13's `approval.required`/`granted`/`rejected` events and the new
-  `approve`/`reject` operations they imply (§7.9) belong in this phase, not before it —
+- **Phase 6 — approval workflow**: `approve`/`reject` (§7.9, §10.3, now designed in
+  `design/publisher-openapi.yaml`) plus §13's `approval.required`/`granted`/`rejected`
+  events, and whichever of §10.1's deferred auth mechanisms (LDAP/AD-bind, multi-IdP,
+  SAML) turn out to actually be needed by then. Belongs in this phase, not before it —
   approval has to exist as a real, enforced concept before there's anything meaningful to
   notify about.
 - **Phase 7 — eventing** (§13). Signed webhook delivery for at least the collection/

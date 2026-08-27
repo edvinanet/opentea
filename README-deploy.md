@@ -4,6 +4,16 @@ Standard FHS layout, no reverse proxy — the server listens directly on `TEA_LI
 (default `:8080`, or HTTPS if `TEA_TLS_CERT_FILE`/`TEA_TLS_KEY_FILE` are set — see step 4).
 Unit files and example config are in `packaging/`.
 
+By default this one listener serves everything — the consumer API (`/tea/v1` + `/files`) and the
+admin surface (`/admin/v1` + `/admin/ui`) alike. Two independent knobs split that apart if your
+deployment needs it (both optional, both documented inline in `packaging/opentea.conf.example`):
+`TEA_ADMIN_LISTEN_ADDR` binds the admin surface to its own port/address (e.g. an internal-only
+interface, keeping the consumer API on a public one), and `TEA_API_BASE_PATH` changes the path
+prefix the consumer API itself answers on (default `/tea/v1`) — relevant if you're running
+standalone, with no fronting reverse proxy, and need to answer literally at the `/v{version}`
+path TEA's discovery spec has clients construct. Neither is covered further in this guide; see
+`README.md`'s config table for details.
+
 Configuration is layered: **built-in defaults < config file < environment variables**
 (environment variables always win). Two independent ways to set values, pick whichever fits —
 or mix them, since env vars override the file either way:

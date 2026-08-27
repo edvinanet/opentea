@@ -24,6 +24,26 @@ they don't get lost.
 - [ ] Discovery (`GET /tea/v1/discovery`) is self-authoritative only — no federation to other
       TEA servers.
 - [ ] SBOM for all components
+- [ ] **Server telemetry and stats** (found 2026-08-27, while designing the TEA publisher's
+      own resource-limit needs — see `design/publisher-service.md` §15.1's used-vs-unused
+      storage distinction). `GET /admin/v1/stats` / `internal/model.Stats` only tracks entity
+      counts (`Products`/`ProductReleases`/`Components`/`ComponentReleases`/`Collections`/
+      `Artifacts`) — confirmed by reading the struct directly. No storage byte totals at all
+      (used — referenced by a collection — vs. unused/orphaned would need to be distinguished,
+      not just a single number), and no access/request counts anywhere (per-artifact download
+      counts, per-endpoint request volume) — confirmed via `internal/httpx/requestid.go`,
+      which only does request-id correlation for logging/audit, not counting. A real,
+      independent operational need this surfaced, not just a publisher-design dependency:
+      capacity planning (how much blob storage is actually in use, and how much of that is
+      genuinely orphaned) and basic usage visibility (what's actually being fetched, by
+      whom, how often) both need this today and have nothing.
+      Related, narrower, already tracked separately: the ETag feature's own observability
+      gap (below, "No observability was added for this feature") is scoped to that one
+      feature's `200`-vs-`304`/latency metrics specifically, not general server stats — don't
+      conflate the two. The bare **Promotheus API endpoint for metrics** entry below (under
+      **Deferred phases**) is the likely *delivery* mechanism for whatever gets built here
+      (and for the ETag metrics too), not a substitute for designing what the stats actually
+      are first — that design work is what this entry is actually about.
 
 ## Deferred phases (large, not started)
 - [ ] **Publisher API** — the official TEA spec has no publisher/write API defined yet

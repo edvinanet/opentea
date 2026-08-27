@@ -213,9 +213,24 @@ they don't get lost.
       has its own `SupportedVersions` (`pkg/teaclient/semver.go`, hand-rolled SemVer 2.0.0
       precedence comparator, no new dependency) and picks the highest version mutually supported
       with each candidate endpoint, constructing `<endpoint.url>/v<version>/discovery?tei=...`
-      per the spec's MUST-level wording -- **this surfaces a real, separate gap: opentea's own
-      server mounts its API at a fixed `/tea/v1`, not `/v{exact-semver}/`, so this client can't
-      yet bootstrap-discover opentea itself.** Not addressed here; a distinct server-side task.
+      per the spec's MUST-level wording -- this originally surfaced a real, separate gap (opentea's
+      own server mounted its API at a fixed `/tea/v1`, not `/v{exact-semver}/`), **fixed
+      2026-08-27**: `config.Config.APIBasePath` (`TEA_API_BASE_PATH`, default `/tea/v1`,
+      `internal/config/config.go`) now controls the one path prefix `internal/api` mounts under
+      (`internal/api/router.go` builds every route pattern from it; `cmd/opentea/main.go` mounts
+      the router at `cfg.APIBasePath+"/"` instead of the old hardcoded literal). A standalone
+      deployment (no fronting proxy) that wants to be literally reachable at the bootstrap flow's
+      constructed path sets `TEA_API_BASE_PATH=/v0.4.0` (matching its single `TEA_VERSIONS` entry);
+      the default stays `/tea/v1` for existing deployments. Deliberately a single-mount replacement,
+      not dual-serving both paths at once, and deliberately doesn't attempt to serve more than one
+      `TEA_VERSIONS` entry at its own literal `/v{version}` path simultaneously -- a deployment
+      needing that needs a version-aware fronting proxy instead (see the config's own doc comment
+      and `README.md`'s `TEA_API_BASE_PATH` row for the split with `TEA_ROOT_URL`, which stays the
+      separate, already-existing knob for what's advertised externally and is untouched by this).
+      opentea still doesn't serve `.well-known/tea` for itself, though -- **a distinct, still-open
+      gap**: even with `APIBasePath` pointed at a literal version path, nothing publishes the
+      bootstrap document a TEI-authority lookup would need to find that path in the first place;
+      revisit once/if opentea needs to be TEI-authority-discoverable, not just directly queryable.
       (2) **HTTPS/SVCB DNS record support** (`pkg/teaclient/svcb.go`) for the "Port resolution"
       section's optional failover/load-balancing guidance -- added `github.com/miekg/dns` as a
       new dependency (stdlib has no SVCB/RFC 9460 parsing at all; evaluated via the

@@ -42,6 +42,14 @@ type testServer struct {
 // + session, and returns a ready-to-use testServer.
 func newTestServer(t *testing.T) *testServer {
 	t.Helper()
+	return newTestServerWithAPIBasePath(t, "/tea/v1")
+}
+
+// newTestServerWithAPIBasePath is newTestServer with a caller-chosen
+// config.Config.APIBasePath, for tests exercising that the consumer API is
+// actually served (only) under the configured path.
+func newTestServerWithAPIBasePath(t *testing.T, apiBasePath string) *testServer {
+	t.Helper()
 	dir := t.TempDir()
 
 	sqlDB, err := db.Open(filepath.Join(dir, "test.db"))
@@ -57,7 +65,7 @@ func newTestServer(t *testing.T) *testServer {
 
 	r := repo.New(sqlDB)
 
-	cfg := config.Config{Versions: []string{"0.4.0"}}
+	cfg := config.Config{Versions: []string{"0.4.0"}, APIBasePath: apiBasePath}
 	srv := httptest.NewServer(nil) // handler attached below, once we know srv.URL for cfg.RootURL
 	cfg.RootURL = srv.URL
 	srv.Config.Handler = newMux(r, blobStore, cfg, time.Now())
@@ -402,6 +410,23 @@ func TestErrorResponses(t *testing.T) {
 	}
 	if status, _ := jsonRequest(t, srv, http.MethodGet, "/tea/v1/products?sortField=bogus", nil); status != http.StatusBadRequest {
 		t.Fatalf("invalid sortField: status = %d, want 400", status)
+	}
+}
+
+// TestConfigurableAPIBasePath is the regression test for making
+// config.Config.APIBasePath (TEA_API_BASE_PATH) configurable: a server
+// configured to serve at the literal /v{version} path the TEA discovery
+// spec has clients construct (rather than the default /tea/v1) must
+// actually answer there -- and, since this is a single-mount replacement
+// rather than dual-serving, must no longer answer at the old default path.
+func TestConfigurableAPIBasePath(t *testing.T) {
+	srv := newTestServerWithAPIBasePath(t, "/v0.4.0")
+
+	if status, _ := jsonRequest(t, srv, http.MethodGet, "/v0.4.0/products", nil); status != http.StatusOK {
+		t.Fatalf("GET /v0.4.0/products: status = %d, want 200", status)
+	}
+	if status, _ := jsonRequest(t, srv, http.MethodGet, "/tea/v1/products", nil); status != http.StatusNotFound {
+		t.Fatalf("GET /tea/v1/products: status = %d, want 404 (not mounted once APIBasePath is overridden)", status)
 	}
 }
 

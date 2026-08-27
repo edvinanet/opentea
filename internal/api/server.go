@@ -1,5 +1,7 @@
 // Package api implements the spec-conformant TEA consumer read API
-// (mounted at /tea/v1, matching spec/openapi.yaml v0.4.0 exactly).
+// (matching spec/openapi.yaml v0.4.0 exactly), mounted at
+// config.Config.APIBasePath -- "/tea/v1" by default, configurable via
+// TEA_API_BASE_PATH.
 package api
 
 import (
@@ -9,13 +11,13 @@ import (
 	"github.com/oej/opentea/internal/repo"
 )
 
-// Server holds the dependencies for the /tea/v1 consumer read API handlers.
+// Server holds the dependencies for the consumer read API handlers.
 type Server struct {
 	repo *repo.Repo
 	cfg  config.Config
 }
 
-// NewRouter builds the /tea/v1/... mux.
+// NewRouter builds the consumer API's mux, under cfg.APIBasePath.
 func NewRouter(r *repo.Repo, cfg config.Config) http.Handler {
 	srv := &Server{repo: r, cfg: cfg}
 	mux := http.NewServeMux()

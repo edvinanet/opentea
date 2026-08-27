@@ -18,6 +18,22 @@ type Config struct {
 	RootURL    string
 	Versions   []string
 
+	// APIBasePath is the URL path prefix this process's own mux serves the
+	// consumer read API under (e.g. "/tea/v1", the default -- or "/v0.4.0"
+	// for a standalone deployment that wants to answer literally at the
+	// path TEA's discovery spec has clients construct: <endpoint's
+	// url>/v<negotiated-version>/...). Deliberately independent of RootURL:
+	// RootURL is what this deployment claims as its externally-reachable
+	// origin (e.g. in discovery responses), which may sit behind a reverse
+	// proxy that terminates a completely different external path (say,
+	// "/v1/") and rewrites it to whatever APIBasePath this process actually
+	// listens on internally -- the two are set separately on purpose, don't
+	// assume one can be derived from the other. Covers a single path only:
+	// a deployment that needs to serve more than one TEA_VERSIONS entry at
+	// its own literal /v{version}/ path simultaneously (rather than behind
+	// a version-aware proxy) isn't supported by one opentea process today.
+	APIBasePath string
+
 	// OrgName identifies the organisation running this server. Optional;
 	// shown in the admin GUI and in GET /admin/v1/stats when set.
 	OrgName string
@@ -69,12 +85,18 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 
+	basePath, err := normalizeBasePath(resolve("TEA_API_BASE_PATH", fileValues, "/tea/v1"))
+	if err != nil {
+		return Config{}, err
+	}
+
 	return Config{
 		ListenAddr:               resolve("TEA_LISTEN_ADDR", fileValues, ":8080"),
 		DBPath:                   resolve("TEA_DB_PATH", fileValues, "data/opentea.db"),
 		BlobDir:                  resolve("TEA_BLOB_DIR", fileValues, "data/blobs"),
 		RootURL:                  resolve("TEA_ROOT_URL", fileValues, "http://localhost:8080"),
 		Versions:                 splitCSV(resolve("TEA_VERSIONS", fileValues, "0.4.0")),
+		APIBasePath:              basePath,
 		OrgName:                  resolve("TEA_ORG_NAME", fileValues, ""),
 		TLSCertFile:              resolve("TEA_TLS_CERT_FILE", fileValues, ""),
 		TLSKeyFile:               resolve("TEA_TLS_KEY_FILE", fileValues, ""),
@@ -103,6 +125,22 @@ func resolve(key string, fileValues map[string]string, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// normalizeBasePath enforces the one shape every consumer of Config.APIBasePath
+// relies on: a leading slash, no trailing slash (so simple concatenation --
+// APIBasePath+"/product/{uuid}" -- always produces a clean path), and non-empty
+// (serving the whole API at "/" would collide with the admin/files routes
+// mounted alongside it in cmd/opentea/main.go).
+func normalizeBasePath(raw string) (string, error) {
+	p := strings.TrimSuffix(raw, "/")
+	if p == "" {
+		return "", fmt.Errorf("TEA_API_BASE_PATH must not be empty or \"/\"")
+	}
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	return p, nil
 }
 
 func splitCSV(s string) []string {

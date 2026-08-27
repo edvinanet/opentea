@@ -40,12 +40,12 @@ func newTestServer(t *testing.T) (*httptest.Server, *repo.Repo) {
 
 	r := repo.New(sqlDB)
 
-	cfg := config.Config{Versions: []string{"0.4.0"}}
+	cfg := config.Config{Versions: []string{"0.4.0"}, APIBasePath: "/tea/v1"}
 	srv := httptest.NewServer(nil)
 	cfg.RootURL = srv.URL
 
 	mux := http.NewServeMux()
-	mux.Handle("/tea/v1/", api.NewRouter(r, cfg))
+	mux.Handle(cfg.APIBasePath+"/", api.NewRouter(r, cfg))
 	mux.Handle("/admin/v1/", admin.NewRouter(r, blobStore, cfg, time.Now()))
 	mux.Handle("/admin/ui/", webadmin.NewRouter(r, cfg))
 	mux.Handle("/files/", files.NewHandler(r, blobStore))

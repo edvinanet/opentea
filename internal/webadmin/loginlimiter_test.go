@@ -156,7 +156,7 @@ func TestClientIPTrustProxyHeaders(t *testing.T) {
 // rate-limit budgets, keyed by their own X-Forwarded-For entries rather
 // than being collapsed into the proxy's single shared one.
 func TestLoginSubmitProxyAwareRateLimiting(t *testing.T) {
-	srv, r := newTestServerWithConfig(t, config.Config{RootURL: "http://example.test", TrustProxyHeaders: true})
+	srv, r := newTestServerWithConfig(t, config.Config{RootURL: "http://example.test", APIBasePath: "/tea/v1", TrustProxyHeaders: true})
 	ctx := context.Background()
 	if _, err := r.CreateUser(ctx, "admin", "correct-password", model.RoleAdmin); err != nil {
 		t.Fatalf("CreateUser: %v", err)

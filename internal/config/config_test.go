@@ -25,6 +25,39 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.TLSCertFile != "" || cfg.TLSKeyFile != "" {
 		t.Errorf("TLS fields = %q/%q, want both empty", cfg.TLSCertFile, cfg.TLSKeyFile)
 	}
+	if cfg.APIBasePath != "/tea/v1" {
+		t.Errorf("APIBasePath = %q, want /tea/v1", cfg.APIBasePath)
+	}
+}
+
+func TestAPIBasePathNormalization(t *testing.T) {
+	cases := []struct {
+		env, want string
+	}{
+		{"/v0.4.0", "/v0.4.0"},
+		{"/v0.4.0/", "/v0.4.0"}, // trailing slash stripped
+		{"v0.4.0", "/v0.4.0"},   // leading slash added
+		{"/tea/v1/", "/tea/v1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.env, func(t *testing.T) {
+			t.Setenv("TEA_API_BASE_PATH", tc.env)
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if cfg.APIBasePath != tc.want {
+				t.Errorf("APIBasePath = %q, want %q", cfg.APIBasePath, tc.want)
+			}
+		})
+	}
+}
+
+func TestAPIBasePathEmptyIsError(t *testing.T) {
+	t.Setenv("TEA_API_BASE_PATH", "/")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected an error for TEA_API_BASE_PATH=/")
+	}
 }
 
 func TestLoadFromConfigFile(t *testing.T) {

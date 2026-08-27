@@ -54,7 +54,7 @@ func TestNavBarShowsTrustArchitectureMode(t *testing.T) {
 		{"enabled", true, "Trusted TEA", "Default TEA"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			srv, r := newTestServerWithConfig(t, config.Config{RootURL: "http://example.test", TrustArchitectureEnabled: tt.enabled})
+			srv, r := newTestServerWithConfig(t, config.Config{RootURL: "http://example.test", APIBasePath: "/tea/v1", TrustArchitectureEnabled: tt.enabled})
 
 			admin, err := r.CreateUser(ctx, "admin", "adminpass1", model.RoleAdmin)
 			if err != nil {
@@ -82,7 +82,7 @@ func TestNavBarShowsTrustArchitectureMode(t *testing.T) {
 // collection with no evidence renders no badge at all (a plain em dash).
 func TestComponentReleaseDetailPageShowsEvidenceBadge(t *testing.T) {
 	ctx := context.Background()
-	srv, r := newTestServerWithConfig(t, config.Config{RootURL: "http://example.test"})
+	srv, r := newTestServerWithConfig(t, config.Config{RootURL: "http://example.test", APIBasePath: "/tea/v1"})
 
 	component, err := r.CreateComponent(ctx, "libfoo", nil)
 	if err != nil {

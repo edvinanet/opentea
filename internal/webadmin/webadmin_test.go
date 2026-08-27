@@ -22,7 +22,7 @@ import (
 
 func newTestServer(t *testing.T) (*httptest.Server, *repo.Repo) {
 	t.Helper()
-	return newTestServerWithConfig(t, config.Config{RootURL: "http://example.test"})
+	return newTestServerWithConfig(t, config.Config{RootURL: "http://example.test", APIBasePath: "/tea/v1"})
 }
 
 // newTestServerWithConfig is newTestServer with a caller-chosen config --

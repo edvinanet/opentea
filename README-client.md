@@ -77,9 +77,10 @@ to keep the older, single-server-only behavior.
 Built against the TEI URL syntax (`tei://<domain>/<type>/<id>`) from
 `CycloneDX/transparency-exchange-api` PR #261, **unmerged** at the time this was written — the
 prior URN syntax (`urn:tei:<type>:<domain>:<id>`) isn't accepted. See `TODO.md` for what's
-deliberately out of scope (ECH config, IP hints, alias chains beyond one hop, and — a real,
-separate gap this surfaced — opentea's own server doesn't yet serve at the `/v{version}/` path
-this flow constructs, so it can't bootstrap-discover opentea itself yet).
+deliberately out of scope (ECH config, IP hints, alias chains beyond one hop). opentea's own
+server can now be configured to answer at the literal `/v{version}/` path this flow constructs
+(`TEA_API_BASE_PATH`, see `README.md`) — it just doesn't yet publish a `.well-known/tea` document
+of its own, so a TEI-authority lookup still can't *find* it that way; still tracked in `TODO.md`.
 
 **Known limitation**: checksum verification supports MD5, SHA-1/256/384/512, SHA3-256/384/512,
 and BLAKE2b-256/384/512 (all available from the stdlib or the already-present

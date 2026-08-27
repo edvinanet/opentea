@@ -1,5 +1,5 @@
 // Command opentea runs the TEA consumer read API (spec-conformant, at
-// /tea/v1), the unofficial admin ingestion API (/admin/v1), the admin web
+// /tea/v1 by default -- see TEA_API_BASE_PATH), the unofficial admin ingestion API (/admin/v1), the admin web
 // GUI (/admin/ui), and a blob server (/files/{sha256}) from a single
 // process. Run `opentea createadmin -username=... -password=...` to
 // bootstrap the first admin user before logging into the GUI.
@@ -122,7 +122,7 @@ func main() {
 // without duplicating the wiring.
 func newMux(r *repo.Repo, blobStore storage.Storage, cfg config.Config, startedAt time.Time) http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("/tea/v1/", api.NewRouter(r, cfg))
+	mux.Handle(cfg.APIBasePath+"/", api.NewRouter(r, cfg))
 	mux.Handle("/admin/v1/", admin.NewRouter(r, blobStore, cfg, startedAt))
 	mux.Handle("/admin/ui/", webadmin.NewRouter(r, cfg))
 	mux.Handle("/files/", files.NewHandler(r, blobStore))

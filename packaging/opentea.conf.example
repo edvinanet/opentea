@@ -27,6 +27,16 @@ TEA_ROOT_URL=https://tea.example.com
 # Comma-separated list of supported TEA API versions, reported by discovery.
 TEA_VERSIONS=0.4.0
 
+# Path prefix this process serves the consumer read API under. Default is
+# /tea/v1. Only change this if you're running standalone (no reverse proxy
+# in front) and want to answer literally at the /v{version} path TEA's
+# discovery spec has clients construct -- e.g. TEA_API_BASE_PATH=/v0.4.0.
+# If a reverse proxy sits in front of this server, prefer having it rewrite
+# the externally-exposed path to this server's default /tea/v1 instead of
+# changing this -- TEA_ROOT_URL above is what controls what's advertised
+# externally, independently of this setting.
+#TEA_API_BASE_PATH=/tea/v1
+
 # Organisation name, shown in the admin GUI and in GET /admin/v1/stats.
 # Leave unset to omit it entirely.
 TEA_ORG_NAME=Acme Corp

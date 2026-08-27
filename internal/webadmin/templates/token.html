@@ -1,7 +1,7 @@
 {{define "content"}}
 <h1>My API Token</h1>
-<p>Use this token to call the <code>/tea/v1</code> read API as yourself:</p>
-<p><code>curl -H "Authorization: Bearer &lt;token&gt;" {{.RootURL}}/tea/v1/products</code></p>
+<p>Use this token to call the <code>{{.APIBasePath}}</code> read API as yourself:</p>
+<p><code>curl -H "Authorization: Bearer &lt;token&gt;" {{.RootURL}}{{.APIBasePath}}/products</code></p>
 
 {{if .NewToken}}
 <div class="notice">

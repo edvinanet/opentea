@@ -18,6 +18,12 @@ type pageData struct {
 	RootURL string
 	OrgName string
 
+	// APIBasePath mirrors config.Config.APIBasePath -- the path prefix the
+	// consumer API is actually served under ("/tea/v1" by default). Used
+	// for any link/example this GUI shows pointing at that API, so they
+	// stay correct on a deployment that's changed TEA_API_BASE_PATH.
+	APIBasePath string
+
 	// TrustArchitectureEnabled mirrors config.Config.TrustArchitectureEnabled
 	// -- shown as a "Trusted TEA"/"Default TEA" badge in layout.html's nav,
 	// on every page, set below alongside OrgName/RootURL rather than by
@@ -60,6 +66,7 @@ type pageData struct {
 func (s *Server) renderAuthenticated(w http.ResponseWriter, page string, data pageData) {
 	data.RootURL = s.cfg.RootURL
 	data.OrgName = s.cfg.OrgName
+	data.APIBasePath = s.cfg.APIBasePath
 	data.TrustArchitectureEnabled = s.cfg.TrustArchitectureEnabled
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.templates[page].ExecuteTemplate(w, "layout", data); err != nil {

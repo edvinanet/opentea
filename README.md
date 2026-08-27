@@ -56,8 +56,9 @@ config file (default path `/etc/opentea/opentea.conf`, override with `TEA_CONFIG
 | `TEA_LISTEN_ADDR` | `:8080` | HTTP(S) listen address |
 | `TEA_DB_PATH` | `data/opentea.db` | SQLite database file |
 | `TEA_BLOB_DIR` | `data/blobs` | Uploaded file storage directory |
-| `TEA_ROOT_URL` | `http://localhost:8080` | This server's own root URL, used in discovery responses and generated file URLs |
+| `TEA_ROOT_URL` | `http://localhost:8080` | This server's own root URL, used in discovery responses and generated file URLs. Independent of `TEA_API_BASE_PATH` below — set this to whatever origin/path is actually externally reachable (e.g. a fronting reverse proxy's public URL), regardless of where this process itself listens |
 | `TEA_VERSIONS` | `0.4.0` | Comma-separated list of supported TEA API versions, reported by discovery |
+| `TEA_API_BASE_PATH` | `/tea/v1` | Path prefix this process serves the consumer read API under. Change to e.g. `/v0.4.0` for a standalone deployment (no fronting proxy) that needs to answer literally at the path TEA's discovery spec has clients construct (`<url>/v<negotiated-version>/...`); leave at the default if a reverse proxy in front of this server handles that path rewrite instead. Replaces the previous path entirely — this server does not serve both at once |
 | `TEA_ORG_NAME` | *(none)* | Organisation name; shown in the admin GUI and `GET /admin/v1/stats` when set |
 | `TEA_TRUST_ARCHITECTURE` | `false` | Declares this deployment's profile as "Trusted TEA" (oej's TEA Trust Architecture overlay) rather than plain TEA. Display-only in the admin GUI nav bar — does not enforce evidence-bundle requirements on any write path |
 | `TEA_TLS_CERT_FILE` / `TEA_TLS_KEY_FILE` | *(none)* | If both are set, the server listens with HTTPS instead of plain HTTP. Setting only one is a startup error |

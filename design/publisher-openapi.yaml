@@ -1,10 +1,41 @@
 openapi: 3.1.0
 info:
   title: TEA Publisher API
-  version: 0.5.0-draft
+  version: 0.9.0-draft
   description: |
-    **Status: draft v0.5, for discussion. Not implemented anywhere. Not approved by
+    **Status: draft v0.9, for discussion. Not implemented anywhere. Not approved by
     CycloneDX or any TEA working group.**
+
+    v0.9: `uploadArtifactFile`'s `429` narrowed to specifically mean the *unused*-artifact
+    quota (design/publisher-service.md §15.1) — not referenced by any collection, no
+    legitimate reason to be large. Distinct from used-artifact storage (referenced,
+    expected to grow with real activity), which is a capacity/provisioning concern, not a
+    per-request rejection at all.
+
+    v0.8: `uploadArtifactFile` now documents that it's subject to a per-upload size limit
+    (413) and a per-principal outstanding-bytes/count quota (429) neither this document
+    nor the OpenAPI chooses a default for (design/publisher-service.md §15). Expiry
+    (v0.7, §9.6) bounds abandoned *draft* state; it does nothing about *artifacts*, which
+    have no expiry/size/count bound of their own — a credential scoped to only artifact
+    evidence (§10.4) could otherwise upload unbounded data forever. Applies to the
+    publisher software and reference CI/CD client side too (§15.2), not only the target.
+
+    v0.7: expiry for everything left open/pending (design/publisher-service.md §9.6, per
+    explicit direction). `collection-draft` gains `expiresAt` (refreshed on every
+    `putCollectionDraft` — abandoned-draft hygiene) and `lockExpiresAt` (set by
+    `prepareCollectionCommit`, auto-releases an abandoned signing lock the same as
+    `cancelPrepare` would). `approval` gains its own `expiresAt`, checked by
+    `prepareCollectionCommit`'s precondition alongside `decidedAtRevision` — an expired
+    approval is treated as no approval, even if the content it covered never changed.
+    Default durations and configurability are open (design/publisher-service.md §11.14).
+
+    v0.6: `approveCollectionDraft`/`rejectCollectionDraft` now explicitly require a human
+    `actor` (design/publisher-service.md §14.3, settled by explicit decision — human-in-
+    the-loop is a requirement for v1, not a policy default). `prepareCollectionCommit`/
+    `commitCollectionDraft` do not carry the same requirement — once a human has approved
+    a specific draft revision, the mechanical signing/publish steps may run under a CI/CD
+    credential. Not yet enforceable at the protocol level (no capability-scoped tokens
+    exist to make it structurally true rather than a deployment convention).
 
     v0.5: real `approve`/`reject` operations for a collection draft
     (design/publisher-service.md §7.9/§13), tracked server-side as `collection-draft`'s
@@ -320,7 +351,12 @@ paths:
       summary: >-
         Upload the artifact's actual file content for one of its formats. Server computes
         checksums from the uploaded bytes (see info.description, deviation 4) — a caller
-        never supplies them directly.
+        never supplies them directly. Subject to a per-upload size limit and a
+        per-principal outstanding-bytes/count quota (design/publisher-service.md §15,
+        §15.1) — neither has a chosen default here. A well-behaved caller (the reference
+        client, §14.1) should check its own file size against a sane limit before
+        attempting this call at all, but that is a courtesy, not a substitute for this
+        operation's own enforcement (§15.1).
       parameters:
         - $ref: '#/components/parameters/ArtifactUuid'
         - $ref: '#/components/parameters/ArtifactVersion'
@@ -337,6 +373,16 @@ paths:
       responses:
         '204': { description: Uploaded. }
         '404': { $ref: '#/components/responses/NotFound' }
+        '413':
+          description: File exceeds the target's per-upload size limit (§15.1).
+        '429':
+          description: >-
+            This principal's *unused*-artifact quota (bytes and/or count, not referenced
+            by any collection) is exhausted (§15.1) — distinct from a used-storage
+            capacity ceiling, which is an operational/provisioning concern, not a
+            per-request rejection at all. One of three plausible status codes for this
+            specific case (429, 507, 403 all have an argument, §15.1's own open
+            question); not settled here.
 
   /artifacts/{artifactUuid}/{version}/evidence/prepare:
     post:
@@ -472,7 +518,8 @@ paths:
 
         Bumps `revision` and resets `approval` to `{status: none}` — editing a draft
         invalidates whatever approval decision (§7.9) was on record for its previous
-        content.
+        content. Also refreshes `expiresAt` (§9.6) — an actively-worked draft doesn't
+        expire out from under whoever's assembling it.
       x-open-question: >-
         Whether draft state lives on the target server (as modeled by this resource) or
         entirely client-side on the publisher server, with only the final commit ever
@@ -529,11 +576,21 @@ paths:
         Record approval of the draft's *current* content (oej workflow phase 6,
         design/publisher-service.md §7.9/§13) — a content-review gate, not a
         cryptographic operation. Sets `approval` to `{status: approved, decidedBy: actor,
-        decidedAtRevision: <current revision>}`. `actor` must differ from the draft's
-        `draftedBy` (maker-checker) — a self-approval is rejected, not merely discouraged.
-        Callable on an unlocked draft only; approving exactly what's about to be signed
-        is what `prepareCollectionCommit`'s own precondition check (below) enforces, not
-        this operation directly.
+        decidedAtRevision: <current revision>, expiresAt: <server-configured default —
+        §9.6>}`. `actor` must differ from the draft's `draftedBy` (maker-checker) — a
+        self-approval is rejected, not merely discouraged. Callable on an unlocked draft
+        only; approving exactly what's about to be signed is what
+        `prepareCollectionCommit`'s own precondition check (below) enforces, not this
+        operation directly.
+
+        **Requirement, not a default: `actor` must be a human** (design/publisher-service.md
+        §14.3) — CI/CD may assemble a draft (`putCollectionDraft`) and may even run the
+        mechanical `prepareCollectionCommit`/`commitCollectionDraft` steps once a human
+        approval is on record, but must never be the one that *approves*. This spec
+        doesn't yet enforce that distinction (no capability-scoped tokens exist to make
+        it structurally true — §10's open question #10, now load-bearing rather than a
+        nice-to-have because of this requirement) — until it does, this is a deployment
+        policy, not something the protocol itself can guarantee.
       parameters:
         - $ref: '#/components/parameters/ProductReleaseUuid'
       requestBody:
@@ -561,7 +618,8 @@ paths:
         Record rejection of the draft's current content (§7.9/§13) — symmetric with
         approve. Sets `approval` to `{status: rejected, ...}`, which also blocks
         `prepareCollectionCommit` until a subsequent `putCollectionDraft` (implicitly
-        resetting `approval` to "none") and a fresh `approve`.
+        resetting `approval` to "none") and a fresh `approve`. Same human-actor
+        requirement as `approveCollectionDraft` above (§14.3).
       parameters:
         - $ref: '#/components/parameters/ProductReleaseUuid'
       requestBody:
@@ -587,12 +645,13 @@ paths:
       tags: [Collections]
       summary: >-
         Collection Signing, part 1 (oej workflow phase 5). Requires `approval.status ==
-        approved` at the draft's *current* `revision` (§7.9) — 409 otherwise, whether
-        because nothing has been approved yet, the last decision was a rejection, or the
-        draft changed since the approval that's on record. This is deliberately the one
-        place approval is actually enforced, not `approve` itself (which only records a
-        decision) and not `commitCollectionDraft` (which only ever sees a draft that
-        already passed this check, once locked).
+        approved` at the draft's *current* `revision`, with `approval.expiresAt` still in
+        the future (§7.9, §9.6) — 409 otherwise, whether because nothing has been
+        approved yet, the last decision was a rejection, the draft changed since the
+        approval that's on record, or the approval itself is too old. This is
+        deliberately the one place approval is actually enforced, not `approve` itself
+        (which only records a decision) and not `commitCollectionDraft` (which only ever
+        sees a draft that already passed this check, once locked).
 
         On success, the server builds the `collection` the draft would become (uuid is
         always productReleaseUuid, next version number, current artifact list — now as
@@ -606,7 +665,11 @@ paths:
         **Locks the draft** against further `putCollectionDraft` calls until either
         `commitCollectionDraft` succeeds or `cancelPrepare` releases it (§9.5) — uniform
         regardless of signing mode; harmless for a same-session software-key signature,
-        and necessary for an air-gapped one that may take days.
+        and necessary for an air-gapped one that may take days. Sets `lockExpiresAt`
+        (§9.6): past that time, the lock releases automatically, same effect as an
+        explicit `cancelPrepare` — an abandoned or forgotten signing ceremony doesn't
+        block the draft forever. The recorded `approval` survives an auto-release exactly
+        as it survives an explicit `cancelPrepare`, unless it has itself since expired.
       parameters:
         - $ref: '#/components/parameters/ProductReleaseUuid'
       responses:
@@ -1417,6 +1480,24 @@ components:
         ownerType: { $ref: '#/components/schemas/collection-belongs-to-type' }
         ownerUuid: { $ref: '#/components/schemas/uuid' }
         createdAt: { type: string, format: date-time }
+        expiresAt:
+          type: string
+          format: date-time
+          description: >-
+            Set on creation, refreshed on every putCollectionDraft (§7.7, §9.6) — an open
+            draft nobody is actively working isn't kept indefinitely. Past this time the
+            draft is treated as abandoned, same effect as deleteCollectionDraft. Distinct
+            from lockExpiresAt below: this is about a draft nobody is touching at all, not
+            a signature that's overdue.
+        lockExpiresAt:
+          type: string
+          format: date-time
+          description: >-
+            Present only while locked (§9.5) — set by prepareCollectionCommit, cleared by
+            cancelPrepare or commitCollectionDraft succeeding. Past this time the lock is
+            treated as released automatically, same effect as an explicit cancelPrepare
+            (§9.6) — an abandoned signing ceremony (nobody ever calls cancelPrepare)
+            doesn't block the draft forever.
         artifacts:
           type: array
           items:
@@ -1452,6 +1533,17 @@ components:
             decidedAtRevision:
               type: integer
               description: The revision that was actually reviewed — compared against the current revision to detect staleness.
+            expiresAt:
+              type: string
+              format: date-time
+              description: >-
+                Set alongside decidedAt on approval (§9.6) — an old approval shouldn't
+                authorize a commit long after the fact even if the revision it covered
+                never changed; circumstances (policy, the artifacts' own evidence, the
+                approver's own authority) can move on. prepareCollectionCommit checks this
+                the same way it checks decidedAtRevision — expired is treated the same as
+                no approval at all (409), requiring a fresh approve. Not meaningful for a
+                rejected decision.
             comment: { type: string }
 
     approval-decision:

@@ -1,6 +1,6 @@
 # TEA Publisher — protocol and service design
 
-**Status:** draft v0.9, for discussion. Nothing here is scheduled or approved; no
+**Status:** draft v0.15, for discussion. Nothing here is scheduled or approved; no
 implementation exists yet. This document is the design opentea's `TODO.md` "Reference
 publisher" entry has been blocked on since 2026-07-04.
 
@@ -104,7 +104,85 @@ than repeated here.
   (only ever reached after prepare already checked). Maker-checker is a real, checked
   rule (403 on `actor == draftedBy`), not a convention. `commit-request` — the schema
   that used to carry `approvedBy` — is gone; with approval moved out, it was identical to
-  `evidence-submission`, which `commitCollectionDraft` now takes directly.
+  `evidence-submission`, which `commitCollectionDraft` now takes directly. (This revision
+  also fixed §10.3 and open question #4, which had drifted out of sync with the
+  `approve`/`reject` design itself — both now correctly say protocol-enforced.)
+- **v0.10 (this revision)** adds §14, consolidating CI/CD as an actor into one section
+  instead of scattered mentions across §4/§5/§7.4/§9.2/§9.5/§10.4. Two real
+  recommendations: a reference CI/CD client (mirroring `pkg/teaclient`'s role on the read
+  side, §14.1) rather than expecting every pipeline to hand-roll HTTP calls, and workload
+  identity federation (§14.2) — extending Layer A's already-necessary OIDC relying-party
+  capability (§10.1) to also accept short-lived tokens a CI/CD platform mints for a
+  running job, rather than provisioning long-lived static secrets as the default. The
+  more consequential finding: full pipeline automation (CI/CD driving collection commit,
+  not just artifact evidence) runs directly into §7.9's maker-checker rule, since the
+  same automated identity can't be both drafter and approver by construction — left as a
+  genuine open question (§11.12) with three named options, not resolved unilaterally.
+  Also named, not designed: idempotency for retried pipeline steps (§14.4, §11.13) and
+  air-gapped build environments as a distinct, larger problem from §9.5's air-gapped
+  signing (§14.5).
+- **v0.11 (this revision)** settles §14.3 by explicit decision: **Option C for v1 —
+  human-in-the-loop is a requirement, not a policy default that can be turned off.**
+  Options A (distinct automated approver) and B (policy-configurable approval) are
+  rejected for v1, not deferred. Refined while settling it: the requirement attaches
+  specifically to `approve`/`reject` (§7.9), not to `prepareCollectionCommit`/
+  `commitCollectionDraft` — once a human has approved a draft at a specific `revision`,
+  the mechanical steps that turn that approval into a signed, published `collection`
+  carry no further judgment a human needs to exercise, and may run under a CI/CD
+  credential. Narrowing it this far isn't a loophole: `prepareCollectionCommit`'s own
+  precondition (§7.9) already guarantees nothing can be signed or published that a human
+  didn't review in exactly the form it exists in at that moment, regardless of who
+  makes the mechanical calls afterward. §10.4's CI/CD credential scope updated to match
+  (may call the mechanical steps; may never call `approve`/`reject`) — and, since no
+  capability-scoped tokens exist yet to make that boundary structurally real rather than
+  conventional, open question #10 is now explicitly load-bearing for this requirement to
+  mean anything at the protocol level, not merely a nice-to-have deferred indefinitely.
+- **v0.12 (this revision)** adds §14.6: every CI/CD-triggered write fires the same event
+  (§13.3) a human-triggered one would, carrying the same asserted identity (§10.1, §14.2)
+  as the event's `actor` — `{"type": "system", "id": "..."}`, per the source proposal's
+  own convention, distinguishable from a human actor at a glance. This is what makes
+  autonomous pipeline activity visible to a human or dashboard watching the event stream,
+  rather than something discovered later by reading logs — and specifically, why
+  §14.3/§7.9's `approve`/`reject` restriction shows up as something observable
+  (`approval.required` fired, no matching `granted`/`rejected` yet) rather than silent.
+  Also fixed a stale table row in §13.3, which still described `approve`/`reject` as
+  undesigned after v0.9 had already designed them.
+- **v0.13 (this revision)** adds §9.6: per explicit direction, every open/pending piece
+  of state needs an expiry, not just an implicit assumption someone eventually acts on
+  it. Three distinct expirations, not one: the draft itself (`expiresAt`, refreshed on
+  every edit — abandoned-draft hygiene), the prepare lock (`lockExpiresAt` — an abandoned
+  air-gapped signing ceremony releases automatically rather than blocking the draft
+  forever), and the approval decision (`approval.expiresAt` — a different concern from
+  the other two: not cleanup, but not letting a review from months ago authorize a
+  commit today even if the content it covered never changed). Reflected in
+  `design/publisher-openapi.yaml`'s `collection-draft`/`approval` schemas and
+  `prepareCollectionCommit`'s precondition check. Default durations and whether they're
+  deployment-fixed or configurable per release class are both left open (§11.14).
+- **v0.14 (this revision)** adds §15: expiry (§9.6) doesn't bound resource consumption —
+  a credential scoped to only artifact-evidence operations (§10.4) could still upload
+  unbounded data that's never referenced by anything, forever. Directly analogous to an
+  unfixed gap opentea's own `/admin/v1` already has (`TODO.md`: capped single uploads,
+  but no concurrency limit and no orphaned-blob GC) — named explicitly so this design
+  doesn't quietly repeat it. Three dimensions on the target server (§15.1): per-upload
+  size limit, a per-principal quota on outstanding (uncommitted) bytes and artifact
+  count — the piece that actually distinguishes *capability* scope from *volume* bound —
+  and orphaned-artifact expiry, the artifact-side counterpart to §9.6's draft expiry.
+  Per explicit clarification, also applies to the publisher software and reference CI/CD
+  client side (§15.2): client-side size checks as defense against misconfiguration (not
+  a substitute for §15.1's enforcement), and a note that any local artifact staging the
+  publisher software does for its own reasons (multi-target publishing, §11.7; air-gapped
+  TBS exports, §9.5) inherits the identical orphaned-data problem, just on different
+  infrastructure. Rate limiting named as a related, distinct, undesigned concern.
+- **v0.15 (this revision)** splits §15.1's storage dimension in two, per explicit
+  clarification: **used** artifact storage (referenced by a collection — real, expected
+  data, deserving its own visible summary and a *capacity* ceiling, not a per-request
+  rejection) is a different problem from **unused** artifact storage (never referenced by
+  anything — no legitimate reason to be large, the actual abuse control, materially
+  tighter than any used-storage ceiling). Checked `internal/model.Stats` directly: today
+  it's counts only (`Products`/`Artifacts`/etc.), no byte totals at all — "a summary of
+  used artifact sizes" doesn't yet exist in opentea, worth building rather than assumed
+  present. `uploadArtifactFile`'s `429` response (`design/publisher-openapi.yaml`)
+  narrowed to specifically mean the unused-artifact quota, not a generic one.
 
 ## 1. Problem statement
 
@@ -639,11 +717,51 @@ tooling, and most regulated/enterprise signing ceremonies, already produce nativ
 - Should the TBS export have a standardized file format/extension (for interop across
   different publisher-software implementations and different HSM-side tooling), or is an
   ad hoc JSON file (the `prepare` response, saved as-is) sufficient for a first version?
-- Should `cancelPrepare`'s lock auto-expire after some timeout, so an abandoned air-gapped
-  ceremony (nobody ever explicitly cancels) doesn't leave a draft stuck indefinitely?
 - Is Mode 2 support mandatory for every protocol implementer, or an optional capability a
   target server may or may not offer — and if optional, how does a publisher discover
   whether a given target supports it before attempting it?
+
+### 9.6 Expiry: nothing pending stays pending forever
+
+Per explicit direction: every piece of open, not-yet-approved-or-committed state needs a
+time bound — an abandoned draft, an unclaimed signing lock, or a stale approval shouldn't
+be able to sit indefinitely and still mean something later. Three distinct things, each
+with a different reason to expire and a different natural timescale:
+
+- **The draft itself** (`collection-draft.expiresAt`, §7.7) — refreshed on every
+  `putCollectionDraft`. An actively-assembled draft never expires out from under whoever's
+  working on it; one nobody has touched in a long time eventually auto-abandons (same
+  effect as `deleteCollectionDraft`). Reason: hygiene — an orphaned draft nobody remembers
+  starting shouldn't sit in a "ready to be approved" state forever.
+- **The prepare lock** (`collection-draft.lockExpiresAt`, §9.5) — set by
+  `prepareCollectionCommit`, cleared by `cancelPrepare` or a successful
+  `commitCollectionDraft`. Past its expiry the lock auto-releases (same effect as
+  `cancelPrepare`), leaving the draft and its recorded approval intact. Reason: an
+  air-gapped signing ceremony that was quietly abandoned (nobody remembered to call
+  `cancelPrepare`) shouldn't permanently block further edits to the draft.
+- **The approval decision itself** (`collection-draft.approval.expiresAt`, §7.9) — set
+  when `approve` records a decision. `prepareCollectionCommit`'s precondition checks this
+  alongside `decidedAtRevision` — an expired approval is treated exactly like no approval
+  at all, requiring a fresh `approve` even though the content (`revision`) never changed.
+  Reason: distinct from the other two — this isn't about cleaning up abandoned state, it's
+  about not letting a review from months ago authorize a commit today. Circumstances a
+  human's approval implicitly depended on (policy, the state of the artifacts' own
+  evidence, the approver's own continued authority to approve) can change even when the
+  draft's content doesn't.
+
+**Not designed further here:** the actual default durations for any of the three (this
+document doesn't propose numbers), whether they're fixed per deployment or configurable
+per release class (mirrors §14.3's Option B question for approval enforcement generally —
+a similar shape of question, not resolved the same way by default), and the mechanism by
+which expiry actually takes effect (a background sweep vs. checked lazily whenever the
+draft is next touched — an implementation detail, not a protocol question, but one every
+implementer needs *an* answer to).
+
+**Expiry alone doesn't bound resource consumption — that's a separate concern, §15.**
+This section cleans up abandoned *draft* state, which is cheap (uuid+version
+references). It says nothing about the *artifacts* those references point at, which are
+where the actual storage cost is, and which have no expiry, size limit, or count limit
+of their own anywhere in this design.
 
 ## 10. Authorization
 
@@ -728,12 +846,20 @@ narrower, cheaper check is what made protocol enforcement the right call after a
 ### 10.4 Layer D: CI/CD credentials
 
 A CI/CD pipeline calling `submitArtifactEvidence`/`prepareArtifactEvidence` (§7.4)
-headlessly needs its **own, narrowly-scoped credential** — one that can do only artifact
-evidence submission, not create products or commit collections — so a credential leaked
-from a build log or CI environment can't be used for anything beyond its actual job. This
-is the concrete case that makes Layer B's capability-scoping question not just
-theoretical: without some scoping mechanism, there is no way to issue a CI/CD credential
-that's actually least-privilege.
+headlessly needs its **own, narrowly-scoped credential** — one that can do artifact
+evidence submission, collection-draft assembly, and (per §14.3) the mechanical
+`prepareCollectionCommit`/`commitCollectionDraft` steps, but categorically not
+`approve`/`reject` (§14.3's actual human-in-the-loop gate) or product/component
+creation — so a credential leaked from a build log or CI environment can't be used for
+anything beyond its actual job, and specifically can't be the thing that quietly removes
+the human from the loop. This is the concrete case that makes Layer B's capability-scoping
+question not just theoretical: without some scoping mechanism, there is no way to issue a
+CI/CD credential that's actually least-privilege, and no way to make §14.3's requirement
+structurally true rather than merely conventional. §14 works
+out how that credential is actually provisioned, and how far CI/CD can drive the rest of
+the process beyond just this. Capability scope (what a credential may do) and quota
+(§15, how much it may consume) are separate, both necessary — narrowly-scoped is not the
+same as bounded-volume.
 
 ### 10.5 Layer E: multi-target credential management
 
@@ -773,14 +899,31 @@ assuming away.
    defines a publisher API, does §8 become a candidate proposal for it, an opentea-flavored
    extension of it, or something else — worth being explicit about given who's writing
    this and the stated purpose of `spec/openapi.yaml`-style precedent already followed here.
-10. **Capability-scoped protocol tokens** (§10.2, §10.4) — does `/publisher/v1` define a
-    capability vocabulary for bearer tokens (so a CI/CD credential can be issued
-    least-privilege, artifact-evidence-submission-only), or does v1 stay all-or-nothing
-    per token, matching `/admin/v1`'s current flat model, with scoping deferred to a later
-    protocol version?
+10. **Capability-scoped protocol tokens** (§10.2, §10.4, §14.3) — does `/publisher/v1`
+    define a capability vocabulary for bearer tokens (so a CI/CD credential can be issued
+    least-privilege, and specifically cannot call `approve`/`reject`/`commitCollectionDraft`),
+    or does v1 stay all-or-nothing per token, matching `/admin/v1`'s current flat model?
+    **No longer a nice-to-have** — §14.3's human-in-the-loop requirement is only actually
+    enforced, not just conventional, once this exists.
 11. **Layer A's auth mechanism specifics** — bare OAuth2 alongside OIDC, LDAP/AD-bind scope,
     multi-IdP-per-deployment, and SAML — all still open; see §10.1's own list rather than
     duplicated here.
+12. ~~How far CI/CD can drive the process alone~~ — resolved (§14.3): Option C for v1.
+    CI/CD may create artifacts/evidence/drafts and even run the mechanical
+    `prepareCollectionCommit`/`commitCollectionDraft` steps; only `approve`/`reject`
+    require a human actor, by requirement, not by default-that-policy-can-relax — that's
+    the actual gate, not the publish mechanics that follow it.
+13. **Idempotency for the core protocol's write operations** (§14.4), not just event
+    delivery (§13's own conformance tiers already flag it there).
+14. **Expiry durations and configurability** (§9.6) — draft, lock, and approval expiry
+    are all now designed as concepts; none has a proposed default duration, and whether
+    those durations are fixed per deployment or configurable per release class is open.
+15. **Resource limits** (§15) — per-upload size, used-storage capacity accounting,
+    unused-storage abuse quota, and orphaned-artifact expiry are all named as necessary
+    but none is designed in detail: no default numbers for any of the four, no decision
+    on proactive quota-status exposure vs. purely reactive rejection, no chosen error
+    status for a used-capacity vs. unused-quota breach (plausibly different codes,
+    §15.1's own open question — one's operational, the other's adversarial).
 
 ## 12. Phased plan (draft)
 
@@ -796,7 +939,9 @@ assuming away.
   §9) goes live.
 - **Phase 3 — artifact validation, properly.** CI/CD-facing `POST .../evidence` (§7.4) as a
   first-class, documented, headless-client-usable operation (may well land before Phase 2
-  in practice, since it has no GUI dependency at all).
+  in practice, since it has no GUI dependency at all). Natural point to start the
+  reference CI/CD client (§14.1) too — the one piece of tooling that makes this phase
+  actually usable by a real pipeline instead of only curl-able.
 - **Phase 4 — CLE and compliance streams** (§7.5–7.6).
 - **Phase 5 — timestamps and transparency log**, once Trust Architecture Phases 2–3 exist
   on at least one real target implementation to integrate against.
@@ -872,7 +1017,8 @@ concrete places this design already needed exactly this and didn't have it:
 | `collection.signed` | `commitCollectionDraft`'s signature verification step succeeding, before the transaction completes (§9.1 step 3) |
 | `collection.validationFailed` | `commitCollectionDraft`/`submitArtifactEvidence` rejecting a bad signature or stale digest (§9.1 step 3) |
 | `collection.published` | `commitCollectionDraft` completing (§7.10) |
-| `approval.required` / `.granted` / `.rejected` | the new `approve`/`reject` operations §7.9 now implies — not yet designed in detail |
+| `approval.required` | `prepareCollectionCommit` finding no current approval on record (§7.9, now designed — see `approveCollectionDraft`/`rejectCollectionDraft`) |
+| `approval.granted` / `.rejected` | `approveCollectionDraft` / `rejectCollectionDraft` (§7.9) |
 | `publication.commitStarted` / `.committed` / `.failed` | `commitCollectionDraft`'s own lifecycle (§7.10) — overlaps `collection.published`/`validationFailed` somewhat; whether both category sets are needed or one subsumes the other for this design's purposes is unresolved |
 | `authorization.error` / `authentication.error` | any §10 layer rejecting a caller |
 | `cle.updated` / `cle.versionCreated` / `cle.superseded` | `createProductCLEEvent` and equivalents (§7.5) |
@@ -881,6 +1027,15 @@ concrete places this design already needed exactly this and didn't have it:
 The close fit across most rows is a reasonable sanity check that §7/§8's operation shape
 isn't obviously wrong — a genuinely different workflow model would have produced events
 with nothing sensible to map to.
+
+Every row fires identically regardless of *who* triggered the underlying operation — a
+human through the GUI or CI/CD calling `/publisher/v1` headlessly (§14) produce the same
+event for the same operation. What distinguishes them is the envelope's own `actor` field
+(§4 of the source proposal: `"actor": {"type": "system", "id": "ci-system"}` in two of its
+own worked examples) — the identical asserted identity (§10.1, §14.2) already threaded
+through `putCollectionDraft`/`approve`/`reject`'s own `actor` field becomes the event's
+`actor.id`, with `actor.type` distinguishing an automated caller from a human one. See
+§14.6 for why this specifically matters for CI/CD.
 
 ### 13.4 Signing, key distribution, delivery, and conformance — adopted as proposed
 
@@ -918,7 +1073,247 @@ itself (envelope, signing, `/event-keys`, `/event-subscriptions`) — only the
 `approve`/`reject` operations §13 motivated were added. This section otherwise remains
 design-only.
 
-## 14. Cross-references
+## 14. CI/CD integration
+
+CI/CD has been a recurring actor since §4 ("first-class, not an afterthought") without
+ever getting a section of its own — mentioned in passing at §4, §5, §7.4, §9.2, §9.5, and
+§10.4, but never consolidated into a coherent answer for "what does a real pipeline
+integration actually look like." This section is that answer.
+
+### 14.1 Integration surface: a reference client, not raw HTTP by default
+
+`/publisher/v1` is a plain HTTP API (§8) — nothing stops a pipeline from calling it
+directly — but every pipeline reimplementing digest handling, retries, and canonical-form
+bookkeeping independently is exactly the kind of duplication this project already avoids
+on the read side: `pkg/teaclient` + `cmd/teaclient` exist precisely so a TEA consumer
+doesn't hand-roll HTTP calls against `/tea/v1`. The same shape belongs here — a reference
+CI/CD client (library + CLI, e.g. `publish-artifact --type=BOM --file=sbom.json
+--sign-with=...`) wrapping §7.4's create/upload/prepare/submit sequence into one command a
+build step actually calls. `pkg/tea` (this project's shared wire types) is already built
+to be reused this way ("importable from outside this module... so it can be shared by the
+server, this client, and any future publisher without duplicating the wire format" —
+`README-client.md`) — a CI/CD client can import it for the wire shapes without needing
+opentea's own internal packages at all. Where this client's code actually lives (inside
+the publisher software's own project, or a separate one) is undetermined — it depends on
+decisions about the publisher project's own repo structure that this design doesn't reach.
+
+### 14.2 Credential provisioning: reuse Layer A's OIDC machinery, don't invent a second one
+
+§10.4 already established that CI/CD needs its own narrowly-scoped credential, distinct
+from any human's session. How that credential actually gets into the pipeline's hands is
+the part that wasn't designed. Two shapes:
+
+- **Workload identity federation (recommended default).** Most major CI/CD platforms
+  (GitHub Actions, GitLab CI, others) can mint a short-lived, platform-signed OIDC token
+  for a running job, asserting claims like "this is workflow run W, from repo R, on ref
+  B" — without any long-lived secret ever stored in the CI system at all. The publisher
+  software already needs to be an OIDC relying party for Layer A (§10.1, human staff
+  login); extending that same capability to also validate tokens from a CI/CD platform's
+  own OIDC issuer (configured trust: issuer URL, expected audience, subject-claim matching
+  rules) and exchange them for a short-lived, capability-scoped `/publisher/v1` credential
+  is the same mechanism applied to a different class of principal — workload identity
+  instead of human identity — not a second auth system to build and maintain.
+- **Static scoped token (v1-minimum fallback).** For a CI/CD platform with no OIDC issuer
+  of its own, or as a simpler starting point before workload federation is built: a
+  manually-provisioned, long-lived bearer token, scoped to artifact-evidence operations
+  only (depends on §11's open capability-scoping question, #10, actually landing). Weaker
+  — a leaked token is a leaked token until manually rotated — but a reasonable starting
+  point, and still strictly better than an unscoped, all-purpose credential.
+
+### 14.3 How far can CI/CD drive the process alone?
+
+**Settled: Option C, for v1 — human-in-the-loop is a requirement, not a default that
+policy can turn off.** §7.4 (artifact creation + evidence) is unambiguously CI/CD's job.
+Collection assembly (§7.7) may also be CI/CD-driven — a pipeline can call
+`putCollectionDraft` freely. `approve`/`reject` (§7.9) always need a human actor — that's
+where the requirement actually bites. Options A (a distinct automated approving identity)
+and B (policy-configurable approval) were both considered and explicitly rejected for
+v1, not merely deferred — a policy gate that can approve is still not a *human* in the
+loop, which is the actual requirement, not a stand-in for "some check happened."
+
+**Precisely scoped: only `approve`/`reject` need a human — `prepareCollectionCommit`/
+`commitCollectionDraft` don't, and that's not a loophole.** Once a human has approved a
+draft at a specific `revision` (§7.9), the mechanical steps that turn that approval into
+a published, signed `collection` — building the digest, signing, submitting — carry no
+further judgment a human needs to exercise; a CI/CD system (or the same pipeline that
+called `putCollectionDraft`) finishing the job it already assembled, against content a
+human already reviewed, doesn't reintroduce the thing the requirement exists to prevent.
+`prepareCollectionCommit`'s own precondition (a current, matching approval, §7.9) is what
+makes this safe: nothing can be signed or published that a human didn't review in
+exactly the form it exists in at that moment, regardless of who makes the final calls.
+
+Real manufacturers running fully continuous release trains will still want the
+`approve`/`reject` gate itself relaxed eventually (Options A/B); that's a deliberate,
+known limitation of v1, revisit only with an explicit decision to do so later, not by
+default.
+
+**This makes credential scoping (§11's open question #10) load-bearing, not optional.**
+"Human-in-the-loop is a requirement" is only actually true if a CI/CD-issued credential
+is *incapable* of calling `approve`/`reject`/`commitCollectionDraft` — not merely
+expected, by convention, not to. Today's protocol has no capability-scoped tokens at all
+(§10.2/§10.4); until that exists, a CI/CD credential is technically indistinguishable
+from any other bearer token and *could* call every operation this section says it
+shouldn't. §11's question #10 was previously "nice to have, deferred maybe"; it is now a
+correctness dependency of this section's own requirement, not an independent nice-to-have
+— still not designed here, but its priority just changed.
+
+### 14.4 Idempotency
+
+CI/CD pipelines retry failed steps routinely — a transient network error re-running
+`createArtifact` or `uploadArtifactFile` shouldn't silently produce a duplicate artifact.
+None of §7.4/§8's operations have idempotency semantics defined today. §13's own
+conformance tiers already name retry/idempotency as "Recommended" for *event delivery*;
+the same concern applies to the core protocol's write operations, arguably more urgently,
+since those are the ones an automated pipeline actually calls unattended. Not designed
+here beyond naming it — likely an idempotency-key request header/field, but the exact
+mechanism is open.
+
+### 14.5 Air-gapped build environments — distinct from §9.5, mostly out of scope
+
+§9.5 designed for an air-gapped *signing* environment reachable only via a physically
+carried to-be-signed package. An air-gapped *build* environment is a related but larger
+problem — getting the artifact's actual bytes out, not just a digest to sign — and isn't
+addressed by anything in this design. Worth naming so it isn't mistaken for something
+§9.5 already covers, not designed further here.
+
+### 14.6 Visibility: the event system is how autonomous CI/CD activity gets seen
+
+CI/CD operates headlessly (§4, §14.1) — nobody is watching a GUI while a pipeline calls
+`createArtifact`, `putCollectionDraft`, or (per §14.3) the mechanical
+`prepareCollectionCommit`/`commitCollectionDraft` steps. §13's eventing model is what
+makes that activity visible rather than something a human only discovers later by reading
+logs: every one of those calls fires the same event (§13.3's mapping) it would if a human
+had triggered it, carrying the CI/CD system's own asserted identity (§14.2) as the event's
+`actor` — `{"type": "system", "id": "..."}`, distinguishable at a glance from a human
+actor. A subscriber (a release-management dashboard, a notification bot, an audit system)
+watching for `artifact.published`, `collection.created`, `collection.readyForSigning`,
+etc. sees exactly what an automated pipeline has been doing, in near-real-time, without
+needing any CI/CD-specific integration of its own — it's the same event stream either way.
+
+This is also why §14.3's `approve`/`reject` restriction matters concretely, not just as a
+rule: `approval.required` (fired the moment `prepareCollectionCommit` finds no current
+approval — §13.3) is the signal that tells a human reviewer there's something to look at,
+precisely because CI/CD cannot generate `approval.granted` itself. The event system
+doesn't enforce that boundary (§14.3 already notes only capability-scoped tokens could do
+that structurally), but it's what makes a human's absence from that step *visible* rather
+than silent — a pipeline stalled waiting for approval shows up as an `approval.required`
+event with no matching `approval.granted`/`rejected` yet, not as nothing happening.
+
+## 15. Resource limits and abuse resistance
+
+Raised directly: is §9.6's expiry enough to stop a rogue client uploading massive
+artifacts and never committing anything? **No — expiry and quotas solve different
+problems, and this design only has the first one.** §9.6 bounds *collection-draft*
+state (lightweight uuid+version references, cheap to let sit around and expire later).
+The actual storage cost is in **artifacts** (§7.4) — `createArtifact` +
+`uploadArtifactFile` — which exist independently of any draft the moment they're
+created, have no expiry, no size limit, and no count limit anywhere in this design. A
+credential that can only do artifact evidence submission (§10.4's own scoped CI/CD
+credential, deliberately unable to approve or commit anything) can *still* upload an
+unbounded number of arbitrarily large files that are never referenced by anything,
+forever. Narrow-scoping a credential's *capabilities* (§10.2) doesn't bound its
+*volume* — those are orthogonal, and this design only designed the first one.
+
+**This isn't a hypothetical — it's an unfixed gap opentea's own `/admin/v1` already has,
+named in `TODO.md`**: `importProduct`/`receiveFile` cap a single upload at 1 GiB, but
+"nothing caps how many of those can run at once," and there's "no cleanup/garbage-
+collection for blobs that end up orphaned." A fresh design shouldn't quietly inherit the
+same gap — it's cheaper to design the limit in now than to retrofit it later, which is
+exactly the position that existing TODO entry is in.
+
+Per explicit clarification, this applies on **both** ends of §4's client/protocol split —
+the target server implementation *and* the publisher software (including the reference
+CI/CD client, §14.1) that calls it — not only the side that ends up holding the bytes.
+
+### 15.1 Target server enforcement
+
+The side that actually bears the storage cost, and so the side that must enforce limits
+regardless of what any client does or doesn't do — a well-behaved client is a courtesy,
+never the actual control. Four distinct dimensions — **used and unused storage are
+different problems with different limits, not one number**, per explicit clarification:
+
+- **Per-upload size limit.** A cap on one `uploadArtifactFile` call's file size — mirrors
+  opentea's own existing 1 GiB precedent, though the actual number is a deployment
+  policy choice, not something this design should hardcode. Cheapest to implement,
+  bounds the worst single request, does nothing about volume over many requests.
+- **Used-artifact storage: accounting, not (necessarily) abuse prevention.** Total bytes
+  of artifacts actually referenced by a collection — real, legitimate, expected data.
+  This deserves its own visible summary (a natural extension of `GET /admin/v1/stats`'s
+  `Products`/`Artifacts`-style counts — confirmed by reading `internal/model.Stats`:
+  today it's counts only, no byte totals at all, so "there's a summary of used artifact
+  sizes" isn't yet true of opentea, worth building rather than assuming already exists)
+  and, separately, its own limit if one is wanted — but that limit is a **capacity**
+  ceiling ("this deployment is provisioned for N TB"), not an abuse control. Exceeding it
+  means legitimately needing more storage, not an attack; the right response is
+  operational (alert, provision more), not rejecting the request outright the way the
+  next bullet's limit should.
+- **Unused-artifact storage: a separate, tighter quota — this is the actual abuse
+  control.** Total bytes *and* count of artifacts not referenced by any collection at
+  all (never drafted, or drafted then dropped). There is no legitimate reason for this
+  number to be large — unlike used storage, which is expected to grow with real
+  activity — so its limit should be materially tighter than any used-storage capacity
+  ceiling, and a breach here is a signal worth treating as abuse (or at least a runaway
+  pipeline), not a capacity conversation. Naturally attributed per credential/actor
+  (§10's asserted identity) for the same reason §10.4 already singles out CI/CD: a
+  script can accumulate unused uploads far faster than a human clicking through a GUI
+  ever would, so it's the principal most likely to hit this limit — by mistake or by
+  design.
+- **Orphaned-artifact expiry**, alongside the quota above, not instead of it — the
+  time-bound and volume-bound controls are complementary. An artifact never referenced by
+  any collection within some generous window becomes eligible for cleanup, same shape as
+  §9.6's draft `expiresAt`. Needs a longer window than a draft's own — §7.4's whole point
+  is that an artifact may legitimately sit unreferenced for weeks before a collection
+  picks it up ("the SBOM today, the VEX next week") — but "generous" is not "unbounded,"
+  and the quota above is what catches a burst *before* that window even elapses.
+
+**Also worth naming, not the same thing:** the number of simultaneously *open drafts*
+doesn't actually need its own quota dimension — §7.7 already makes a draft a singleton
+per owning release, so the only way to multiply drafts is to create more releases in the
+first place, which product/release creation's own (undesigned) limits would need to
+bound instead. And **rate limiting** (request frequency) is a related but distinct
+concern from quota (cumulative resource consumption) — a client could stay within every
+quota above while still hammering the target with requests; not designed here.
+
+**Not designed further here:** actual default numbers for any of the above (deployment
+policy, same stance as §9.6's expiry durations); whether quota status is something the
+protocol should expose proactively (a `GET` a publisher-software client could check
+before attempting a large upload, rather than only discovering the limit via a rejected
+request) or purely reactive (a 4xx/5xx on the request that exceeds it); and the specific
+status code quota-exceeded should return (413 for a single oversized upload is
+unambiguous; a cumulative quota breach is less obviously one code over another — 429,
+507, and a plain 403 all have a reasonable argument).
+
+### 15.2 The publisher software and reference client
+
+§15.1's enforcement is what actually matters — the target never has to trust a client's
+own good behavior. But the publisher software (§4) and the reference CI/CD client
+(§14.1) are not exempt from this concern just because they don't hold the data
+long-term; they have their own version of it, for two separate reasons:
+
+- **Defense in depth against a misconfigured, not just malicious, caller.** A CI/CD
+  pipeline pointed at the wrong file, or a GUI form accepting a paste of the wrong thing,
+  is a far more likely source of an absurd upload than deliberate abuse. The reference
+  client (§14.1) should refuse (or at least loudly confirm) an obviously-oversized upload
+  *before* spending the time and bandwidth sending it, rather than relying entirely on
+  the target's own §15.1 rejection to catch it after the fact — the same relationship a
+  client-side form validator has to the server-side check that's still the actual
+  authority.
+- **The publisher software's own storage isn't automatically exempt.** §11.7 (multi-target
+  publishing, still open) would need the publisher software to hold artifact bytes itself
+  — at least transiently, possibly longer if the same content is meant to reach more than
+  one target — rather than only ever streaming through to a single target in one pass.
+  §9.5's air-gapped TBS export (a saved file, physically carried) is a smaller, similar
+  case: exported packages sitting in the publisher software's own storage indefinitely,
+  never re-imported because a ceremony was abandoned, is the exact same "orphaned data,
+  no cleanup" shape §15.1 names for the target — just relocated to different
+  infrastructure. Neither of these is designed here; both inherit §15.1's reasoning
+  directly whenever they are.
+
+Not a reason to relax §15.1 — the target still enforces its own limits regardless of
+what the publisher software does on its own side. It's an additive, not alternative,
+responsibility.
+
+## 16. Cross-references
 
 - `design/publisher-openapi.yaml` — the OpenAPI 3.1 draft §8 sketches; v0.4's actual
   deliverable (does not yet cover §13's eventing).

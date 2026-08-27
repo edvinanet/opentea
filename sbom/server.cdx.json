@@ -2,35 +2,35 @@
   "$schema": "http://cyclonedx.org/schema/bom-1.6.schema.json",
   "bomFormat": "CycloneDX",
   "specVersion": "1.6",
-  "serialNumber": "urn:uuid:059de7cb-1c18-4e9e-ace3-89682a43f4a6",
+  "serialNumber": "urn:uuid:ff82bb35-3d09-44c4-bd20-d402feded596",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-08-06T10:21:55+02:00",
+    "timestamp": "2026-08-26T19:11:53+02:00",
     "tools": [
       {
         "vendor": "CycloneDX",
         "name": "cyclonedx-gomod",
-        "version": "v1.10.0",
+        "version": "v1.12.0",
         "hashes": [
           {
             "alg": "MD5",
-            "content": "bd6eabb099c06bd174ad32f0ce4168a6"
+            "content": "7aedb636fd68e8c27f7ad3163e6971a8"
           },
           {
             "alg": "SHA-1",
-            "content": "3b344b6601f8585c2130b5708311654450c7671d"
+            "content": "58da9a9508109087595bcc19541a06a89d201c8a"
           },
           {
             "alg": "SHA-256",
-            "content": "20a32fdf688771269bd15f95065df1478734e201e254bcccee5ea4964161d671"
+            "content": "16f822d0c5984f6160ec6444cf95a6ca570b11a317d6798dac9dd3e28e0f7173"
           },
           {
             "alg": "SHA-384",
-            "content": "984a24f22107538f64b58c6eba1b91bf2c2255a8e63514b948196baf37145688dc4d5f17cfc5ce614f3b521dea909a2e"
+            "content": "23660b5f21f529338fe855877278a4b223bad53032aa50f4693cf4f3ccace0a7507682247ef87c7c421e5c200dc7c0a4"
           },
           {
             "alg": "SHA-512",
-            "content": "e97e542970dbe91d65693eb4dc40bba9cb8a4ed0bf4e66ed076568a3dd2dbf2dd74859a028dc7d849624ec6308d7970c4a09c0a9c6b3f20529975938c2610d94"
+            "content": "c0de3c3de0c687699d4bcb6fbaeeab9133de0148f1af5e158fdcc7f8d37cfbdb5bc8d5c1fff1d904e8ff0fff66264d36c0fd8be2feab2c95e1ac33d4fe6c0abf"
           }
         ],
         "externalReferences": [
@@ -46,11 +46,11 @@
       }
     ],
     "component": {
-      "bom-ref": "pkg:golang/github.com/oej/opentea@v0.0.0-20260806070306-ea3ff54e1d08?type=module#cmd/opentea",
+      "bom-ref": "pkg:golang/github.com/oej/opentea@v0.0.0-20260826113253-407631478bf9?type=module#cmd/opentea",
       "type": "application",
       "name": "github.com/oej/opentea",
-      "version": "v0.0.0-20260806070306-ea3ff54e1d08",
-      "purl": "pkg:golang/github.com/oej/opentea@v0.0.0-20260806070306-ea3ff54e1d08?goarch=arm64&goos=linux&type=module#cmd/opentea",
+      "version": "v0.0.0-20260826113253-407631478bf9",
+      "purl": "pkg:golang/github.com/oej/opentea@v0.0.0-20260826113253-407631478bf9?goarch=arm64&goos=linux&type=module#cmd/opentea",
       "externalReferences": [
         {
           "url": "https://github.com/oej/opentea",
@@ -100,7 +100,7 @@
       "properties": [
         {
           "name": "opentea:cpeChecked",
-          "value": "2026-08-06, https://cpe.gcve.eu, no match"
+          "value": "2026-08-26, https://cpe.gcve.eu, no match"
         }
       ]
     },
@@ -126,7 +126,7 @@
       "properties": [
         {
           "name": "opentea:cpeChecked",
-          "value": "2026-08-06, https://cpe.gcve.eu, no match"
+          "value": "2026-08-26, https://cpe.gcve.eu, no match"
         }
       ]
     },
@@ -152,7 +152,7 @@
       "properties": [
         {
           "name": "opentea:cpeChecked",
-          "value": "2026-08-06, https://cpe.gcve.eu, no match"
+          "value": "2026-08-26, https://cpe.gcve.eu, no match"
         }
       ]
     },
@@ -178,47 +178,47 @@
       "properties": [
         {
           "name": "opentea:cpeChecked",
-          "value": "2026-08-06, https://cpe.gcve.eu, no match"
+          "value": "2026-08-26, https://cpe.gcve.eu, no match"
         }
       ]
     },
     {
-      "bom-ref": "pkg:golang/golang.org/x/crypto@v0.53.0?type=module",
+      "bom-ref": "pkg:golang/golang.org/x/crypto@v0.54.0?type=module",
       "type": "library",
       "name": "golang.org/x/crypto",
-      "version": "v0.53.0",
+      "version": "v0.54.0",
       "scope": "required",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "419e0cba8f131d7e828b3376bcf3dde5f0461f2a20add2bd7c6e302cf154b2da"
+          "content": "60b200e7d2b87e23731f38e766ddad50942342d5167d66de1c1a8ab64dde49cc"
         }
       ],
-      "purl": "pkg:golang/golang.org/x/crypto@v0.53.0?goarch=arm64&goos=linux&type=module",
+      "purl": "pkg:golang/golang.org/x/crypto@v0.54.0?goarch=arm64&goos=linux&type=module",
       "properties": [
         {
           "name": "opentea:cpeChecked",
-          "value": "2026-08-06, https://cpe.gcve.eu, no match"
+          "value": "2026-08-26, https://cpe.gcve.eu, no match"
         }
       ]
     },
     {
-      "bom-ref": "pkg:golang/golang.org/x/sys@v0.46.0?type=module",
+      "bom-ref": "pkg:golang/golang.org/x/sys@v0.47.0?type=module",
       "type": "library",
       "name": "golang.org/x/sys",
-      "version": "v0.46.0",
+      "version": "v0.47.0",
       "scope": "required",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "9e849fd85aba17c0c1812f8bcac224c7bac8131a0d1c9b31380b4fa78aed857c"
+          "content": "a3b5c63af6500800c1410e18ed536ad9d456411ec998e516f0ac71e19b0d816b"
         }
       ],
-      "purl": "pkg:golang/golang.org/x/sys@v0.46.0?goarch=arm64&goos=linux&type=module",
+      "purl": "pkg:golang/golang.org/x/sys@v0.47.0?goarch=arm64&goos=linux&type=module",
       "properties": [
         {
           "name": "opentea:cpeChecked",
-          "value": "2026-08-06, https://cpe.gcve.eu, no match"
+          "value": "2026-08-26, https://cpe.gcve.eu, no match"
         }
       ]
     },
@@ -238,7 +238,7 @@
       "properties": [
         {
           "name": "opentea:cpeChecked",
-          "value": "2026-08-06, https://cpe.gcve.eu, no match"
+          "value": "2026-08-26, https://cpe.gcve.eu, no match"
         }
       ]
     },
@@ -258,7 +258,7 @@
       "properties": [
         {
           "name": "opentea:cpeChecked",
-          "value": "2026-08-06, https://cpe.gcve.eu, no match"
+          "value": "2026-08-26, https://cpe.gcve.eu, no match"
         }
       ]
     },
@@ -278,7 +278,7 @@
       "properties": [
         {
           "name": "opentea:cpeChecked",
-          "value": "2026-08-06, https://cpe.gcve.eu, no match"
+          "value": "2026-08-26, https://cpe.gcve.eu, no match"
         }
       ]
     },
@@ -298,17 +298,17 @@
       "properties": [
         {
           "name": "opentea:cpeChecked",
-          "value": "2026-08-06, https://cpe.gcve.eu, no match"
+          "value": "2026-08-26, https://cpe.gcve.eu, no match"
         }
       ]
     }
   ],
   "dependencies": [
     {
-      "ref": "pkg:golang/github.com/oej/opentea@v0.0.0-20260806070306-ea3ff54e1d08?type=module#cmd/opentea",
+      "ref": "pkg:golang/github.com/oej/opentea@v0.0.0-20260826113253-407631478bf9?type=module#cmd/opentea",
       "dependsOn": [
         "pkg:golang/github.com/santhosh-tekuri/jsonschema/v5@v5.3.1?type=module",
-        "pkg:golang/golang.org/x/crypto@v0.53.0?type=module",
+        "pkg:golang/golang.org/x/crypto@v0.54.0?type=module",
         "pkg:golang/modernc.org/sqlite@v1.53.0?type=module"
       ]
     },
@@ -325,13 +325,13 @@
       "ref": "pkg:golang/github.com/santhosh-tekuri/jsonschema/v5@v5.3.1?type=module"
     },
     {
-      "ref": "pkg:golang/golang.org/x/crypto@v0.53.0?type=module",
+      "ref": "pkg:golang/golang.org/x/crypto@v0.54.0?type=module",
       "dependsOn": [
-        "pkg:golang/golang.org/x/sys@v0.46.0?type=module"
+        "pkg:golang/golang.org/x/sys@v0.47.0?type=module"
       ]
     },
     {
-      "ref": "pkg:golang/golang.org/x/sys@v0.46.0?type=module"
+      "ref": "pkg:golang/golang.org/x/sys@v0.47.0?type=module"
     },
     {
       "ref": "pkg:golang/modernc.org/libc@v1.73.4?type=module",
@@ -339,7 +339,7 @@
         "pkg:golang/github.com/dustin/go-humanize@v1.0.1?type=module",
         "pkg:golang/github.com/google/uuid@v1.6.0?type=module",
         "pkg:golang/github.com/remyoudompheng/bigfft@v0.0.0-20230129092748-24d4a6f8daec?type=module",
-        "pkg:golang/golang.org/x/sys@v0.46.0?type=module",
+        "pkg:golang/golang.org/x/sys@v0.47.0?type=module",
         "pkg:golang/modernc.org/mathutil@v1.7.1?type=module",
         "pkg:golang/modernc.org/memory@v1.11.0?type=module"
       ]
@@ -354,7 +354,7 @@
       "ref": "pkg:golang/modernc.org/memory@v1.11.0?type=module",
       "dependsOn": [
         "pkg:golang/github.com/remyoudompheng/bigfft@v0.0.0-20230129092748-24d4a6f8daec?type=module",
-        "pkg:golang/golang.org/x/sys@v0.46.0?type=module",
+        "pkg:golang/golang.org/x/sys@v0.47.0?type=module",
         "pkg:golang/modernc.org/mathutil@v1.7.1?type=module"
       ]
     },
@@ -364,7 +364,7 @@
         "pkg:golang/github.com/dustin/go-humanize@v1.0.1?type=module",
         "pkg:golang/github.com/google/uuid@v1.6.0?type=module",
         "pkg:golang/github.com/remyoudompheng/bigfft@v0.0.0-20230129092748-24d4a6f8daec?type=module",
-        "pkg:golang/golang.org/x/sys@v0.46.0?type=module",
+        "pkg:golang/golang.org/x/sys@v0.47.0?type=module",
         "pkg:golang/modernc.org/libc@v1.73.4?type=module",
         "pkg:golang/modernc.org/mathutil@v1.7.1?type=module",
         "pkg:golang/modernc.org/memory@v1.11.0?type=module"

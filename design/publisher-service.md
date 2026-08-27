@@ -1,6 +1,6 @@
 # TEA Publisher — protocol and service design
 
-**Status:** draft v0.7, for discussion. Nothing here is scheduled or approved; no
+**Status:** draft v0.8, for discussion. Nothing here is scheduled or approved; no
 implementation exists yet. This document is the design opentea's `TODO.md` "Reference
 publisher" entry has been blocked on since 2026-07-04.
 
@@ -83,6 +83,17 @@ than repeated here.
   trust store, not `internal/trust`'s ephemeral-cert fingerprint matching), and the
   signature algorithm isn't necessarily Ed25519 once the certificate is Web PKI rather
   than opentea's own self-signed scheme.
+- **v0.8 (this revision)** adds §13, a signed-webhook eventing model adopted from oej's
+  separate `event-proposal/publisher-events.md` (read in full). Two real changes to
+  existing sections, not just an addition: §9.5's air-gapped signing flow gains an actual
+  push trigger (`collection.readyForSigning`'s `signingPayloadUrl`, pointing at the same
+  TBS package §9.5 already produces, instead of relying on polling or a human remembering
+  to check), and §7.9's approval step is reframed from a flat `approvedBy` field on
+  `commit`'s request body into a real async workflow (`approval.required` →
+  `granted`/`rejected`) needing new, not-yet-designed `approve`/`reject` operations. A
+  category-by-category mapping (§13.3) checks the proposed events against every operation
+  this design already has — the close fit across most rows is a reasonable sanity check on
+  §7/§8's shape. Not yet reflected in `design/publisher-openapi.yaml`.
 
 ## 1. Problem statement
 
@@ -356,6 +367,20 @@ decision is baked into the protocol itself.
 A human review/approval step, gating commit, separate from both signing steps above. Scope
 of enforcement (publisher-only vs. protocol-enforced) is open (§11).
 
+**Reshaped by §13's event model into a real async workflow, not just a request-body
+field.** The earlier assumption — `commit`'s `approvedBy` field, checked or not per
+§10.3 — treated approval as something already decided by the time `commit` is called.
+oej's separate event-delivery proposal (§13) implies a cleaner shape: a locked draft
+(§9.5) fires `approval.required`; an external system or human reviews it and responds;
+`approval.granted` or `approval.rejected` fires back. That needs one new operation this
+design didn't have before — something like `POST .../collectionDraft/approve` (and a
+`.../reject`) — that records the decision *before* commit is ever attempted, rather than
+commit's request body being the first place approval is expressed at all. `commit` itself
+would then check for a recorded approval rather than accept a caller's bare claim of one.
+Not fully designed here — §13 introduces the concept, this paragraph only reconciles it
+with what §7.9/§10.3 already said; the actual operation shape is follow-on work, and
+`design/publisher-openapi.yaml` doesn't yet reflect it.
+
 ### 7.10 Commit (oej phase 7)
 
 Publish to the chosen target server: at minimum, the signed collection plus its evidence,
@@ -544,7 +569,11 @@ API response consumed synchronously in the same call chain:
    and physically carried to the signing environment — the canonical object being included
    alongside the bare digest matters more here than in the online case: a real signing
    ceremony wants a human or tool on the air-gapped side to see *what* they're attesting to,
-   not blindly sign an opaque hash.
+   not blindly sign an opaque hash. §13's `collection.readyForSigning` event, fired the
+   moment `prepareCollectionCommit` locks a draft, is what turns this from something a
+   human has to remember to go fetch into something the signing environment (or whatever
+   coordinates it) is actively notified of — its `signingPayloadUrl` field points straight
+   back at the TBS package described here, not a separate mechanism.
 2. Signing happens on the air-gapped side, entirely outside this protocol's reach (as with
    §9.1's synchronous case, the target server was never a participant in signing itself —
    this mode just stretches the time and the physical distance between prepare and submit,
@@ -752,14 +781,126 @@ assuming away.
   on at least one real target implementation to integrate against.
 - **Phase 6 — approval workflow**, protocol-level or not per §10.3/§11.4, plus whichever
   of §10.1's deferred auth mechanisms (LDAP/AD-bind, multi-IdP, SAML) turn out to actually
-  be needed by then.
-- **Phase 7+ — opentea's own §8 implementation** (§11.8), multi-target support (§11.7), and
+  be needed by then. §13's `approval.required`/`granted`/`rejected` events and the new
+  `approve`/`reject` operations they imply (§7.9) belong in this phase, not before it —
+  approval has to exist as a real, enforced concept before there's anything meaningful to
+  notify about.
+- **Phase 7 — eventing** (§13). Signed webhook delivery for at least the collection/
+  artifact/publication categories; message-bus transport and payload encryption
+  explicitly deferred further, matching §13's own conformance levels.
+- **Phase 8+ — opentea's own §8 implementation** (§11.8), multi-target support (§11.7), and
   whatever else §11 resolves into.
 
-## 13. Cross-references
+## 13. Eventing and notifications
+
+Source: `oej/tea-trust-architecture`'s `event-proposal/publisher-events.md` (status
+"Informative" — a proposal, not yet normative). Defines a **generic, transport-independent
+event model** for asynchronous notifications about publisher-side workflow activity —
+webhooks now, message bus (AMQP-style) marked future-compatible. Read in full for this
+revision; adopted here as a companion to the request/response protocol §8 sketches, not a
+replacement for any part of it.
+
+### 13.1 Why this belongs alongside the protocol, not instead of it
+
+Everything designed so far (§7, §8) is synchronous request/response: a caller asks, the
+target answers. Real publisher workflows have state changes nobody explicitly asked
+about *right now* — a draft becomes ready to sign, an air-gapped signing ceremony finally
+completes, an approval is granted by someone who isn't the caller who requested it. Two
+concrete places this design already needed exactly this and didn't have it:
+
+- **§9.5's air-gapped signing.** A `prepareCollectionCommit` response can sit unsigned for
+  days. Without a push notification, "is it ready yet" is either polling or a human
+  remembering to check. This proposal's `collection.readyForSigning` event, fired the
+  moment a draft locks, closes that gap directly — its `signingPayloadUrl` field points at
+  the same TBS package §9.5 already produces.
+- **§7.9's approval step.** Treating approval as a field on `commit`'s request body
+  assumed the approval decision was already made by the time anyone calls commit. A real
+  maker-checker workflow needs the *approver* to be notified there's something to review
+  (`approval.required`) and the *drafter* to be notified of the outcome
+  (`approval.granted`/`rejected`) — neither side is necessarily even present in the same
+  session as the other action.
+
+### 13.2 Adopted design principles (unchanged from the source)
+
+- **Transport independence** — the event's own JSON shape is identical whether delivered
+  by webhook or (later) a message bus; only the delivery wrapper differs.
+- **Independent trust** — events are signed at the message level (§13.4), not merely
+  protected by the webhook's own TLS connection. A relayed or queued event stays verifiable
+  even after leaving the original TLS session that first carried it.
+- **Optional confidentiality** — payload encryption to a subscriber's public key is
+  possible but not required; most publisher events aren't sensitive enough to need it, but
+  some subscribers' infrastructure may require it regardless.
+- **Audit alignment** — every event carries an `auditEventId` tying it to the same
+  audit-log concept `internal/admin/audit.go`'s `adminAuditLog` already gives opentea's own
+  `/admin/v1`; an event stream and an audit trail describe the same underlying facts from
+  two different angles, not two independent record-keeping systems.
+- **Authentication, not authorization.** An event proves who sent it and that it wasn't
+  altered in transit — it is explicitly **not** proof that the action it describes was
+  authorized. Authorization stays where §10 already put it: enforced by the target
+  server's own protocol operations, never inferred from having received an event about
+  something.
+
+### 13.3 Event categories mapped onto this design's operations
+
+| Event | Fires from (this design) |
+|---|---|
+| `artifact.uploaded` | `uploadArtifactFile` (§7.4, §8) |
+| `artifact.published` | `submitArtifactEvidence` succeeding (§7.4, §9.2) |
+| `collection.created` / `collection.updated` | `putCollectionDraft` (§7.7, §8) |
+| `collection.readyForSigning` | `prepareCollectionCommit` locking the draft (§9.5) |
+| `collection.signed` | `commitCollectionDraft`'s signature verification step succeeding, before the transaction completes (§9.1 step 3) |
+| `collection.validationFailed` | `commitCollectionDraft`/`submitArtifactEvidence` rejecting a bad signature or stale digest (§9.1 step 3) |
+| `collection.published` | `commitCollectionDraft` completing (§7.10) |
+| `approval.required` / `.granted` / `.rejected` | the new `approve`/`reject` operations §7.9 now implies — not yet designed in detail |
+| `publication.commitStarted` / `.committed` / `.failed` | `commitCollectionDraft`'s own lifecycle (§7.10) — overlaps `collection.published`/`validationFailed` somewhat; whether both category sets are needed or one subsumes the other for this design's purposes is unresolved |
+| `authorization.error` / `authentication.error` | any §10 layer rejecting a caller |
+| `cle.updated` / `cle.versionCreated` / `cle.superseded` | `createProductCLEEvent` and equivalents (§7.5) |
+| `product.archived` / `release.archived` | no equivalent operation exists in this design yet — products/releases have no delete or archive path defined here |
+
+The close fit across most rows is a reasonable sanity check that §7/§8's operation shape
+isn't obviously wrong — a genuinely different workflow model would have produced events
+with nothing sensible to map to.
+
+### 13.4 Signing, key distribution, delivery, and conformance — adopted as proposed
+
+- **Message-level signing** reuses the same shape §9.3's evidence package already
+  established (RFC 8785 canonicalization, a signature block naming its format/algorithm) —
+  not a new mechanism, the same one applied to a different kind of payload.
+- **`GET /event-keys`** — a key-discovery endpoint for verifying event signatures,
+  supporting rotation. Distinct from `/publisher/v1`'s own certificate-based evidence
+  signing (§9) — this key signs *notifications about* publisher activity, not the
+  artifacts/collections themselves.
+- **`POST /event-subscriptions`** — a subscriber registers a webhook target, an event-type
+  filter list, and delivery-security preferences (signature mode, optional encryption).
+- **Conformance levels carried over as-is**: mandatory (envelope, naming, audit binding,
+  message signing), recommended (asymmetric signing, key publication, retry/idempotency),
+  optional (payload encryption, message-bus transport) — a first implementation of this
+  design's eventing only needs the mandatory tier plus signed webhooks to be conformant
+  with the source proposal.
+
+### 13.5 Open, not designed further here
+
+- Does the *target* TEA server emit these events, the *publisher software*, or both
+  (a target's `collection.published` and a publisher's own workflow events could be
+  distinct, complementary streams rather than one)?
+- Retry/idempotency semantics for webhook delivery (marked "Recommended" by the source,
+  not mandatory) — undesigned here.
+- Whether eventing is worth building at all for a v1 that's otherwise still a sketch (§12's
+  Phase 7 placement reflects treating it as a real but late priority, not a core-path
+  blocker).
+- The `approve`/`reject` operations §7.9/§13.3 both now imply are not yet designed in any
+  detail — path, request/response shape, and whether they're scoped per-draft (matching
+  everything else in §7.7–7.10) are all open.
+
+Not yet reflected in `design/publisher-openapi.yaml` — this section is design-only for now;
+the OpenAPI draft's endpoints and schemas don't yet include eventing.
+
+## 14. Cross-references
 
 - `design/publisher-openapi.yaml` — the OpenAPI 3.1 draft §8 sketches; v0.4's actual
-  deliverable.
+  deliverable (does not yet cover §13's eventing).
+- `github.com/oej/tea-trust-architecture` → `event-proposal/publisher-events.md` — the
+  source for §13, read in full for this revision.
 - `TODO.md` → **Deferred phases** → **Reference publisher**, **Publisher API** — the
   entries this document exists to unblock.
 - `TODO.md` → **Deferred phases** → **Trust architecture overlay** — Phases 2–6, several of

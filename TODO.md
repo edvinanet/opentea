@@ -3,6 +3,39 @@
 Deferred items identified along the way — not blocking current work, but worth tracking so
 they don't get lost.
 
+## Project rename: OpenTEA → OpenTeapot
+- [ ] **Rename the project** (decided 2026-08-28) — "OpenTEA" turned out to already be in use
+      by another, unrelated project. New name: **OpenTeapot** — the user has already
+      registered `openteapot.org`. Checked before settling on it: `openteapot` is free on npm;
+      the bare GitHub organization name `OpenTeapot` is already taken
+      (`github.com/OpenTeapot`, hosting a repo called `otp`, AGPL-3.0), but that org looks
+      abandoned (zero stars/forks/issues, last activity January 2021, no relation to
+      TEA/SBOM/supply-chain) and doesn't block using `openteapot` as a repo name under an
+      existing namespace (e.g. `github.com/oej/openteapot`) — only the bare top-level org name
+      is unavailable.
+      **Deliberately not done yet** — explicit decision to track and defer, not execute as a
+      side effect of registering the domain. When it happens, it's a large, invasive,
+      cross-cutting change, not a quick find-replace:
+      - Go module path (`github.com/oej/opentea` in `go.mod` and therefore every single `.go`
+        file's import statements across the whole repo — `internal/*`, `pkg/*`, `cmd/*`).
+      - Binary names (`opentea`, `teaclient`, `bundlecheck`, `fixtures` — `Makefile`,
+        `cmd/*/main.go`, `README*.md`'s build instructions).
+      - Docker image name/tags and `Dockerfile`/`README-docker.md`.
+      - Every `README*.md`, `docs/*.md`, and now `design/*.md` — many of these reference
+        `opentea`/`OpenTEA` by name dozens of times each (e.g. `design/publisher-service.md`
+        alone reasons about "opentea" as a concrete example implementation throughout its
+        text, not just in code references).
+      - `spec/TEA_AUTHENTICATION_AUTHORIZATION_SPECIFICATION.md`'s own "Implementation
+        Profile for OpenTEA" section (Sec 27) names opentea specifically by name.
+      - Config var prefixes are `TEA_*` (e.g. `TEA_LISTEN_ADDR`), not `OPENTEA_*` — these
+        don't necessarily need to change (they reference the *spec* name TEA, not the project
+        name OpenTEA/OpenTeapot), but worth an explicit decision either way when this is
+        scoped, not an assumption.
+      - The `TEA_TRUST_ARCHITECTURE` nav-bar badge text ("Default TEA"/"Trusted TEA",
+        `internal/webadmin/templates/layout.html`) — same question: does "TEA" there mean the
+        spec (stays) or was it ever meant as the project name (wasn't, per the naming above,
+        but worth confirming during the actual rename pass).
+
 ## Admin GUI / auth (this feature)
 - [ ] CSRF token protection for GUI form POSTs. Phase 1 relies on `SameSite=Lax` cookies as a
       baseline mitigation only — a real per-form CSRF token is a conscious follow-up, not an

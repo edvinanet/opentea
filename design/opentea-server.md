@@ -198,9 +198,14 @@ The management plane contains:
 - audit search and operational statistics; and
 - eventually the standard `/publisher/v1` endpoint.
 
-It should use a separate listener and normally a separate network route. Deployment policy
-may require VPN, private ingress, IP allowlists, mutual TLS, stronger authentication, or a
-combination. Public reachability of `/tea/v1` must not imply reachability of this plane.
+It should use a separate listener and normally a separate network route. `TEA_ADMIN_LISTEN_ADDR`
+already provides this today — an optional second listener that, when set, splits `/admin/v1` and
+`/admin/ui` off onto their own address, separate from `/tea/v1` and `/files` (off by default, so
+existing single-listener deployments are unaffected). The remaining gap is that both listeners
+still share one TLS certificate/key pair; per-listener TLS termination is not yet supported.
+Deployment policy may require VPN, private ingress, IP allowlists, mutual TLS, stronger
+authentication, or a combination. Public reachability of `/tea/v1` must not imply reachability of
+this plane.
 
 ### 7.3 Blob plane
 
@@ -226,8 +231,12 @@ authoritative publication state; they observe already-committed database state.
 
 `/tea/v1` remains a faithful implementation of the current TEA OpenAPI. Version routing
 must allow the discovery-advertised URL form without relying on undocumented proxy
-rewrites. If several TEA versions are served simultaneously, each version must have an
-explicit compatibility and deprecation policy.
+rewrites. `TEA_API_BASE_PATH` already addresses this for the single-version case today —
+the consumer API's mount path is configurable (default `/tea/v1`) instead of hardcoded, so
+deployments can match whatever path their discovery document advertises without a rewriting
+proxy in front. The open part is multi-version routing: if several TEA versions are served
+simultaneously, each version must have an explicit compatibility and deprecation policy, which
+`TEA_API_BASE_PATH` alone does not provide.
 
 Consumer handlers should remain thin:
 
@@ -785,8 +794,6 @@ Before adding major new code, settle these points:
 
 - `design/publisher-service.md` — manufacturer-side publisher service and workflow.
 - `design/publisher-openapi.yaml` — draft Publisher API.
-- `docs/security-review-publisher-design-260828.md` — integrity and security review of
-  the publisher design.
 - `docs/discovery-test-rig.md` — discovery interoperability test plan.
 - `docs/security-review-disc-tests-260827.md` — discovery test-plan review.
 - `docs/bundle-format.md` — product import/export format.

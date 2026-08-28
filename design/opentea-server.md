@@ -25,10 +25,16 @@ provide a practical reference deployment that can start small and evolve into a
 production cloud service without changing TEA object identities or client-visible
 semantics.
 
-The server has two distinct audiences:
+The server has three distinct audiences:
 
-1. **Consumers** discover products and retrieve authorized transparency information.
-2. **Operators and publishers** load, validate, govern, and publish that information.
+1. **Consumers** — users of products — discover products and retrieve authorized
+   transparency information, via the standard TEA consumer API.
+2. **Publishers** — manufacturers, open-source projects, and other entities that produce
+   products — load, validate, and publish transparency information for what they own, via
+   the standard Publisher API.
+3. **Admins** — operators of an OpenTEA deployment — govern the server itself:
+   configuration, accounts, authorization policy, bundle migration, and audit, via the
+   proprietary `/admin/v1` surface.
 
 Those audiences have different trust, availability, latency, and authorization needs.
 They must share a consistent data model, but they do not need to share a network listener,

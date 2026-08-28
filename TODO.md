@@ -87,6 +87,17 @@ they don't get lost.
       since that spec shapes how the publisher actually works. Do this only after that spec
       exists — don't build a publisher against `/admin/v1` as a stand-in for this without
       checking with the user first, since the trust-model spec may change the shape entirely.
+- [ ] **Publisher API: derive approval actor from authenticated identity, not a
+      caller-supplied string** (found 2026-08-28, during `design/opentea-server.md` review —
+      see its §11.4). `design/publisher-openapi.yaml`'s `approval-decision.actor` is
+      currently a plain client-supplied string; now that collection-draft staging and
+      approval are confirmed target-owned (`design/publisher-service.md` §4/§11 Q1,
+      `design/opentea-server.md` §8.4), the target genuinely enforces the maker-checker
+      decision itself, so it should derive `actor`/`decidedBy` from the authenticated
+      Layer B/D bearer credential's identity rather than trust an asserted field. Needs its
+      own design pass (does the credential's subject claim always map 1:1 to a human actor,
+      or does a shared service-account credential need an additional asserted-but-verified
+      sub-identity) before touching the OpenAPI schema.
 - [ ] **Trust architecture overlay** (from oej's `tea-trust-architecture` repo) — evidence
       bundles, Ed25519 ephemeral certs, DNS trust anchors (TAPS), optional transparency logs
       (Rekor/Sigsum/SCITT), staged/commit publisher workflow. The design repo has since grown

@@ -290,13 +290,25 @@ Normal manufacturer publication should eventually use `/publisher/v1`, not `/adm
 
 OpenTEA should implement the Publisher API described separately in
 `design/publisher-openapi.yaml` after its critical integrity and authorization questions
-are resolved. The preferred boundary is:
+are resolved. The boundary (resolved; see `design/publisher-service.md` §4 and §11 Q1):
 
-- the manufacturer publisher service owns editable workflow drafts and human approval;
-- OpenTEA owns immutable prepared publication transactions;
+- OpenTEA owns collection-draft staging, expiry/locking, and approve/reject enforcement
+  (maker-checker) as protocol operations, regardless of which client calls them. This is
+  required, not just convenient: two independent real workflows exist — CI/CD publishing
+  directly to OpenTEA with a manufacturer's GUI publisher platform watching events and
+  approving, and CI/CD publishing through an in-house GUI publisher platform first — and
+  in the first workflow, OpenTEA is the only state CI/CD and the human approver share;
+  they have no other common database;
+- signing always happens client-side, in whichever publisher platform is calling (the GUI
+  service, or a lightweight reference CLI client embedded in CI/CD) — never on OpenTEA;
+- a publisher platform may additionally run its own internal, multi-team business approval
+  (legal, compliance, security engineering) before it ever calls OpenTEA, but that process
+  is entirely internal to the publisher platform and outside the standard protocol — the
+  target only ever sees the one maker-checker decision the calling platform's
+  authenticated identity asserts;
 - OpenTEA assigns target-local identities and versions;
 - OpenTEA returns the exact to-be-signed representation;
-- commit consumes a single-use prepare transaction and atomically stores the object,
+- commit consumes the current draft/approval state and atomically stores the object,
   evidence, audit record, and outbox event.
 
 The standard Publisher API and `/admin/v1` may share application services and repository
@@ -760,8 +772,10 @@ notification delivery without placing secrets in spans.
 2. Should version routing live in OpenTEA or always in a reverse proxy?
 3. Is PostgreSQL the single cloud database target, or must the repository abstraction
    support additional engines?
-4. Does the publisher protocol keep editable drafts on the manufacturer publisher service,
-   as recommended here, or on OpenTEA?
+4. ~~Does the publisher protocol keep editable drafts on the manufacturer publisher
+   service, or on OpenTEA?~~ — resolved (§8.4): on OpenTEA, always, as protocol
+   operations — required by the direct-CI/CD workflow, where OpenTEA is the only state
+   CI/CD and a human approver share.
 5. What precise capability vocabulary is shared across consumer, publisher, and operator
    authorization?
 6. How are external JWT claims, internal entitlements, and external policy decisions
@@ -786,8 +800,9 @@ Before adding major new code, settle these points:
    listeners and deployment roles.
 2. Select PostgreSQL plus object storage as the cloud persistence profile while retaining
    SQLite/filesystem for reference deployments.
-3. Keep editable publisher workflow and human approval in the manufacturer publisher
-   service; expose only prepared immutable transactions and commit on OpenTEA.
+3. Keep collection-draft staging, expiry/locking, and approve/reject enforcement on
+   OpenTEA as protocol operations (§8.4); a publisher platform may run its own additional
+   internal business approval before calling OpenTEA, but that stays outside the protocol.
 4. Define artifact finalization and version creation before implementing the Publisher
    API.
 5. Define authenticated actor delegation and capability-scoped publisher credentials.

@@ -1,6 +1,6 @@
 # TEA Publisher — protocol and service design
 
-**Status:** draft v0.15, for discussion. Nothing here is scheduled or approved; no
+**Status:** draft v0.16, for discussion. Nothing here is scheduled or approved; no
 implementation exists yet. This document is the design opentea's `TODO.md` "Reference
 publisher" entry has been blocked on since 2026-07-04.
 
@@ -183,6 +183,18 @@ than repeated here.
   used artifact sizes" doesn't yet exist in opentea, worth building rather than assumed
   present. `uploadArtifactFile`'s `429` response (`design/publisher-openapi.yaml`)
   narrowed to specifically mean the unused-artifact quota, not a generic one.
+- **v0.16 (this revision)** rewrites §4 and resolves §11 Q1, prompted by `design/
+  opentea-server.md` §8.4 independently proposing the opposite answer (drafts/approval
+  owned by the manufacturer publisher service, not the target) during its own review.
+  Reconciled against two real, named workflows: CI/CD publishing directly to the target
+  with a GUI publisher platform watching events and approving, and CI/CD publishing
+  through an in-house GUI publisher platform that runs its own multi-team business
+  approval first. Both are clients of the same target-owned protocol; the first workflow
+  structurally requires target-owned staging, since CI/CD and the human approver share no
+  other state. Generalizes "the publisher server" into **publisher platform**: any
+  signing-capable client of `/publisher/v1` — the GUI service (this document's primary
+  subject) and the reference CLI client (§14.1) are its two named shapes. Signing always
+  happens client-side in whichever shape is calling, never on the target.
 
 ## 1. Problem statement
 
@@ -244,57 +256,82 @@ it (§4, §7) — a new, standalone service, not a mode of opentea.
 
 ## 4. Architecture
 
+Two real, named workflows drive this, both confirmed against actual manufacturer setups:
+(a) CI/CD updates the target TEA server directly, with the manufacturer's GUI publisher
+service watching events and acting as the human-in-the-loop approver; (b) CI/CD updates an
+in-house GUI publisher platform, which runs its own multi-team business approval (legal,
+compliance, security engineering) before it, in turn, publishes to the target. Both are
+clients of the *same* target-owned protocol (§8) — they differ only in which credential
+calls it and what happens, if anything, before that call. That generalizes "the publisher
+server" (v0.3-v0.14's framing) into **publisher platform**: any signing-capable client of
+`/publisher/v1`. Two concrete shapes:
+
 ```
 ┌────────────────────┐     ┌──────────────────────────┐
 │  CI/CD pipeline       │     │  Manufacturer staff        │
-│  (builds, signs           │     │  (browser)                    │
-│  artifacts)                 │     └──────────────┬───────────────┘
-└──────────┬───────────┘                    │
-           │  submits signed artifacts               │ GUI
-           ▼                                             ▼
-┌─────────────────────────────────────────────────────────────┐
-│  Publisher server  (new, standalone -- own binary/deployment)   │
-│                                                                    │
-│  - GUI (process-shaped, §7)                                        │
-│  - staging: draft collections, in-progress CLE/compliance streams   │
-│  - validates artifact evidence submitted by CI/CD                    │
-│  - drives collection-level signing at publish time                    │
-│  - own DB (staging state, audit trail -- distinct from any target)     │
-│  - own auth (manufacturer staff sessions; separate from any target's)   │
-└───────────────────────────┬─────────────────────────────────────┘
-                             │  TEA Publisher API (the protocol, §8)
-                             │  -- HTTP, target configurable per publish
-                             ▼
-              ┌──────────────────────────────┐
-              │  Target TEA server               │
-              │  (opentea, or any other            │
-              │   conformant implementation)         │
-              │                                        │
-              │  /tea/v1   (existing, unaffected)        │
-              │  /publisher/v1  (new -- the protocol,     │
-              │   this server's implementation of it)      │
-              └──────────────────────────────┘
+│  (builds artifacts)         │     │  (browser)                    │
+└──────────┬───────────┘     └──────────────┬───────────────┘
+           │                                              │
+           │ (a) direct: reference CLI client               │ GUI
+           │     (§14.1) -- embedded in the pipeline,          │
+           │     signs locally, calls the target with            │
+           │     its own narrowly-scoped credential                 │
+           │                                                          ▼
+           │                                          ┌─────────────────────────────────┐
+           │                                          │  GUI publisher server               │
+           │                                          │  (new, standalone service)             │
+           │                                          │                                          │
+           │                                          │  - staging: draft collections,             │
+           │                                          │    in-progress CLE/compliance streams        │
+           │                                          │  - internal multi-team business approval      │
+           │                                          │    (legal/compliance/security engineering) --  │
+           │                                          │    entirely internal, not a protocol concept    │
+           │                                          │  - drives collection-level signing               │
+           │                                          │  - own DB + own auth (manufacturer staff           │
+           │                                          │    sessions; separate from any target's)             │
+           │                                          └───────────────────────┬─────────────────────────────┘
+           │                                                                  │
+           │  Both shapes call the same protocol, with different credentials  │
+           ▼                                                                  ▼
+┌───────────────────────────────────────────────────────────────────────────────────┐
+│  Target TEA server  (opentea, or any other conformant implementation)                 │
+│                                                                                          │
+│  /tea/v1        (existing, unaffected)                                                    │
+│  /publisher/v1  (new -- the protocol, §8) -- owns draft staging, expiry/locking, and         │
+│                 approve/reject enforcement (maker-checker) regardless of which shape called it │
+└───────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 Key relationships:
 
-- The **publisher server** is the thing actually being asked for: a new service with a
-  GUI. It is a *client* of the protocol (§8), never a client of any target's proprietary
-  admin API (opentea's `/admin/v1` included) — that's the mistake v0.1 made.
+- **"Publisher platform" is a role, not one service.** The GUI service being designed here
+  is the primary subject of this document, but the reference CI/CD client (§14.1) is
+  equally a publisher platform instance — both sign locally and call the target's
+  `/publisher/v1` as credentialed clients, never each other's APIs and never any target's
+  proprietary admin API (opentea's `/admin/v1` included) — that's the mistake v0.1 made.
+- **Collection staging and approval live on the target, always** (resolved, §11 Q1) — not
+  because the target needs to understand business process, but because workflow (a) has no
+  other shared place for CI/CD and the GUI service's human approver to rendezvous on the
+  same draft; they don't share a database. Workflow (b)'s in-house multi-team approval is a
+  separate, additional layer entirely internal to the GUI service, sitting *in front of* —
+  not instead of — the target's own protocol-level maker-checker gate. The target only ever
+  sees the one decision the calling publisher platform's credentialed identity asserts.
 - **opentea implementing the protocol** (its own `/publisher/v1`, reusing
   `internal/repo`/`internal/trust` underneath, much like v0.2 sketched) is real, valuable,
-  *separate* work — it's what makes opentea a usable target for testing/using the
-  publisher server, but it is not part of "build the publisher server" and isn't a
+  *separate* work — it's what makes opentea a usable target for testing/using either
+  publisher platform shape, but it is not part of "build the publisher server" and isn't a
   prerequisite for finishing this design. §8 specifies the protocol precisely enough that
   either piece can proceed independently once it's settled.
-- **CI/CD is a first-class actor**, not a footnote — per oej's workflow document (§5), it's
-  the typical signer of individual artifacts, submitting already-signed evidence to the
-  publisher server directly (a plain HTTP client, no GUI involved), the same way a human
-  does through the GUI for collection-level actions.
-- The publisher server needs **its own persistence and auth**, independent of any target —
-  it stages data (drafts, in-progress CLE/compliance work) that may target a server that's
-  down, unreachable, or simply not yet chosen, and manufacturer staff need to authenticate
-  to *it*, not to whichever TEA server they happen to be publishing to today.
+- **CI/CD is a first-class actor**, not a footnote — per oej's workflow document (§5), and
+  now confirmed as capable of either shape above: signing individual artifacts and calling
+  the target directly via the reference client, or submitting to the GUI service, depending
+  on which real workflow a given manufacturer runs.
+- The **GUI publisher server** specifically (not the reference CLI client, which is
+  stateless) needs **its own persistence and auth**, independent of any target — it stages
+  data (drafts, in-progress CLE/compliance work, multi-team approval records) that may
+  target a server that's down, unreachable, or simply not yet chosen, and manufacturer
+  staff need to authenticate to *it*, not to whichever TEA server they happen to be
+  publishing to today.
 
 ## 5. What oej's publisher-workflow.md establishes
 
@@ -870,9 +907,13 @@ assuming away.
 
 ## 11. Open questions
 
-1. **Where does collection staging live** — target server (protocol operations, as
-   sketched in §8) or publisher-server-only (simpler protocol, more reconciliation work
-   for the publisher when a target is unreachable)?
+1. ~~Where does collection staging live~~ — resolved (§4): the target server, as protocol
+   operations (§8), always. Two independent real workflows confirmed this: direct CI/CD
+   publication needs the target as the only shared rendezvous point between CI/CD and the
+   GUI service's human approver (they don't share a database), and in-house-mediated
+   publication still ends by calling the same target-owned protocol, just with a different
+   credential after its own internal approval. Publisher-server-only staging would break
+   the direct-CI/CD workflow entirely.
 2. **Does commit span multiple streams** (collection + artifact versions + CLE updates
    together, per oej's phase 7) or stay scoped to one collection at a time (simpler,
    v0.2's original assumption)?

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// SPDX-FileCopyrightText: 2026 Olle E. Johansson, Edvina AB, Sollentuna, Sweden
+
 // Command bundlecheck validates one or more product export/import bundle
 // zips (see docs/bundle-format.md) without needing a running server, a
 // database, or admin authentication -- it only reads the given zip files.

@@ -1,4 +1,7 @@
 #!/bin/sh
+# SPDX-License-Identifier: BSD-2-Clause
+# SPDX-FileCopyrightText: 2026 Olle E. Johansson, Edvina AB, Sollentuna, Sweden
+
 # Validates all three SBOMs (or specific files passed as arguments) against
 # the real CycloneDX 1.6 JSON Schema plus a referential-integrity check.
 # See validate-sbom.go's doc comment for what "validated" means here.

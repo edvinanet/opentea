@@ -1,3 +1,6 @@
+-- SPDX-License-Identifier: BSD-2-Clause
+-- SPDX-FileCopyrightText: 2026 Olle E. Johansson, Edvina AB, Sollentuna, Sweden
+
 -- Evidence-bundle data model, Phase 1 of oej's TEA Trust Architecture
 -- overlay (github.com/oej/tea-trust-architecture), per
 -- 08-evidence-bundle.md and its evidence-bundle-schema.json. See TODO.md's

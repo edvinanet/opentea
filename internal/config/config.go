@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// SPDX-FileCopyrightText: 2026 Olle E. Johansson, Edvina AB, Sollentuna, Sweden
+
 // Package config holds server configuration, layered as: built-in defaults
 // < config file < environment variables (environment variables always win,
 // matching systemd EnvironmentFile= conventions).

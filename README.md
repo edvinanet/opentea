@@ -109,3 +109,7 @@ make check         # fmt-check + vet + test -- what CI/a pre-commit hook should 
 ```
 
 Repo-layer unit tests cover pagination boundaries, collection versioning, and per-owner CLE event sequencing. `cmd/opentea/integration_test.go` drives the full admin-ingestion-then-read-API flow end to end (see `SMOKE_TEST.md` for the same flow as `curl` commands).
+
+## License
+
+BSD 2-Clause. See [`LICENSE`](LICENSE).

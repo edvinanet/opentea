@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// SPDX-FileCopyrightText: 2026 Olle E. Johansson, Edvina AB, Sollentuna, Sweden
+
 // Command fixtures is a generic authenticated-HTTP-replay tool: it loads a
 // structured JSON fixture file into a running opentea server via the
 // existing /admin/v1 API. It is NOT the (deferred) reference publisher --

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// SPDX-FileCopyrightText: 2026 Olle E. Johansson, Edvina AB, Sollentuna, Sweden
+
 // Package tea holds the JSON-facing wire types matching the CycloneDX
 // Transparency Exchange API OpenAPI spec (spec/openapi.yaml v0.4.0). This
 // package is importable from outside this module (unlike internal/...) so

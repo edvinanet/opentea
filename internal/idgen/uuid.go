@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// SPDX-FileCopyrightText: 2026 Olle E. Johansson, Edvina AB, Sollentuna, Sweden
+
 // Package idgen provides UUIDv4 generation and validation without pulling in
 // an external dependency.
 package idgen

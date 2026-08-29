@@ -1,4 +1,6 @@
 # syntax=docker/dockerfile:1
+# SPDX-License-Identifier: BSD-2-Clause
+# SPDX-FileCopyrightText: 2026 Olle E. Johansson, Edvina AB, Sollentuna, Sweden
 #
 # Builds and runs the opentea server only (cmd/opentea) -- the reference
 # client/fixtures/bundlecheck tools are dev-time CLIs, not part of a running

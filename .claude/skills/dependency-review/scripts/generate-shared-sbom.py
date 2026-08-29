@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: BSD-2-Clause
+# SPDX-FileCopyrightText: 2026 Olle E. Johansson, Edvina AB, Sollentuna, Sweden
+
 """Generate sbom/shared.cdx.json for pkg/tea, opentea's one genuinely
 shared-between-server-and-client package.
 

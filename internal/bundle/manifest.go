@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// SPDX-FileCopyrightText: 2026 Olle E. Johansson, Edvina AB, Sollentuna, Sweden
+
 // Package bundle implements the product import/export bundle format: a zip
 // file (one per product) containing a JSON manifest plus a content-addressed
 // files/ directory of the referenced blobs. Used for backup, ownership

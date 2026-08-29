@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// SPDX-FileCopyrightText: 2026 Olle E. Johansson, Edvina AB, Sollentuna, Sweden
+
 // Package httpx holds small HTTP response, request-parsing, and request
 // helpers shared across this project's handler packages (api, admin,
 // webadmin) and cmd/opentea's server wiring.

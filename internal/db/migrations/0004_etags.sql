@@ -1,3 +1,6 @@
+-- SPDX-License-Identifier: BSD-2-Clause
+-- SPDX-FileCopyrightText: 2026 Olle E. Johansson, Edvina AB, Sollentuna, Sweden
+
 -- Support for HTTP ETag / conditional-request handling on /tea/v1 GET
 -- endpoints: a monotonic revision per mutable row (not updated_at -- a
 -- timestamp can collide or lose precision, a counter can't), plus two

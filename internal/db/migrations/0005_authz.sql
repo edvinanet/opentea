@@ -1,3 +1,6 @@
+-- SPDX-License-Identifier: BSD-2-Clause
+-- SPDX-FileCopyrightText: 2026 Olle E. Johansson, Edvina AB, Sollentuna, Sweden
+
 -- Single-tenant authorization for /tea/v1, per
 -- ~/TEA_AUTHENTICATION_AUTHORIZATION_SPECIFICATION.md (v0.1 draft) Sec
 -- 10-18, 22, 27's "Implementation Profile for OpenTEA". This deployment is

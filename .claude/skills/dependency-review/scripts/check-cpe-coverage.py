@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: BSD-2-Clause
+# SPDX-FileCopyrightText: 2026 Olle E. Johansson, Edvina AB, Sollentuna, Sweden
+
 """Checks every dependency across the three SBOMs against the GCVE CPE
 database (https://cpe.gcve.eu) by package URL, records the outcome as an
 `opentea:cpeChecked` property on each component *inside* the SBOM itself

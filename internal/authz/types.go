@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// SPDX-FileCopyrightText: 2026 Olle E. Johansson, Edvina AB, Sollentuna, Sweden
+
 // Package authz implements the deterministic policy-evaluation algorithm
 // from ~/TEA_AUTHENTICATION_AUTHORIZATION_SPECIFICATION.md Sec 15, scoped to
 // opentea's single-tenant profile: everyone/authenticated/principal

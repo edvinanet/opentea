@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// SPDX-FileCopyrightText: 2026 Olle E. Johansson, Edvina AB, Sollentuna, Sweden
+
 // Package admin implements the unofficial internal ingestion API
 // (/admin/v1/...) used to load data into the server until a real TEA
 // publisher API exists. It is not part of the spec.

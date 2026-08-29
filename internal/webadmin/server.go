@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// SPDX-FileCopyrightText: 2026 Olle E. Johansson, Edvina AB, Sollentuna, Sweden
+
 // Package webadmin implements the browser-based admin GUI (mounted at
 // /admin/ui/...), server-rendered with html/template. It's a thin
 // presentation layer over the same internal/repo methods the JSON

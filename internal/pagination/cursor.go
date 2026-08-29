@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// SPDX-FileCopyrightText: 2026 Olle E. Johansson, Edvina AB, Sollentuna, Sweden
+
 // Package pagination implements an opaque keyset-pagination cursor shared by
 // all list endpoints in the read API.
 package pagination

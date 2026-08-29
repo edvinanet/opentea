@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// SPDX-FileCopyrightText: 2026 Olle E. Johansson, Edvina AB, Sollentuna, Sweden
+
 // Command opentea runs the TEA consumer read API (spec-conformant, at
 // /tea/v1 by default -- see TEA_API_BASE_PATH) plus a blob server
 // (/files/{sha256}), and the operator-facing surface -- the unofficial admin

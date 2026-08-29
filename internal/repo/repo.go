@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// SPDX-FileCopyrightText: 2026 Olle E. Johansson, Edvina AB, Sollentuna, Sweden
+
 // Package repo is the SQLite data-access layer. Each aggregate (product,
 // component, productrelease, componentrelease, distribution, artifact,
 // collection, cle) has its own file with Create/Get/Query/Delete methods on

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// SPDX-FileCopyrightText: 2026 Olle E. Johansson, Edvina AB, Sollentuna, Sweden
+
 // Package trust implements the cryptographic core of oej's TEA Trust
 // Architecture overlay (github.com/oej/tea-trust-architecture): Ed25519
 // signing/verification, ephemeral-key lifecycle, fingerprint-derived

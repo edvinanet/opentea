@@ -1,3 +1,6 @@
+-- SPDX-License-Identifier: BSD-2-Clause
+-- SPDX-FileCopyrightText: 2026 Olle E. Johansson, Edvina AB, Sollentuna, Sweden
+
 CREATE TABLE user (
     uuid          TEXT PRIMARY KEY,
     username      TEXT NOT NULL UNIQUE,

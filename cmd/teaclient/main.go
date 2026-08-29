@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// SPDX-FileCopyrightText: 2026 Olle E. Johansson, Edvina AB, Sollentuna, Sweden
+
 // Command teaclient is a reference CLI for the CycloneDX Transparency
 // Exchange API consumer read API, built on pkg/teaclient. Point it at any
 // conformant TEA server for interoperability testing, not just this repo's

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// SPDX-FileCopyrightText: 2026 Olle E. Johansson, Edvina AB, Sollentuna, Sweden
+
 // Command validate-sbom checks a CycloneDX SBOM two ways: against the real
 // JSON Schema for the spec version it declares (not just "the JSON
 // parses" -- see SKILL.md's "validation" section for why that distinction

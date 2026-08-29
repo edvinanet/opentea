@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// SPDX-FileCopyrightText: 2026 Olle E. Johansson, Edvina AB, Sollentuna, Sweden
+
 // Package storage provides content-addressed blob storage for artifact and
 // distribution files, behind a small interface so the backing store can be
 // swapped (e.g. for S3) without touching callers.

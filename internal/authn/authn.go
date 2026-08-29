@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// SPDX-FileCopyrightText: 2026 Olle E. Johansson, Edvina AB, Sollentuna, Sweden
+
 // Package authn centralizes session-cookie and bearer-token resolution
 // shared by the JSON admin API (internal/admin), the HTML admin GUI
 // (internal/webadmin), and the spec-conformant read API (internal/api).

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// SPDX-FileCopyrightText: 2026 Olle E. Johansson, Edvina AB, Sollentuna, Sweden
+
 // Package model holds admin-domain types (users, roles, dashboard stats) --
 // these are server-only and not part of the TEA spec. Spec-derived wire
 // types (Product, Collection, Artifact, CLE, etc.) live in pkg/tea, which is

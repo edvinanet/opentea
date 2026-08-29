@@ -1,4 +1,4 @@
-# CPE coverage check (2026-08-26)
+# CPE coverage check (2026-08-29)
 
 Checked 14 component entries across all three SBOMs against https://cpe.gcve.eu by package URL prefix. Per-dependency detail also recorded directly on each SBOM component via an `opentea:cpeChecked` property -- this file is a human-readable summary of the same data, not the source of truth. No `cpe` field is written automatically; see generate-shared-sbom.py's docstring and SKILL.md for why.
 

@@ -1,0 +1,81 @@
+# SPDX-License-Identifier: BSD-2-Clause
+# SPDX-FileCopyrightText: 2026 Olle E. Johansson, Edvina AB, Sollentuna, Sweden
+#
+# Regenerates each of the three SBOMs (server/client/shared libraries, see
+# .claude/skills/dependency-review/SKILL.md) fresh from the current
+# go.mod/go.sum, then scans each one with Grype (github.com/anchore/grype),
+# which reads CycloneDX SBOMs directly rather than re-deriving its own view
+# of the dependency graph. Regenerating instead of scanning whatever's
+# committed under sbom/ means this can't miss a dependency bump that never
+# got its SBOM regenerated locally.
+#
+# severity-cutoff: high -- Critical/High fail the build; Medium/Low/Unknown
+# are reported but don't block. golang.org/x/crypto's openpgp subpackage
+# (GO-2026-5932, Unknown severity, no fix version -- an unmaintained-status
+# advisory, not a patchable CVE) is expected to show up in every scan for
+# as long as that dependency is present; it must never gate merges.
+name: Vulnerability scan
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  schedule:
+    # Catches newly-disclosed CVEs against dependency versions that haven't
+    # changed -- a push/PR trigger alone only re-scans when this repo's own
+    # code moves, not when the vulnerability database does.
+    - cron: "17 4 * * 1"
+
+jobs:
+  server:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Install cyclonedx-gomod
+        run: go install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@latest
+      - name: Generate sbom/server.cdx.json
+        run: .claude/skills/dependency-review/scripts/generate-server-sbom.sh
+      - name: Scan with Grype
+        uses: anchore/scan-action@v7
+        with:
+          sbom: sbom/server.cdx.json
+          fail-build: true
+          severity-cutoff: high
+
+  client:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Install cyclonedx-gomod
+        run: go install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@latest
+      - name: Generate sbom/client.cdx.json
+        run: .claude/skills/dependency-review/scripts/generate-client-sbom.sh
+      - name: Scan with Grype
+        uses: anchore/scan-action@v7
+        with:
+          sbom: sbom/client.cdx.json
+          fail-build: true
+          severity-cutoff: high
+
+  libraries:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Generate sbom/shared.cdx.json (pkg/tea -- 0 third-party deps today)
+        run: python3 .claude/skills/dependency-review/scripts/generate-shared-sbom.py
+      - name: Scan with Grype
+        uses: anchore/scan-action@v7
+        with:
+          sbom: sbom/shared.cdx.json
+          fail-build: true
+          severity-cutoff: high

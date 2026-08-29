@@ -1,6 +1,6 @@
 # TEA Publisher — protocol and service design
 
-**Status:** draft v0.16, for discussion. Nothing here is scheduled or approved; no
+**Status:** draft v0.17, for discussion. Nothing here is scheduled or approved; no
 implementation exists yet. This document is the design opentea's `TODO.md` "Reference
 publisher" entry has been blocked on since 2026-07-04.
 
@@ -195,6 +195,17 @@ than repeated here.
   signing-capable client of `/publisher/v1` — the GUI service (this document's primary
   subject) and the reference CLI client (§14.1) are its two named shapes. Signing always
   happens client-side in whichever shape is calling, never on the target.
+- **v0.17 (this revision)** adds §16, DNS trust-anchor (TAPS) publication — previously
+  named only in oej's phase-7 listing (§6) but never designed. Fetched and grounded
+  against the actual normative source (`tea-trust-architecture/tea-trust-arch/
+  11-dnssec-trust-anchor.md`) rather than general DNS/PKI practice: the record (a DNS CERT
+  RR at `<fingerprint>.<trust-domain>`) is fully determined by the certificate already in
+  hand, so the only real design surface is *who* may publish it (a publisher-platform
+  capability, never CI/CD's credential directly, mirroring §9.1's signing boundary) and
+  *how* (the DNS-access options from an earlier discussion, narrowed since the write
+  surface is one record, not a zone). Three new open questions (§11 #16-18); narrows #2.
+  Also adds domain-ownership verification to `TODO.md` as a separate, related item, not
+  designed in this document.
 
 ## 1. Problem statement
 
@@ -519,7 +530,10 @@ to add on top of it.
 Publish to the chosen target server: at minimum, the signed collection plus its evidence,
 atomically (§8). Whether this single commit action can also carry along newly-validated
 artifact versions and pending CLE updates in the same atomic call, per oej's phase 7
-listing them together, is open (§11) rather than settled.
+listing them together, is open (§11) rather than settled. Oej's phase 7 also lists
+"updating DNS trust anchors" in the same breath — designed separately in §16, since it
+targets a different system entirely (the manufacturer's own DNS, not any TEA server) and
+can't share commit's transaction boundary.
 
 ## 8. The protocol (sketch)
 
@@ -916,7 +930,10 @@ assuming away.
    the direct-CI/CD workflow entirely.
 2. **Does commit span multiple streams** (collection + artifact versions + CLE updates
    together, per oej's phase 7) or stay scoped to one collection at a time (simpler,
-   v0.2's original assumption)?
+   v0.2's original assumption)? Narrowed for the DNS-trust-anchor part of that same
+   phase-7 listing (§16.5): that part can't share commit's atomic transaction regardless —
+   it's workflow batching against a different system, not a candidate for cross-system
+   atomicity. The collection+artifact+CLE part is still open on its own terms.
 3. ~~Compliance documents~~ — resolved (§7.6): `COMPLIANCE_DOCUMENT` identifiers, plus the
    existing artifact path when there's real file content to sign.
 4. ~~Approval enforcement~~ — resolved (§10.3, §7.9): protocol-enforced, via
@@ -965,6 +982,17 @@ assuming away.
     on proactive quota-status exposure vs. purely reactive rejection, no chosen error
     status for a used-capacity vs. unused-quota breach (plausibly different codes,
     §15.1's own open question — one's operational, the other's adversarial).
+16. **DNS trust-anchor transport for v1** (§16.3) — provider-API automation (via a
+    `go-acme/lego`-style abstraction), display-and-verify (no credential custody), or
+    both offered as options from day one?
+17. **DNS trust-anchor rotation/expiry policy** (§16.4) — the source defines none. How
+    long a superseded record stays published (old evidence needs it resolvable to
+    validate), TTL guidance, and whether/when the publisher platform ever removes an old
+    record automatically, are all undesigned.
+18. **Does trust-anchor publication need a human approval step** (§16.2), matching
+    §14.3's approve/reject maker-checker for collection commit, or does automated
+    certificate validation alone satisfy the source's "policy enforcement, controlled
+    access" requirement?
 
 ## 12. Phased plan (draft)
 
@@ -1354,7 +1382,119 @@ Not a reason to relax §15.1 — the target still enforces its own limits regard
 what the publisher software does on its own side. It's an additive, not alternative,
 responsibility.
 
-## 16. Cross-references
+## 16. DNS trust-anchor publication (TAPS)
+
+Oej's phase 7 (§7.10) lists "updating DNS trust anchors" alongside collection/artifact/CLE
+commit — the first mention of this capability in this document, previously undesigned.
+Grounded directly against the normative source
+(`tea-trust-architecture/tea-trust-arch/11-dnssec-trust-anchor.md`, fetched in full for
+this revision), not general DNS/PKI practice.
+
+### 16.1 What gets published is deterministic, not a policy choice
+
+A trust anchor is one **DNS CERT record** (RFC 4398, PKIX type):
+
+```
+<fingerprint>.<trust-domain>. IN CERT PKIX 0 0 <base64-certificate>
+```
+
+`fingerprint` is the lowercase hex SHA-256 of the public key — already exactly what
+`internal/trust`'s Phase 1 fingerprint identity computes (`internal/trust/keys.go`). The
+certificate itself must carry a SAN DNS name matching that same
+`<fingerprint>.<trust-domain>` name; per the source, "DNS names are derived from keys —
+not assigned," which is what prevents a namespace conflict or spoofed claim. Once a
+certificate exists (Phase 1's ephemeral self-signed certs, or a future Web PKI cert per
+§9.5), the record name and content are fully determined by it — there's nothing for a
+human to compose or choose, only a decision about *whether* to publish it (§16.2).
+
+DNSSEC is explicitly **optional** at the protocol level — "DNSSEC authenticates delivery
+of data, not trust in that data." Trust is the composite the source defines: "signature +
+timestamp + certificate + DNS (+DNSSEC) + transparency" — DNS publication alone, with or
+without DNSSEC, is never sufficient by itself. If a manufacturer's zone *is*
+DNSSEC-signed, publishing or updating this record needs the zone's normal re-signing
+pipeline to run afterward — an operational dependency on the authoritative DNS
+server/provider, not something the publisher platform itself does.
+
+### 16.2 Who is allowed to publish, and why CI/CD's credential can't
+
+The source states this directly: separate "CI/CD functions (signing capability, no DNS
+control)" from "DNS publication systems (policy enforcement, controlled access)," and
+publication must never be "based on unsigned data, unvalidated certificates, direct CI/CD
+write without validation."
+
+This maps onto authorization layers already defined (§10): CI/CD's Layer D credential
+(§10.4) — deliberately narrow, evidence-submission-scoped — must not be the thing that can
+write DNS. Trust-anchor publication is a **publisher-platform** capability (the same
+"never the target server, never a bare CI/CD credential" shape §9.1 already established
+for signing itself), gated on the platform having independently validated the certificate
+first: identity binding (SAN matches the computed fingerprint name), signature validity,
+and timestamp validity — mirroring the same verify-before-store discipline
+`internal/admin/evidencebundle.go` already enforces for evidence bundles server-side. The
+source doesn't require a *human* approval step here specifically (unlike collection
+commit, §7.9) — only that publication is policy-enforced and validated, not a raw,
+unchecked write. Whether v1 requires a human step anyway, for consistency with §14.3's
+approve/reject maker-checker, or trusts automated validation alone, is open (§11).
+
+### 16.3 Transport: the DNS-access options already surveyed, narrowed by a smaller write surface
+
+Because the write is always exactly one deterministic CERT record at a fixed name — never
+broader zone management — whichever transport is chosen only needs record-scoped write
+access, not a manufacturer's whole DNS zone:
+
+- **Provider REST APIs** (Cloudflare, Route53, Google Cloud DNS, Azure DNS, ...) — what
+  most real manufacturers are actually on. No single standard; rather than hand-roll a
+  provider-abstraction layer, reuse `go-acme/lego`'s existing ~150-provider abstraction
+  (built for the structurally identical ACME DNS-01 problem: create/clean up one record,
+  given per-manufacturer credentials). Most providers support record- or zone-scoped
+  tokens (e.g. a Cloudflare API token restricted to one zone), keeping the credential's
+  blast radius to that one zone even though the write itself only ever touches one name
+  within it.
+- **Display-and-verify** (no credential custody) — publisher platform computes the exact
+  record content and shows it to manufacturer staff to publish manually, then polls to
+  confirm it landed. Zero DNS credentials held anywhere in the publisher platform;
+  consistent with `design/opentea-server.md`'s "optional trust must be explicit" design
+  principle. Manual, doesn't scale for automated key rotation.
+- **RFC 2136 Dynamic Update (TSIG-signed)** — the DNS-native path, relevant only for a
+  manufacturer self-hosting authoritative DNS (BIND/PowerDNS/Knot/NSD); essentially no
+  managed/commercial provider exposes it to customers.
+
+No default is chosen here — which of these is v1's default (or whether more than one is
+offered) is open (§11).
+
+### 16.4 Rotation is "publish a new record," not "update in place"
+
+The source defines no rotation/expiry procedure at all. But because the record name is
+*derived from the key* (§16.1), a new signing key automatically gets a new, distinct DNS
+name — rotation is naturally "publish a new CERT record alongside the old one," not an
+in-place overwrite. What's still genuinely open: how long a superseded record should stay
+published (evidence signed under the old key still needs it resolvable to validate), any
+TTL guidance, and whether/when the publisher platform should ever remove an old record
+automatically (§11).
+
+### 16.5 Not part of the standard protocol, and not the same transaction as commit
+
+Trust-anchor publication targets the manufacturer's own DNS, not any particular TEA
+server — symmetric with §9.1's signing boundary, it has nothing to do with `/publisher/v1`
+and is entirely a publisher-platform-side concern, out of protocol scope.
+
+This also narrows open question #2 (does commit span multiple streams): oej's phase 7
+lists collection/artifact/CLE commit and "updating DNS trust anchors" together as one
+workflow step, but they can't share one atomic transaction — a TEA server's database and
+an external DNS provider are different systems with no shared transaction boundary. The
+realistic shape is workflow batching (one manufacturer action triggers both, in sequence,
+each independently policy-gated per §16.2) rather than cross-system atomicity — the
+collection+artifact+CLE part of that question is still open on its own terms.
+
+### 16.6 Distinct from domain-ownership verification
+
+Related but separate: before a manufacturer can meaningfully publish a trust anchor (or
+anything else) under a domain, the publisher platform needs to know they actually control
+it. That's domain-ownership verification — tracked as its own item in `TODO.md`
+(**Deferred phases** → **Publisher platform: domain-ownership verification**), not
+designed here, since it's a prerequisite check, not part of the trust-anchor record format
+or publication mechanism itself.
+
+## 17. Cross-references
 
 - `design/publisher-openapi.yaml` — the OpenAPI 3.1 draft §8 sketches; v0.4's actual
   deliverable (does not yet cover §13's eventing).
@@ -1380,3 +1520,8 @@ responsibility.
   (§11.8) would reuse.
 - `internal/repo/repo.go`'s `WithTx` — the transaction-composition pattern any atomic
   commit implementation (§8) needs an equivalent of.
+- `github.com/oej/tea-trust-architecture` →
+  `tea-trust-arch/11-dnssec-trust-anchor.md` — the normative source for §16, fetched in
+  full for this revision.
+- `github.com/go-acme/lego` — the DNS-provider abstraction §16.3 points to reusing rather
+  than hand-rolling.

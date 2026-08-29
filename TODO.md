@@ -98,6 +98,16 @@ they don't get lost.
       own design pass (does the credential's subject claim always map 1:1 to a human actor,
       or does a shared service-account credential need an additional asserted-but-verified
       sub-identity) before touching the OpenAPI schema.
+- [ ] **Publisher platform: domain-ownership verification** (found 2026-08-29, during a DNS
+      access-management discussion for the publisher platform) — before letting a
+      manufacturer publish under a given domain, the publisher platform needs to verify they
+      actually control it. Not designed anywhere yet. The well-trodden shape (ACME DNS-01,
+      Google Search Console, SPF/DKIM setup) is: publisher platform generates a random
+      challenge value, manufacturer publishes it as a TXT record (or proves control via an
+      HTTP file/response) at a well-known name, publisher platform polls and confirms. Needs
+      its own design pass: record name/format, challenge lifetime, re-verification policy
+      (domains can change hands), and how it relates to (but is distinct from) DNS trust
+      anchors (TAPS, next entry) and SVCB/HTTPS discovery records.
 - [ ] **Trust architecture overlay** (from oej's `tea-trust-architecture` repo) — evidence
       bundles, Ed25519 ephemeral certs, DNS trust anchors (TAPS), optional transparency logs
       (Rekor/Sigsum/SCITT), staged/commit publisher workflow. The design repo has since grown

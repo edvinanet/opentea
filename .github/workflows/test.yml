@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: BSD-2-Clause
+# SPDX-FileCopyrightText: 2026 Olle E. Johansson, Edvina AB, Sollentuna, Sweden
+#
+# Runs the same checks Makefile's `check` target documents as "what CI/a
+# pre-commit hook should run": gofmt formatting, go vet, and the full test
+# suite. No cgo/toolchain setup needed -- modernc.org/sqlite is pure Go.
+name: Test
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: fmt-check, vet, test
+        run: make check

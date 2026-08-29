@@ -79,14 +79,28 @@ they don't get lost.
       are first — that design work is what this entry is actually about.
 
 ## Deferred phases (large, not started)
-- [ ] **Publisher API** — the official TEA spec has no publisher/write API defined yet
-      (post-1.0 per the spec's own roadmap). `/admin/v1` is an explicit stand-in.
+- [ ] **Publisher API** — the official CycloneDX TEA spec has no publisher/write API
+      defined yet (post-1.0 per the spec's own roadmap). This project's own draft protocol
+      is now fully designed (`design/publisher-openapi.yaml`, `design/publisher-service.md`
+      §8) and no longer treats `/admin/v1` as its stand-in — normal manufacturer
+      publication should eventually use `/publisher/v1` instead
+      (`design/opentea-server.md` §8.3/§8.4). What's still unbuilt: opentea's own
+      server-side implementation of the protocol (package layout, DB migration, route
+      wiring — `design/opentea-server.md` §21 Phase 4/§22, `design/publisher-service.md`
+      §11 open question #8).
 - [ ] **Reference publisher** (part of the server/client/publisher reference-implementation
-      trio) — explicitly deferred by the user (2026-07-04). Blocked on authoring an OpenAPI
-      spec that extends TEA with the trust model from oej's `tea-trust-architecture` repo,
-      since that spec shapes how the publisher actually works. Do this only after that spec
-      exists — don't build a publisher against `/admin/v1` as a stand-in for this without
-      checking with the user first, since the trust-model spec may change the shape entirely.
+      trio) — explicitly deferred by the user (2026-07-04); not started. The design blocker
+      that deferred it is resolved — the protocol is fully designed
+      (`design/publisher-openapi.yaml`, `design/publisher-service.md` §8), and the shared
+      library shape is settled (2026-08-29, §8/§14.1 v0.18): `pkg/teapublisher` (wire types
+      for the publisher-only delta — `collection-draft`, `approval-decision`,
+      `evidence-submission`, etc. — importing `pkg/tea` for the reused base objects),
+      `pkg/teapublisherclient` (HTTP client library), `cmd/teapublisherclient` (reference
+      CLI) — all three in this repo, mirroring `pkg/tea`/`pkg/teaclient`/`cmd/teaclient`
+      exactly. The full GUI publisher platform (own DB/GUI/staff auth/staging) stays the
+      separate, standalone project `design/publisher-service.md` §3/§4 already settled on —
+      only the shared library and reference CLI move into this repo. Still needs explicit
+      go-ahead from the user before starting actual implementation.
 - [ ] **Publisher API: derive approval actor from authenticated identity, not a
       caller-supplied string** (found 2026-08-28, during `design/opentea-server.md` review —
       see its §11.4). `design/publisher-openapi.yaml`'s `approval-decision.actor` is

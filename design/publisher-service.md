@@ -1,6 +1,6 @@
 # TEA Publisher — protocol and service design
 
-**Status:** draft v0.17, for discussion. Nothing here is scheduled or approved; no
+**Status:** draft v0.18, for discussion. Nothing here is scheduled or approved; no
 implementation exists yet. This document is the design opentea's `TODO.md` "Reference
 publisher" entry has been blocked on since 2026-07-04.
 
@@ -206,6 +206,13 @@ than repeated here.
   surface is one record, not a zone). Three new open questions (§11 #16-18); narrows #2.
   Also adds domain-ownership verification to `TODO.md` as a separate, related item, not
   designed in this document.
+- **v0.18 (this revision)** settles where the shared publisher wire-types/client library
+  lives, per explicit direction that both opentea's own future `/publisher/v1`
+  implementation and the publisher platform need it: `pkg/teapublisher` (wire types, §8),
+  `pkg/teapublisherclient` (HTTP client), `cmd/teapublisherclient` (reference CLI) — all
+  three in this repo, mirroring `pkg/tea`/`pkg/teaclient`/`cmd/teaclient` exactly. Resolves
+  §14.1's previously-undetermined "where does this client's code live" note. `TODO.md`'s
+  **Reference publisher** entry updated to match.
 
 ## 1. Problem statement
 
@@ -580,6 +587,21 @@ server already serves `/tea/v1` at that path today).
   composition pattern `internal/repo/repo.go`'s `WithTx` already provides in opentea
   specifically, and something any implementer needs an equivalent of).
 
+**Shared wire types: `pkg/teapublisher`.** Both sides of this protocol need the same Go
+structs — opentea's own future server implementation (§11 Q8) and every publisher-platform
+shape (§4) calling it. `pkg/tea` already reuses this way for the base objects
+(`product`/`release`/`collection`/`artifact`/etc. — most of `design/publisher-openapi.yaml`'s
+schemas are those types verbatim), but stays scoped to *"the CycloneDX Transparency
+Exchange API OpenAPI spec"* (its own doc comment) — the official spec, not this project's
+own draft protocol. The publisher-only delta with no `/tea/v1` equivalent
+(`collection-draft`, `approval-decision`, `evidence-submission`,
+`prepare-commit-response`, and the rest of `design/publisher-openapi.yaml`'s
+publisher-specific schemas) belongs in a new sibling package, `pkg/teapublisher`, importing
+`pkg/tea` for the reused base objects rather than redefining them. Keeping it separate from
+`pkg/tea` means the official-spec boundary stays honest, and if a real official TEA
+Publisher API ever lands (open question #9), only this package needs to reconcile against
+it. Settled 2026-08-29; see §14.1 for the client-library half of this decision.
+
 ## 9. Signing and the evidence package
 
 **Settled by explicit direction:** the manufacturer owns the private key, and signing
@@ -952,7 +974,10 @@ assuming away.
    versioning across targets) or is it purely a publisher-server-side concern?
 8. **opentea's own implementation of §8** — real, valuable, separate work (§4) — but not
    scoped, scheduled, or designed in this document. Worth its own follow-up once §8 is
-   less of a sketch.
+   less of a sketch. The shared wire-types/client library shape it would build on is now
+   settled (`pkg/teapublisher`/`pkg/teapublisherclient`/`cmd/teapublisherclient`, §8/§14.1);
+   what's still open is opentea's own server-side package layout, DB migration, and route
+   wiring (also flagged in `design/opentea-server.md` §21 Phase 4, §22).
 9. **Relationship to a future official TEA publisher spec.** If/when TEA's own spec
    defines a publisher API, does §8 become a candidate proposal for it, an opentea-flavored
    extension of it, or something else — worth being explicit about given who's writing
@@ -1158,13 +1183,28 @@ on the read side: `pkg/teaclient` + `cmd/teaclient` exist precisely so a TEA con
 doesn't hand-roll HTTP calls against `/tea/v1`. The same shape belongs here — a reference
 CI/CD client (library + CLI, e.g. `publish-artifact --type=BOM --file=sbom.json
 --sign-with=...`) wrapping §7.4's create/upload/prepare/submit sequence into one command a
-build step actually calls. `pkg/tea` (this project's shared wire types) is already built
-to be reused this way ("importable from outside this module... so it can be shared by the
-server, this client, and any future publisher without duplicating the wire format" —
-`README-client.md`) — a CI/CD client can import it for the wire shapes without needing
-opentea's own internal packages at all. Where this client's code actually lives (inside
-the publisher software's own project, or a separate one) is undetermined — it depends on
-decisions about the publisher project's own repo structure that this design doesn't reach.
+build step actually calls.
+
+**Settled 2026-08-29** (previously left as "undetermined — depends on decisions about the
+publisher project's own repo structure this design doesn't reach"): the wire types and
+client library live in *this* repo, mirroring `pkg/tea`/`pkg/teaclient`/`cmd/teaclient`
+exactly —
+
+- **`pkg/teapublisher`** — shared wire types for the publisher-only delta (§8), importing
+  `pkg/tea` for the reused base objects.
+- **`pkg/teapublisherclient`** — the HTTP client library on top of it, used by both
+  `cmd/teapublisherclient` below and, per §4's "publisher platform is a role, not one
+  service," the full GUI service itself whenever it acts as a client of a target's
+  `/publisher/v1`.
+- **`cmd/teapublisherclient`** — the reference CLI (`publish-artifact ...` above).
+
+All three live alongside `pkg/tea`/`pkg/teaclient` because opentea's own future
+`/publisher/v1` server implementation (§11 Q8) needs `pkg/teapublisher` as a direct
+dependency regardless of where anything else ends up — the same reasoning that already
+keeps `pkg/tea` in this repo despite being consumed externally. This does **not** reopen
+§3/§4's settled point that the full GUI publisher platform (own DB, own auth, own staging)
+is a separate, standalone project — only the shared library and reference CLI move into
+this repo, not the application built on top of them.
 
 ### 14.2 Credential provisioning: reuse Layer A's OIDC machinery, don't invent a second one
 

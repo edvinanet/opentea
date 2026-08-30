@@ -3,11 +3,12 @@
 
 // Command opentea runs the TEA consumer read API (spec-conformant, at
 // /tea/v1 by default -- see TEA_API_BASE_PATH) plus a blob server
-// (/files/{sha256}), and the operator-facing surface -- the unofficial admin
-// ingestion API (/admin/v1) and the admin web GUI (/admin/ui) -- from a
-// single process. Both surfaces share one listener (TEA_LISTEN_ADDR) unless
-// TEA_ADMIN_LISTEN_ADDR is set, in which case the admin surface binds
-// separately -- see config.Config.AdminListenAddr. Run
+// (/files/{sha256}), and the management-plane surface -- the unofficial
+// admin ingestion API (/admin/v1), the admin web GUI (/admin/ui), and the
+// draft standard TEA Publisher API (/publisher/v1, internal/publisher) --
+// from a single process. Both planes share one listener (TEA_LISTEN_ADDR)
+// unless TEA_ADMIN_LISTEN_ADDR is set, in which case the management plane
+// binds separately -- see config.Config.AdminListenAddr. Run
 // `opentea createadmin -username=... -password=...` to bootstrap the first
 // admin user before logging into the GUI.
 package main
@@ -32,6 +33,7 @@ import (
 	"github.com/oej/opentea/internal/db"
 	"github.com/oej/opentea/internal/files"
 	"github.com/oej/opentea/internal/httpx"
+	"github.com/oej/opentea/internal/publisher"
 	"github.com/oej/opentea/internal/repo"
 	"github.com/oej/opentea/internal/storage"
 	"github.com/oej/opentea/internal/webadmin"
@@ -195,6 +197,10 @@ func registerAPIRoutes(mux *http.ServeMux, r *repo.Repo, blobStore storage.Stora
 func registerAdminRoutes(mux *http.ServeMux, r *repo.Repo, blobStore storage.Storage, cfg config.Config, startedAt time.Time) {
 	mux.Handle("/admin/v1/", admin.NewRouter(r, blobStore, cfg, startedAt))
 	mux.Handle("/admin/ui/", webadmin.NewRouter(r, cfg))
+	// /publisher/v1 belongs on the management plane alongside /admin/v1 and
+	// /admin/ui (design/opentea-server.md §6/§7.2/§8.4) -- it shares the
+	// same optional AdminListenAddr split, not the public consumer listener.
+	mux.Handle("/publisher/v1/", publisher.NewRouter(r, blobStore, cfg))
 }
 
 // adminCSP has no script-src at all -- internal/webadmin's templates never

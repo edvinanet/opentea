@@ -110,4 +110,13 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /admin/v1/artifacts/{uuid}/{version}/evidenceBundle", s.requireRole(admin, s.createEvidenceBundleForOwner("ARTIFACT", trust.ObjectTypeArtifact)))
 	mux.HandleFunc("POST /admin/v1/collections/{uuid}/{version}/evidenceBundle", s.requireRole(admin, s.createEvidenceBundleForOwner("COLLECTION", trust.ObjectTypeCollection)))
 	mux.HandleFunc("GET /admin/v1/evidenceBundles/{uuid}", s.requireRole(consumer, s.getEvidenceBundle))
+
+	// /publisher/v1 Layer B/D bearer credential issuance (internal/publisher,
+	// design/publisher-service.md §10.2/§10.4) -- an operator action, not
+	// part of the standard protocol, hence admin-gated here rather than
+	// exposed under /publisher/v1 itself. The raw token is returned only
+	// once, at creation (createPublisherCredentialResponse).
+	mux.HandleFunc("POST /admin/v1/publisherCredentials", s.requireRole(admin, s.createPublisherCredential))
+	mux.HandleFunc("GET /admin/v1/publisherCredentials", s.requireRole(consumer, s.listPublisherCredentials))
+	mux.HandleFunc("DELETE /admin/v1/publisherCredentials/{uuid}", s.requireRole(admin, s.revokePublisherCredential))
 }

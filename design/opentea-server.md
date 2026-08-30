@@ -288,9 +288,19 @@ Normal manufacturer publication should eventually use `/publisher/v1`, not `/adm
 
 ### 8.4 Standard Publisher API
 
-OpenTEA should implement the Publisher API described separately in
-`design/publisher-openapi.yaml` after its critical integrity and authorization questions
-are resolved. The boundary (resolved; see `design/publisher-service.md` §4 and §11 Q1):
+**Implemented 2026-08-30** — `internal/publisher`, mounted at `/publisher/v1` on the
+management-plane listener (see §7.2), covering the full v1 protocol surface from
+`design/publisher-openapi.yaml`: product/component/release/CLE creation, artifact create/
+upload/evidence prepare+submit, and collection-draft put/get/delete/approve/reject/
+prepareCommit/cancelPrepare/commit — both product-release- and component-release-owned.
+Gated by a new `publisher_credential` bearer-token model with two structurally-enforced
+scopes (`full`/`cicd`, matching `design/publisher-service.md` §10.4's split), admin-issued
+via `/admin/v1/publisherCredentials`. Out of this pass, matching `design/publisher-service.md`
+§12's own phasing: timestamps/transparency-log evidence, eventing/webhooks (so commit does
+*not* yet write an outbox event, only the object+evidence — see `TODO.md`'s **Publisher API**
+entry for the audit-record gap too), DNS trust-anchor publication, multi-target support.
+
+The boundary this implements (resolved; see `design/publisher-service.md` §4 and §11 Q1):
 
 - OpenTEA owns collection-draft staging, expiry/locking, and approve/reject enforcement
   (maker-checker) as protocol operations, regardless of which client calls them. This is

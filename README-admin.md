@@ -204,6 +204,42 @@ Import is idempotent — re-importing the same bundle, or a bundle that overlaps
 have (e.g. two products sharing a component), never creates duplicates; `AlreadyExisted` in the
 response tells you what was already there.
 
+### Publisher credentials (`/publisher/v1` bearer tokens)
+
+`/publisher/v1` (opentea's server-side implementation of the draft standard TEA Publisher
+API — `design/publisher-openapi.yaml`, `design/publisher-service.md`, `internal/publisher`)
+is authenticated by its own bearer-token credential, not the admin session cookie. Issue and
+manage those credentials here:
+
+| Method | Path | Role |
+|---|---|---|
+| POST | `/admin/v1/publisherCredentials` | admin |
+| GET | `/admin/v1/publisherCredentials` | consumer |
+| DELETE | `/admin/v1/publisherCredentials/{uuid}` | admin |
+
+Two scopes, structurally enforced (`design/publisher-service.md` §10.4): `full` may call
+every `/publisher/v1` operation; `cicd` may create/upload/validate artifacts and drive
+collection-draft assembly and the mechanical prepare/cancel/commit steps, but may never
+create products/components/releases/CLE events, or approve/reject a collection draft — issue
+a CI/CD pipeline a `cicd`-scoped credential, and a publisher platform's own service identity
+a `full`-scoped one.
+
+```bash
+curl -b cookies.txt -X POST $BASE/admin/v1/publisherCredentials -H 'Content-Type: application/json' -d '{
+  "label": "acme-ci-pipeline", "scope": "cicd"
+}'
+# {"uuid":"...","label":"acme-ci-pipeline","scope":"cicd","createdAt":"...","token":"..."}
+```
+
+The raw `token` is returned **only in this response** — store it now; it can't be retrieved
+again (revoke and reissue if it's lost). Use it as `Authorization: Bearer <token>` against
+`/publisher/v1`:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" -X POST $BASE/publisher/v1/artifacts \
+  -H 'Content-Type: application/json' -d '{"type":"BOM","formats":[{"mediaType":"application/vnd.cyclonedx+json"}]}'
+```
+
 ## 5. Using an API token against `/tea/v1`
 
 `/tea/v1` (the spec-conformant consumer read API) stays fully public — no login, no token,

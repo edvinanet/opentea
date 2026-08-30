@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 )
 
 // Config holds the server's runtime configuration, built by Load.
@@ -86,6 +87,20 @@ type Config struct {
 	// internal/trust's phased plan; enforcement is a later phase). Off
 	// (plain TEA) by default.
 	TrustArchitectureEnabled bool
+
+	// PublisherDraftTTL/PublisherLockTTL/PublisherApprovalTTL are
+	// /publisher/v1's collection-draft expiry durations
+	// (design/publisher-service.md §9.6, §11 open question #14 -- none has
+	// a spec-proposed default; these are this implementation's own,
+	// deliberately configurable choice, not a settled protocol fact).
+	// PublisherDraftTTL: how long an untouched draft survives before it
+	// expires, refreshed on every putCollectionDraft. PublisherLockTTL: how
+	// long prepareCollectionCommit's lock survives before releasing
+	// automatically. PublisherApprovalTTL: how long an approval decision
+	// stays valid for prepareCollectionCommit to consume.
+	PublisherDraftTTL    time.Duration
+	PublisherLockTTL     time.Duration
+	PublisherApprovalTTL time.Duration
 }
 
 // defaultConfigFile is checked automatically if TEA_CONFIG_FILE isn't set.
@@ -107,6 +122,19 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 
+	draftTTL, err := resolveDuration("TEA_PUBLISHER_DRAFT_TTL", fileValues, 168*time.Hour)
+	if err != nil {
+		return Config{}, err
+	}
+	lockTTL, err := resolveDuration("TEA_PUBLISHER_LOCK_TTL", fileValues, time.Hour)
+	if err != nil {
+		return Config{}, err
+	}
+	approvalTTL, err := resolveDuration("TEA_PUBLISHER_APPROVAL_TTL", fileValues, 24*time.Hour)
+	if err != nil {
+		return Config{}, err
+	}
+
 	return Config{
 		ListenAddr:               resolve("TEA_LISTEN_ADDR", fileValues, ":8080"),
 		AdminListenAddr:          resolve("TEA_ADMIN_LISTEN_ADDR", fileValues, ""),
@@ -120,7 +148,25 @@ func Load() (Config, error) {
 		TLSKeyFile:               resolve("TEA_TLS_KEY_FILE", fileValues, ""),
 		TrustProxyHeaders:        resolve("TEA_TRUST_PROXY_HEADERS", fileValues, "false") == "true",
 		TrustArchitectureEnabled: resolve("TEA_TRUST_ARCHITECTURE", fileValues, "false") == "true",
+		PublisherDraftTTL:        draftTTL,
+		PublisherLockTTL:         lockTTL,
+		PublisherApprovalTTL:     approvalTTL,
 	}, nil
+}
+
+// resolveDuration is resolve for a time.Duration field, parsed via
+// time.ParseDuration (e.g. "168h", "1h30m") -- an explicitly-set value that
+// fails to parse is a configuration error, not silently ignored.
+func resolveDuration(key string, fileValues map[string]string, fallback time.Duration) (time.Duration, error) {
+	raw := resolve(key, fileValues, "")
+	if raw == "" {
+		return fallback, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s: invalid duration %q: %w", key, raw, err)
+	}
+	return d, nil
 }
 
 // configFilePath returns the config file to load: an explicit

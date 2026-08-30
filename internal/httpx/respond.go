@@ -56,6 +56,13 @@ func Forbidden(w http.ResponseWriter, message string) {
 	WriteJSON(w, http.StatusForbidden, messageBody{Message: message})
 }
 
+// Conflict writes a 409 response -- used when a request is individually
+// well-formed but rejected because of the resource's current state (e.g. a
+// locked collection draft, a stale approval).
+func Conflict(w http.ResponseWriter, message string) {
+	WriteJSON(w, http.StatusConflict, messageBody{Message: message})
+}
+
 // InternalError logs err server-side (with request context) and writes a
 // generic 500 response with no internal detail leaked to the client.
 func InternalError(w http.ResponseWriter, r *http.Request, err error) {

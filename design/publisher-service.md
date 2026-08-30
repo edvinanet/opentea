@@ -1,6 +1,6 @@
 # TEA Publisher — protocol and service design
 
-**Status:** draft v0.19, for discussion. Nothing here is scheduled or approved; no
+**Status:** draft v0.20, for discussion. Nothing here is scheduled or approved; no
 implementation exists yet. This document is the design opentea's `TODO.md` "Reference
 publisher" entry has been blocked on since 2026-07-04.
 
@@ -223,6 +223,13 @@ than repeated here.
   need those wire types regardless. Only the reference-CLI layer on top of it moves to
   "later, if CI/CD-direct workflows need it" rather than "next." `TODO.md`'s **Reference
   publisher** entry updated to match.
+- **v0.20 (this revision)** resolves open question #8: opentea's own server-side
+  implementation of §8 is built (`internal/publisher`,
+  `internal/db/migrations/0007_publisher.sql`, `design/opentea-server.md` §8.4). Records the
+  two implementation-time decisions this document itself left open — credential scoping
+  (open question #10) and expiry defaults (open question #14) — as resolved-for-now, with
+  the caveat that neither was actually settled by discussion here, just decided pragmatically
+  during the build. `TODO.md`'s **Publisher API** entry updated to match.
 
 ## 1. Problem statement
 
@@ -982,12 +989,16 @@ assuming away.
    more than one target TEA server (e.g. a manufacturer mirrored across several TEA
    instances), and if so does that need protocol support (idempotency, consistent
    versioning across targets) or is it purely a publisher-server-side concern?
-8. **opentea's own implementation of §8** — real, valuable, separate work (§4) — but not
-   scoped, scheduled, or designed in this document. Worth its own follow-up once §8 is
-   less of a sketch. The shared wire-types/client library shape it would build on is now
-   settled (`pkg/teapublisher`/`pkg/teapublisherclient`/`cmd/teapublisherclient`, §8/§14.1);
-   what's still open is opentea's own server-side package layout, DB migration, and route
-   wiring (also flagged in `design/opentea-server.md` §21 Phase 4, §22).
+8. ~~opentea's own implementation of §8~~ — **implemented 2026-08-30**:
+   `internal/publisher`, `internal/db/migrations/0007_publisher.sql`, mounted at
+   `/publisher/v1` (`design/opentea-server.md` §8.4). Two things this implementation decided
+   on its own, not settled by this document — worth revisiting: the `full`/`cicd` credential
+   scope split (§10.4) buckets CLE events under `full`, which §10.4 doesn't name explicitly;
+   and draft/lock/approval expiry defaults (168h/1h/24h, open question #14) are this
+   implementation's own choice, not a spec fact. Still unbuilt from commit's own summary
+   (§8): the outbox event (§13's eventing is its own, later phase per §12) and the audit
+   record (blocked on the same actor-identity gap `TODO.md`'s "derive approval actor from
+   authenticated identity" entry already tracks).
 9. **Relationship to a future official TEA publisher spec.** If/when TEA's own spec
    defines a publisher API, does §8 become a candidate proposal for it, an opentea-flavored
    extension of it, or something else — worth being explicit about given who's writing

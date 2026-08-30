@@ -40,10 +40,12 @@ type CollectionInput struct {
 
 // CreateCollectionForComponentRelease publishes a new collection version
 // for componentReleaseUUID (version auto-incremented from any existing
-// collection for it). Returns ErrNotFound if componentReleaseUUID doesn't exist.
+// collection for it). Returns ErrNotFound if componentReleaseUUID doesn't
+// exist. Composes into an outer WithTx when called through the Repo a
+// WithTx callback receives (see createCollection).
 func (r *Repo) CreateCollectionForComponentRelease(ctx context.Context, componentReleaseUUID string, in CollectionInput) (tea.Collection, error) {
 	var exists int
-	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM component_release WHERE uuid = ?`, componentReleaseUUID).Scan(&exists); err != nil {
+	if err := r.conn().QueryRowContext(ctx, `SELECT COUNT(*) FROM component_release WHERE uuid = ?`, componentReleaseUUID).Scan(&exists); err != nil {
 		return tea.Collection{}, err
 	}
 	if exists == 0 {
@@ -55,9 +57,11 @@ func (r *Repo) CreateCollectionForComponentRelease(ctx context.Context, componen
 // CreateCollectionForProductRelease publishes a new collection version for
 // productReleaseUUID (version auto-incremented from any existing collection
 // for it). Returns ErrNotFound if productReleaseUUID doesn't exist.
+// Composes into an outer WithTx when called through the Repo a WithTx
+// callback receives (see createCollection).
 func (r *Repo) CreateCollectionForProductRelease(ctx context.Context, productReleaseUUID string, in CollectionInput) (tea.Collection, error) {
 	var exists int
-	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM product_release WHERE uuid = ?`, productReleaseUUID).Scan(&exists); err != nil {
+	if err := r.conn().QueryRowContext(ctx, `SELECT COUNT(*) FROM product_release WHERE uuid = ?`, productReleaseUUID).Scan(&exists); err != nil {
 		return tea.Collection{}, err
 	}
 	if exists == 0 {
@@ -66,54 +70,56 @@ func (r *Repo) CreateCollectionForProductRelease(ctx context.Context, productRel
 	return r.createCollection(ctx, productReleaseUUID, BelongsToProductRelease, in)
 }
 
+// createCollection runs via runInTx (like CreateEvidenceBundle) rather than
+// a private r.db.BeginTx, so a caller assembling an atomic multi-step
+// operation -- internal/publisher's commitCollectionDraft, which must
+// create the collection, create its evidence bundle, and delete the draft
+// all-or-nothing -- can call CreateCollectionForProductRelease/
+// ComponentRelease from inside its own repo.WithTx callback and have it
+// compose into that one transaction instead of opening a second, separate
+// one (design/publisher-service.md §8's explicit call-out of this pattern).
 func (r *Repo) createCollection(ctx context.Context, ownerUUID, belongsTo string, in CollectionInput) (tea.Collection, error) {
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return tea.Collection{}, err
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	var maxVersion sql.NullInt64
-	if err := tx.QueryRowContext(ctx, `SELECT MAX(version) FROM collection WHERE uuid = ?`, ownerUUID).Scan(&maxVersion); err != nil {
-		return tea.Collection{}, err
-	}
-	version := 1
-	if maxVersion.Valid {
-		version = int(maxVersion.Int64) + 1
-	}
-
-	now := time.Now()
-	var reasonType, reasonComment any
-	if in.UpdateReason != nil {
-		reasonType = in.UpdateReason.Type
-		if in.UpdateReason.Comment != "" {
-			reasonComment = in.UpdateReason.Comment
+	return runInTx(ctx, r, func(tx dbtx) (tea.Collection, error) {
+		var maxVersion sql.NullInt64
+		if err := tx.QueryRowContext(ctx, `SELECT MAX(version) FROM collection WHERE uuid = ?`, ownerUUID).Scan(&maxVersion); err != nil {
+			return tea.Collection{}, err
 		}
-	}
+		version := 1
+		if maxVersion.Valid {
+			version = int(maxVersion.Int64) + 1
+		}
 
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO collection (uuid, version, date, belongs_to, update_reason_type, update_reason_comment) VALUES (?, ?, ?, ?, ?, ?)`,
-		ownerUUID, version, formatTime(now), belongsTo, reasonType, reasonComment,
-	); err != nil {
-		return tea.Collection{}, err
-	}
+		now := time.Now()
+		var reasonType, reasonComment any
+		if in.UpdateReason != nil {
+			reasonType = in.UpdateReason.Type
+			if in.UpdateReason.Comment != "" {
+				reasonComment = in.UpdateReason.Comment
+			}
+		}
 
-	for _, a := range in.Artifacts {
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO collection_artifact (collection_uuid, collection_version, artifact_uuid, artifact_version) VALUES (?, ?, ?, ?)`,
-			ownerUUID, version, a.UUID, a.Version,
+			`INSERT INTO collection (uuid, version, date, belongs_to, update_reason_type, update_reason_comment) VALUES (?, ?, ?, ?, ?, ?)`,
+			ownerUUID, version, formatTime(now), belongsTo, reasonType, reasonComment,
 		); err != nil {
 			return tea.Collection{}, err
 		}
-	}
 
-	if err := bumpWatermarkTx(ctx, tx, WatermarkCollections); err != nil {
-		return tea.Collection{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return tea.Collection{}, err
-	}
-	return r.GetCollectionByVersion(ctx, ownerUUID, version, belongsTo)
+		for _, a := range in.Artifacts {
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO collection_artifact (collection_uuid, collection_version, artifact_uuid, artifact_version) VALUES (?, ?, ?, ?)`,
+				ownerUUID, version, a.UUID, a.Version,
+			); err != nil {
+				return tea.Collection{}, err
+			}
+		}
+
+		if err := bumpWatermarkTx(ctx, tx, WatermarkCollections); err != nil {
+			return tea.Collection{}, err
+		}
+
+		return getCollectionByVersionTx(ctx, tx, ownerUUID, version, belongsTo)
+	})
 }
 
 // ImportCollectionInput carries the explicit (uuid, version) identity a

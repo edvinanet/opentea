@@ -161,6 +161,44 @@ func (r *Repo) QueryComponents(ctx context.Context, idType, idValue, sortField, 
 	return out, nil
 }
 
+// SearchComponents returns up to limit components whose name contains q
+// (case-insensitive substring match), for /publisher/v1's findComponents
+// find-before-create workflow (design/publisher-openapi.yaml). Simplest
+// useful implementation of the OpenAPI's free-text q search --
+// QueryComponents' idType/idValue is an exact-match identifier filter, not
+// this. An empty q matches everything (still capped by limit).
+func (r *Repo) SearchComponents(ctx context.Context, q string, limit int) ([]tea.Component, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT uuid, name FROM component WHERE instr(lower(name), lower(?)) > 0 OR ? = '' ORDER BY name LIMIT ?`,
+		q, q, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := []tea.Component{}
+	for rows.Next() {
+		var c tea.Component
+		if err := rows.Scan(&c.UUID, &c.Name); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	for i := range out {
+		ids, err := listIdentifiers(ctx, r.db, OwnerComponent, out[i].UUID)
+		if err != nil {
+			return nil, err
+		}
+		out[i].Identifiers = ids
+	}
+	return out, nil
+}
+
 // DeleteComponent deletes the component identified by uuid, cascading to
 // its releases. Returns ErrNotFound if uuid doesn't exist.
 func (r *Repo) DeleteComponent(ctx context.Context, uuid string) error {

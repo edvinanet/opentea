@@ -79,15 +79,32 @@ they don't get lost.
       are first — that design work is what this entry is actually about.
 
 ## Deferred phases (large, not started)
-- [ ] **Publisher API** — the official CycloneDX TEA spec has no publisher/write API
+- [x] **Publisher API** — the official CycloneDX TEA spec has no publisher/write API
       defined yet (post-1.0 per the spec's own roadmap). This project's own draft protocol
       is now fully designed (`design/publisher-openapi.yaml`, `design/publisher-service.md`
       §8) and no longer treats `/admin/v1` as its stand-in — normal manufacturer
       publication should eventually use `/publisher/v1` instead
-      (`design/opentea-server.md` §8.3/§8.4). What's still unbuilt: opentea's own
-      server-side implementation of the protocol (package layout, DB migration, route
-      wiring — `design/opentea-server.md` §21 Phase 4/§22, `design/publisher-service.md`
-      §11 open question #8).
+      (`design/opentea-server.md` §8.3/§8.4). **opentea's own server-side implementation
+      shipped 2026-08-30** (`internal/publisher`, mounted at `/publisher/v1` on the
+      management-plane listener; `internal/db/migrations/0007_publisher.sql`): the full v1
+      protocol surface (product/component/release/CLE creation, artifact create/upload/
+      evidence prepare+submit, collection-draft put/get/delete/approve/reject/prepareCommit/
+      cancelPrepare/commit, both product-release- and component-release-owned), gated by a
+      new `publisher_credential` bearer-token model with two scopes (`full`/`cicd` —
+      `design/publisher-service.md` §10.4's split, structurally enforced, not just
+      conventional), admin-issued via `/admin/v1/publisherCredentials`
+      (`internal/admin/publishercredential.go`). Two pragmatic decisions made during
+      implementation, not settled spec facts — worth revisiting: (1) CLE events bucketed
+      under `full` scope, not named explicitly in §10.4's cicd/full split; (2) draft/lock/
+      approval expiry defaults (168h/1h/24h — §11 open question #14 had none) are this
+      implementation's own choice, configurable via `TEA_PUBLISHER_DRAFT_TTL`/
+      `TEA_PUBLISHER_LOCK_TTL`/`TEA_PUBLISHER_APPROVAL_TTL`. Known gap: `commitCollectionDraft`
+      doesn't yet write an `admin_audit_log` entry the way every other admin mutation does
+      (design/publisher-openapi.yaml's commit summary says "records one audit entry") —
+      skipped for the same reason `evidence_bundle.created_by` stays NULL for
+      publisher-credential-authenticated writes: there's no `user` row to attribute it to
+      until the approval-actor-identity item below is resolved. `pkg/teapublisherclient`/
+      `cmd/teapublisherclient` remain on hold (separate item below).
 - [ ] **Reference publisher** (part of the server/client/publisher reference-implementation
       trio) — explicitly deferred by the user (2026-07-04); not started. The design blocker
       that deferred it is resolved — the protocol is fully designed
@@ -100,12 +117,13 @@ they don't get lost.
       exactly. The full GUI publisher platform (own DB/GUI/staff auth/staging) stays the
       separate, standalone project `design/publisher-service.md` §3/§4 already settled on —
       only the shared library and reference CLI move into this repo.
-      **`pkg/teapublisher` is scaffolded** (2026-08-29, wire types only, nothing imports it
-      yet). **`pkg/teapublisherclient`/`cmd/teapublisherclient` are on hold** (2026-08-30,
-      `design/publisher-service.md` §14.1 v0.19): the publisher platform's primary
-      integration surface will mainly be its own GUI, not a CI/CD-embedded reference CLI, so
-      that layer isn't the priority right now. Server-side `/publisher/v1` implementation in
-      opentea itself still needs explicit go-ahead before starting.
+      **`pkg/teapublisher` is scaffolded and now in real use** (2026-08-29/30 — wire types,
+      imported by opentea's own `internal/publisher` server implementation, see the
+      **Publisher API** entry above). **`pkg/teapublisherclient`/`cmd/teapublisherclient`
+      remain on hold** (2026-08-30, `design/publisher-service.md` §14.1 v0.19): the publisher
+      platform's primary integration surface will mainly be its own GUI, not a CI/CD-embedded
+      reference CLI, so that layer isn't the priority right now. The full, standalone GUI
+      publisher platform itself is unstarted, and out of this repo's scope per §3/§4.
 - [ ] **Publisher API: derive approval actor from authenticated identity, not a
       caller-supplied string** (found 2026-08-28, during `design/opentea-server.md` review —
       see its §11.4). `design/publisher-openapi.yaml`'s `approval-decision.actor` is

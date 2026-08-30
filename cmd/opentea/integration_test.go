@@ -68,7 +68,18 @@ func newTestServerWithAPIBasePath(t *testing.T, apiBasePath string) *testServer 
 
 	r := repo.New(sqlDB)
 
-	cfg := config.Config{Versions: []string{"0.4.0"}, APIBasePath: apiBasePath}
+	cfg := config.Config{
+		Versions:    []string{"0.4.0"},
+		APIBasePath: apiBasePath,
+		// This test harness builds Config by hand rather than going
+		// through config.Load(), so its own duration defaults don't apply
+		// -- set explicitly here so /publisher/v1 draft/lock/approval TTLs
+		// (internal/publisher/collectiondraft.go) don't zero out to
+		// "already expired" for every test that exercises them.
+		PublisherDraftTTL:    168 * time.Hour,
+		PublisherLockTTL:     time.Hour,
+		PublisherApprovalTTL: 24 * time.Hour,
+	}
 	srv := httptest.NewServer(nil) // handler attached below, once we know srv.URL for cfg.RootURL
 	cfg.RootURL = srv.URL
 	srv.Config.Handler = newMux(r, blobStore, cfg, time.Now())

@@ -1,6 +1,6 @@
 # TEA Publisher — protocol and service design
 
-**Status:** draft v0.18, for discussion. Nothing here is scheduled or approved; no
+**Status:** draft v0.19, for discussion. Nothing here is scheduled or approved; no
 implementation exists yet. This document is the design opentea's `TODO.md` "Reference
 publisher" entry has been blocked on since 2026-07-04.
 
@@ -213,6 +213,16 @@ than repeated here.
   three in this repo, mirroring `pkg/tea`/`pkg/teaclient`/`cmd/teaclient` exactly. Resolves
   §14.1's previously-undetermined "where does this client's code live" note. `TODO.md`'s
   **Reference publisher** entry updated to match.
+- **v0.19 (this revision)** puts `pkg/teapublisherclient`/`cmd/teapublisherclient` on hold,
+  per explicit direction: the publisher platform's primary integration surface will mainly
+  be its own GUI, not a CI/CD-embedded reference CLI, so building the CLI client next isn't
+  the priority v0.18 assumed. Doesn't reopen anything already settled — §4's "publisher
+  platform is a role, any signing-capable client" still holds, §9.1's signing boundary is
+  unchanged, and `pkg/teapublisher` (§8, already scaffolded) stays exactly as designed,
+  since both the GUI service and opentea's own future `/publisher/v1` server implementation
+  need those wire types regardless. Only the reference-CLI layer on top of it moves to
+  "later, if CI/CD-direct workflows need it" rather than "next." `TODO.md`'s **Reference
+  publisher** entry updated to match.
 
 ## 1. Problem statement
 
@@ -1197,6 +1207,12 @@ exactly —
   service," the full GUI service itself whenever it acts as a client of a target's
   `/publisher/v1`.
 - **`cmd/teapublisherclient`** — the reference CLI (`publish-artifact ...` above).
+
+**On hold as of v0.19**: the publisher platform's primary integration surface is expected
+to mainly be its own GUI, not pipelines calling a reference CLI directly, so
+`pkg/teapublisherclient`/`cmd/teapublisherclient` are deprioritized — not building them
+next. `pkg/teapublisher` (the wire types both the GUI service and opentea's own future
+server need either way) is unaffected and stays scaffolded as-is.
 
 All three live alongside `pkg/tea`/`pkg/teaclient` because opentea's own future
 `/publisher/v1` server implementation (§11 Q8) needs `pkg/teapublisher` as a direct

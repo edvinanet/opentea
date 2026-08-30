@@ -99,8 +99,13 @@ they don't get lost.
       CLI) — all three in this repo, mirroring `pkg/tea`/`pkg/teaclient`/`cmd/teaclient`
       exactly. The full GUI publisher platform (own DB/GUI/staff auth/staging) stays the
       separate, standalone project `design/publisher-service.md` §3/§4 already settled on —
-      only the shared library and reference CLI move into this repo. Still needs explicit
-      go-ahead from the user before starting actual implementation.
+      only the shared library and reference CLI move into this repo.
+      **`pkg/teapublisher` is scaffolded** (2026-08-29, wire types only, nothing imports it
+      yet). **`pkg/teapublisherclient`/`cmd/teapublisherclient` are on hold** (2026-08-30,
+      `design/publisher-service.md` §14.1 v0.19): the publisher platform's primary
+      integration surface will mainly be its own GUI, not a CI/CD-embedded reference CLI, so
+      that layer isn't the priority right now. Server-side `/publisher/v1` implementation in
+      opentea itself still needs explicit go-ahead before starting.
 - [ ] **Publisher API: derive approval actor from authenticated identity, not a
       caller-supplied string** (found 2026-08-28, during `design/opentea-server.md` review —
       see its §11.4). `design/publisher-openapi.yaml`'s `approval-decision.actor` is

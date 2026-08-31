@@ -105,6 +105,27 @@ they don't get lost.
       publisher-credential-authenticated writes: there's no `user` row to attribute it to
       until the approval-actor-identity item below is resolved. `pkg/teapublisherclient`/
       `cmd/teapublisherclient` remain on hold (separate item below).
+
+      **External security review 2026-08-28** (`docs/security-review-publisher-design-260828.md`,
+      reviewed the design docs before this implementation existed) found 16 issues. Three
+      narrow, unambiguous ones fixed 2026-08-31, in both `design/publisher-openapi.yaml`
+      (now v0.10) and the code: (1) `uploadArtifactFile` now rejects (409) once evidence
+      exists for that artifact version — a re-upload could otherwise silently invalidate a
+      signature's meaning without the stored evidence bundle reflecting it; (2)
+      `uploadArtifactFile` addresses a format by `mediaType` instead of the fragile,
+      reorderable `formatIndex`; (3) `CreateComponent` (`internal/repo/component.go`, shared
+      by `/admin/v1` and `/publisher/v1`) now enforces `identifiers` uniqueness inside its
+      own transaction (409 on conflict) instead of relying on a client's find-before-create
+      convention two concurrent callers could both defeat. Remaining findings not yet
+      addressed, roughly by size: the approval-actor-identity gap already tracked below
+      (review's finding 2); no explicit `prepareId`/nonce binding commit to a specific
+      prepare call (finding 3 — largely mitigated in practice by the lock+lock_date
+      mechanism already built, but not explicit/documented as such); no way to create a new
+      version of an existing artifact (finding 4); missing capability-scoped tokens finer
+      than full/cicd (finding 6); evidence modeled at the artifact level while the wire
+      schema's `evidenceBundle`/`evidenceBundleRef` live on `artifact-format` (finding 7);
+      OpenAPI completeness/idempotency/error-contract gaps (findings 9, 13, 15); several
+      more medium-severity findings (10, 11) not evaluated against the current code yet.
 - [ ] **Reference publisher** (part of the server/client/publisher reference-implementation
       trio) — explicitly deferred by the user (2026-07-04); not started. The design blocker
       that deferred it is resolved — the protocol is fully designed

@@ -14,7 +14,20 @@ import (
 	"github.com/oej/opentea/pkg/tea"
 )
 
+// ErrComponentIdentifierConflict is returned by CreateComponent when one of
+// the submitted identifiers already belongs to another component --
+// server-side enforcement of the "search before create" convention
+// /publisher/v1's findComponents/createComponent document, closing the
+// race where two concurrent callers both search, both find nothing, and
+// both create (found by external security review,
+// docs/security-review-publisher-design-260828.md finding 12). Checked
+// only when identifiers is non-empty -- a component with none has no
+// server-checkable identity to deduplicate against.
+var ErrComponentIdentifierConflict = errors.New("repo: an identifier in this request already belongs to another component")
+
 // CreateComponent creates a new component with a fresh generated UUID.
+// Returns ErrComponentIdentifierConflict if any of identifiers already
+// belongs to another component.
 func (r *Repo) CreateComponent(ctx context.Context, name string, identifiers []tea.Identifier) (tea.Component, error) {
 	uuid := idgen.New()
 
@@ -23,6 +36,12 @@ func (r *Repo) CreateComponent(ctx context.Context, name string, identifiers []t
 		return tea.Component{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
+
+	if conflict, err := componentIdentifierConflictTx(ctx, tx, identifiers); err != nil {
+		return tea.Component{}, err
+	} else if conflict {
+		return tea.Component{}, ErrComponentIdentifierConflict
+	}
 
 	if _, err := tx.ExecContext(ctx, `INSERT INTO component (uuid, name) VALUES (?, ?)`, uuid, name); err != nil {
 		return tea.Component{}, err
@@ -38,6 +57,27 @@ func (r *Repo) CreateComponent(ctx context.Context, name string, identifiers []t
 	}
 
 	return tea.Component{UUID: uuid, Name: name, Identifiers: identifiers}, nil
+}
+
+// componentIdentifierConflictTx reports whether any of identifiers already
+// belongs to an existing component -- uses idx_identifier_lookup
+// (owner_type, id_type, id_value), the same index name/identifier read
+// paths already rely on.
+func componentIdentifierConflictTx(ctx context.Context, q dbtx, identifiers []tea.Identifier) (bool, error) {
+	for _, id := range identifiers {
+		var exists int
+		err := q.QueryRowContext(ctx,
+			`SELECT 1 FROM identifier WHERE owner_type = ? AND id_type = ? AND id_value = ?`,
+			OwnerComponent, id.IDType, id.IDValue,
+		).Scan(&exists)
+		if err == nil {
+			return true, nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return false, err
+		}
+	}
+	return false, nil
 }
 
 // ImportComponent mirrors ImportProduct -- see there for the identity/

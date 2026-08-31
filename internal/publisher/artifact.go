@@ -6,7 +6,6 @@ package publisher
 import (
 	"errors"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/oej/opentea/internal/httpx"
@@ -71,12 +70,13 @@ func (s *Server) createArtifact(w http.ResponseWriter, r *http.Request) {
 
 const maxUploadBody = 1 << 30 // 1 GiB cap per uploaded file, matches internal/admin/upload.go
 
-// uploadArtifactFile implements uploadArtifactFile -- near-identical to
-// internal/admin/upload.go's uploadArtifactFormatFile: server computes
+// uploadArtifactFile implements uploadArtifactFile -- close to
+// internal/admin/upload.go's uploadArtifactFormatFile (server computes
 // checksums from the uploaded bytes, a caller never supplies them
-// directly. Existence is confirmed before receiveFile persists anything,
-// same ordering as internal/admin's own upload handlers, for the same
-// reason (see internal/admin/upload.go's receiveFile doc comment).
+// directly; existence is confirmed before anything is persisted, same
+// reasoning as internal/admin/upload.go's receiveFile doc comment), but
+// addresses the target format by mediaType instead of admin's own
+// formatIndex query param -- see the mediaType field's own comment below.
 func (s *Server) uploadArtifactFile(w http.ResponseWriter, r *http.Request) {
 	uuid, err := httpx.PathUUID(r, "uuid")
 	if err != nil {
@@ -99,20 +99,46 @@ func (s *Server) uploadArtifactFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Reject once evidence exists for this artifact version -- otherwise a
+	// re-upload after submitArtifactEvidence would silently change the
+	// format's checksum out from under a signature that already attests to
+	// the artifact's current (now stale) canonical form (found by external
+	// security review, docs/security-review-publisher-design-260828.md
+	// finding 1). A new revision belongs under a new artifact version, not
+	// a file swap on an already-validated one.
+	if _, err := s.repo.GetEvidenceBundleForOwner(r.Context(), "ARTIFACT", uuid, version); err == nil {
+		httpx.Conflict(w, "this artifact version already has evidence submitted -- file content is frozen once validated")
+		return
+	} else if !errors.Is(err, repo.ErrNotFound) {
+		httpx.InternalError(w, r, err)
+		return
+	}
+
 	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBody)
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		httpx.BadRequest(w, "invalid multipart form: "+err.Error())
 		return
 	}
-	formatIndex := 0
-	if v := r.FormValue("formatIndex"); v != "" {
-		formatIndex, err = strconv.Atoi(v)
-		if err != nil || formatIndex < 0 {
-			httpx.BadRequest(w, "invalid formatIndex")
+	// Addressed by mediaType, not a positional array index -- format order
+	// is not a durable identifier (found by external security review,
+	// docs/security-review-publisher-design-260828.md finding 14).
+	mediaType := r.FormValue("mediaType")
+	if mediaType == "" {
+		httpx.BadRequest(w, "mediaType is required")
+		return
+	}
+	formatIndex := -1
+	for i, f := range artifact.Formats {
+		if f.MediaType != mediaType {
+			continue
+		}
+		if formatIndex != -1 {
+			httpx.BadRequest(w, "mediaType is ambiguous: more than one format of this artifact version shares it")
 			return
 		}
+		formatIndex = i
 	}
-	if formatIndex >= len(artifact.Formats) {
+	if formatIndex == -1 {
 		httpx.NotFound(w)
 		return
 	}

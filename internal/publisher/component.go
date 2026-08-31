@@ -29,7 +29,12 @@ func (s *Server) findComponents(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, components)
 }
 
-// createComponent implements createComponent.
+// createComponent implements createComponent. Rejects (409) if any
+// submitted identifier already belongs to another component --
+// server-enforced, not just the find-before-create convention
+// findComponents documents (design/publisher-openapi.yaml v0.10, found by
+// external security review: docs/security-review-publisher-design-260828.md
+// finding 12).
 func (s *Server) createComponent(w http.ResponseWriter, r *http.Request) {
 	var req teapublisher.ComponentCreate
 	if err := decodeJSON(r, &req); err != nil {
@@ -41,6 +46,10 @@ func (s *Server) createComponent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c, err := s.repo.CreateComponent(r.Context(), req.Name, req.Identifiers)
+	if errors.Is(err, repo.ErrComponentIdentifierConflict) {
+		httpx.Conflict(w, "an identifier in this request already belongs to another component")
+		return
+	}
 	if err != nil {
 		httpx.InternalError(w, r, err)
 		return

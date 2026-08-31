@@ -22,6 +22,10 @@ func (s *Server) createComponent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c, err := s.repo.CreateComponent(r.Context(), req.Name, req.Identifiers)
+	if errors.Is(err, repo.ErrComponentIdentifierConflict) {
+		httpx.Conflict(w, "an identifier in this request already belongs to another component")
+		return
+	}
 	if err != nil {
 		httpx.InternalError(w, r, err)
 		return

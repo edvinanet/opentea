@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"testing"
 	"time"
@@ -17,6 +18,48 @@ import (
 	"github.com/oej/opentea/internal/trust"
 	"github.com/oej/opentea/pkg/tea"
 )
+
+// publisherUploadFile POSTs a multipart file upload to /publisher/v1 with a
+// bearer credential and an extra "mediaType" form field, mirroring
+// integration_test.go's uploadFile but for /publisher/v1's bearer auth and
+// mediaType-based format addressing (not formatIndex).
+func publisherUploadFile(t *testing.T, srv *testServer, path, token, mediaTypeField string, content []byte) (int, []byte) {
+	t.Helper()
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	if err := w.WriteField("mediaType", mediaTypeField); err != nil {
+		t.Fatalf("write mediaType field: %v", err)
+	}
+	part, err := w.CreateFormFile("file", "artifact.bin")
+	if err != nil {
+		t.Fatalf("create form file: %v", err)
+	}
+	if _, err := part.Write(content); err != nil {
+		t.Fatalf("write file content: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+path, &buf)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST %s: %v", path, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read response body: %v", err)
+	}
+	return resp.StatusCode, respBody
+}
 
 // publisherRequest hits /publisher/v1 with a bearer credential (no session
 // cookie -- /publisher/v1 doesn't use one, see internal/publisher's
@@ -237,5 +280,133 @@ func TestPublisherFullWorkflow(t *testing.T) {
 	decodeInto(t, teaBody, &readBack)
 	if readBack.Version != 1 || len(readBack.Artifacts) != 1 || readBack.Artifacts[0].UUID != artifact.UUID {
 		t.Fatalf("readBack = %+v", readBack)
+	}
+}
+
+// TestPublisherUploadArtifactFileByMediaType covers security-review fix 14
+// (docs/security-review-publisher-design-260828.md): uploadArtifactFile
+// addresses a format by mediaType, not a positional index. Also confirms
+// the ambiguous-mediaType and unknown-mediaType rejections.
+func TestPublisherUploadArtifactFileByMediaType(t *testing.T) {
+	srv := newTestServer(t)
+	cicd := createPublisherCredential(t, srv, "cicd-cred", model.PublisherScopeCICD)
+
+	status, raw := publisherRequest(t, srv, http.MethodPost, "/publisher/v1/artifacts", cicd, map[string]any{
+		"type": "BOM",
+		"formats": []map[string]any{
+			{"mediaType": "application/vnd.cyclonedx+json"},
+			{"mediaType": "application/vnd.cyclonedx+xml"},
+			{"mediaType": "application/vnd.cyclonedx+xml"}, // duplicate on purpose, for the ambiguity case below
+		},
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("createArtifact: status=%d body=%s", status, raw)
+	}
+	var artifact tea.Artifact
+	decodeInto(t, raw, &artifact)
+
+	uploadPath := "/publisher/v1/artifacts/" + artifact.UUID + "/1/files"
+
+	// Unknown mediaType -> 404.
+	if status, body := publisherUploadFile(t, srv, uploadPath, cicd, "application/does-not-exist", []byte("x")); status != http.StatusNotFound {
+		t.Fatalf("unknown mediaType: status=%d body=%s, want 404", status, body)
+	}
+	// Ambiguous mediaType (two formats share it) -> 400.
+	if status, body := publisherUploadFile(t, srv, uploadPath, cicd, "application/vnd.cyclonedx+xml", []byte("x")); status != http.StatusBadRequest {
+		t.Fatalf("ambiguous mediaType: status=%d body=%s, want 400", status, body)
+	}
+	// Unambiguous mediaType -> 204, uploaded to the right format.
+	if status, body := publisherUploadFile(t, srv, uploadPath, cicd, "application/vnd.cyclonedx+json", []byte(`{"ok":true}`)); status != http.StatusNoContent {
+		t.Fatalf("upload by mediaType: status=%d body=%s, want 204", status, body)
+	}
+
+	got, err := srv.repo.GetArtifactByVersion(t.Context(), artifact.UUID, 1)
+	if err != nil {
+		t.Fatalf("GetArtifactByVersion: %v", err)
+	}
+	if got.Formats[0].URL == "" || len(got.Formats[0].Checksums) == 0 {
+		t.Fatalf("json format (index 0) not populated: %+v", got.Formats[0])
+	}
+	if got.Formats[1].URL != "" || got.Formats[2].URL != "" {
+		t.Fatalf("xml formats should be untouched: %+v / %+v", got.Formats[1], got.Formats[2])
+	}
+}
+
+// TestPublisherUploadArtifactFileRejectedAfterEvidence covers
+// security-review fix 1 (docs/security-review-publisher-design-260828.md):
+// once evidence has been submitted for an artifact version, uploading a
+// new file for it is rejected rather than silently invalidating the
+// signature's meaning.
+func TestPublisherUploadArtifactFileRejectedAfterEvidence(t *testing.T) {
+	srv := newTestServer(t)
+	cicd := createPublisherCredential(t, srv, "cicd-cred", model.PublisherScopeCICD)
+
+	status, raw := publisherRequest(t, srv, http.MethodPost, "/publisher/v1/artifacts", cicd, map[string]any{
+		"type":    "BOM",
+		"formats": []map[string]any{{"mediaType": "application/vnd.cyclonedx+json"}},
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("createArtifact: status=%d body=%s", status, raw)
+	}
+	var artifact tea.Artifact
+	decodeInto(t, raw, &artifact)
+	uploadPath := "/publisher/v1/artifacts/" + artifact.UUID + "/1/files"
+
+	if status, body := publisherUploadFile(t, srv, uploadPath, cicd, "application/vnd.cyclonedx+json", []byte(`{"ok":true}`)); status != http.StatusNoContent {
+		t.Fatalf("initial upload: status=%d body=%s, want 204", status, body)
+	}
+
+	status, raw = publisherRequest(t, srv, http.MethodPost, "/publisher/v1/artifacts/"+artifact.UUID+"/1/evidence/prepare", cicd, nil)
+	if status != http.StatusOK {
+		t.Fatalf("prepareArtifactEvidence: status=%d body=%s", status, raw)
+	}
+	var prepared struct {
+		DigestToSign string `json:"digestToSign"`
+	}
+	decodeInto(t, raw, &prepared)
+	sigValue, certPEM := signDigest(t, prepared.DigestToSign)
+
+	status, raw = publisherRequest(t, srv, http.MethodPost, "/publisher/v1/artifacts/"+artifact.UUID+"/1/evidence", cicd, map[string]any{
+		"objectDigestValue": prepared.DigestToSign,
+		"signatureFormat":   "jws-detached",
+		"signatureValue":    sigValue,
+		"certificatePem":    certPEM,
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("submitArtifactEvidence: status=%d body=%s", status, raw)
+	}
+
+	// A second upload must now be rejected, not silently accepted.
+	if status, body := publisherUploadFile(t, srv, uploadPath, cicd, "application/vnd.cyclonedx+json", []byte(`{"tampered":true}`)); status != http.StatusConflict {
+		t.Fatalf("upload after evidence: status=%d body=%s, want 409", status, body)
+	}
+}
+
+// TestPublisherCreateComponentIdentifierConflict covers security-review fix
+// 12 (docs/security-review-publisher-design-260828.md): createComponent
+// enforces identifier uniqueness server-side rather than relying on
+// find-before-create.
+func TestPublisherCreateComponentIdentifierConflict(t *testing.T) {
+	srv := newTestServer(t)
+	full := createPublisherCredential(t, srv, "full-cred", model.PublisherScopeFull)
+
+	body := map[string]any{
+		"name":        "acme-widget-core",
+		"identifiers": []map[string]any{{"idType": "PURL", "idValue": "pkg:generic/acme-widget-core"}},
+	}
+	if status, raw := publisherRequest(t, srv, http.MethodPost, "/publisher/v1/components", full, body); status != http.StatusCreated {
+		t.Fatalf("first createComponent: status=%d body=%s", status, raw)
+	}
+	// Same identifier, different name -- still a conflict.
+	body["name"] = "acme-widget-core-fork"
+	if status, raw := publisherRequest(t, srv, http.MethodPost, "/publisher/v1/components", full, body); status != http.StatusConflict {
+		t.Fatalf("duplicate identifier: status=%d body=%s, want 409", status, raw)
+	}
+	// No identifiers at all -- nothing to conflict on, both succeed.
+	if status, raw := publisherRequest(t, srv, http.MethodPost, "/publisher/v1/components", full, map[string]any{"name": "no-identifiers-a"}); status != http.StatusCreated {
+		t.Fatalf("no-identifiers create 1: status=%d body=%s", status, raw)
+	}
+	if status, raw := publisherRequest(t, srv, http.MethodPost, "/publisher/v1/components", full, map[string]any{"name": "no-identifiers-a"}); status != http.StatusCreated {
+		t.Fatalf("no-identifiers create 2: status=%d body=%s", status, raw)
 	}
 }

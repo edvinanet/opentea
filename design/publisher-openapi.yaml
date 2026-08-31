@@ -1,10 +1,25 @@
 openapi: 3.1.0
 info:
   title: TEA Publisher API
-  version: 0.9.0-draft
+  version: 0.10.0-draft
   description: |
-    **Status: draft v0.9, for discussion. Not implemented anywhere. Not approved by
+    **Status: draft v0.10, for discussion. opentea's own server-side implementation
+    exists (`internal/publisher`) but this document is still a draft, not approved by
     CycloneDX or any TEA working group.**
+
+    v0.10: three fixes from an external security review of this document and
+    `design/publisher-service.md` (docs/security-review-publisher-design-260828.md,
+    findings 1/12/14), applied directly to both this document and opentea's own
+    implementation: `uploadArtifactFile` now rejects (409) once evidence has been
+    submitted for that artifact version, rather than silently allowing file content to
+    change after a signature already attests to it; `uploadArtifactFile` addresses a
+    format by its `mediaType` instead of a positional `formatIndex`, which array
+    reordering could silently invalidate; `createComponent` now enforces `identifiers`
+    uniqueness server-side (409) instead of relying on a client search-before-create
+    convention that two concurrent callers can both defeat. The review's other findings
+    (forgeable actor identity, commit not bound to an explicit prepare-transaction id,
+    no artifact-version-creation operation, and more) are tracked but not yet addressed
+    here — see `TODO.md`'s **Publisher API** entry.
 
     v0.9: `uploadArtifactFile`'s `429` narrowed to specifically mean the *unused*-artifact
     quota (design/publisher-service.md §15.1) — not referenced by any collection, no
@@ -273,7 +288,15 @@ paths:
     post:
       operationId: createComponent
       tags: [Components]
-      summary: Create a component. Only after a search (GET above) confirms none already represents this real component.
+      summary: >-
+        Create a component. A search (GET above) first is still the right practice for
+        picking a good name, but is not what prevents duplicates: the server itself
+        rejects a request whose `identifiers` overlap an existing component's (409),
+        rather than relying only on a client having searched first (v0.10, found by
+        external security review: docs/security-review-publisher-design-260828.md
+        finding 12 — two concurrent, well-behaved callers can both search, both find
+        nothing, and both create). Only enforced when `identifiers` is non-empty — a
+        component with none has no server-checkable identity to deduplicate against.
       requestBody:
         required: true
         content:
@@ -286,6 +309,10 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/component' }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '409':
+          description: >-
+            One or more of the submitted `identifiers` already belongs to another
+            component.
 
   /components/{componentUuid}/releases:
     post:
@@ -351,12 +378,18 @@ paths:
       summary: >-
         Upload the artifact's actual file content for one of its formats. Server computes
         checksums from the uploaded bytes (see info.description, deviation 4) — a caller
-        never supplies them directly. Subject to a per-upload size limit and a
-        per-principal outstanding-bytes/count quota (design/publisher-service.md §15,
-        §15.1) — neither has a chosen default here. A well-behaved caller (the reference
-        client, §14.1) should check its own file size against a sane limit before
-        attempting this call at all, but that is a courtesy, not a substitute for this
-        operation's own enforcement (§15.1).
+        never supplies them directly. Rejected with 409 once evidence has been submitted
+        for this artifact version (`submitArtifactEvidence`) — file content is frozen once
+        validated, a subsequent correction belongs under a new artifact version, not a
+        file swap on an already-signed one (v0.10, found by external security review:
+        docs/security-review-publisher-design-260828.md finding 1 — a re-upload after
+        evidence submission would otherwise silently invalidate the signature's meaning
+        without the stored evidence bundle reflecting it). Subject to a per-upload size
+        limit and a per-principal outstanding-bytes/count quota (design/publisher-service.md
+        §15, §15.1) — neither has a chosen default here. A well-behaved caller (the
+        reference client, §14.1) should check its own file size against a sane limit
+        before attempting this call at all, but that is a courtesy, not a substitute for
+        this operation's own enforcement (§15.1).
       parameters:
         - $ref: '#/components/parameters/ArtifactUuid'
         - $ref: '#/components/parameters/ArtifactVersion'
@@ -366,13 +399,27 @@ paths:
           multipart/form-data:
             schema:
               type: object
-              required: [formatIndex, file]
+              required: [mediaType, file]
               properties:
-                formatIndex: { type: integer, minimum: 0 }
+                mediaType:
+                  type: string
+                  description: >-
+                    Selects which of the artifact's formats this file belongs to, by the
+                    same `mediaType` value that format was created with
+                    (`artifact-format-create.mediaType`) — not a positional array index
+                    (v0.10, found by external security review:
+                    docs/security-review-publisher-design-260828.md finding 14 — array
+                    order is not a durable identifier). `404` if no format matches; `400`
+                    if more than one format shares this `mediaType` (ambiguous — this
+                    draft does not yet define a server-assigned per-format id to
+                    disambiguate that case, a narrower, still-open version of the same
+                    finding).
                 file: { type: string, format: binary }
       responses:
         '204': { description: Uploaded. }
         '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Evidence has already been submitted for this artifact version.
         '413':
           description: File exceeds the target's per-upload size limit (§15.1).
         '429':

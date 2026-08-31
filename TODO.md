@@ -247,9 +247,32 @@ they don't get lost.
       signatures) through the client against the *real* `internal/publisher` server — this
       is the actual payoff of moving both into one repo, catching client/server drift
       directly rather than by inspection. Zero third-party dependencies.
-      Not started: `cmd/openteapublisher`, `internal/openteapublisher`, the `internal/db`
-      migration-runner refactor (§17.2) to support a second, independently-migrated
-      database, and a Docker image.
+      **`cmd/openteapublisher`/`internal/openteapublisher` scaffolded 2026-08-31**: the
+      `internal/db` migration-runner refactor landed first (new `OpenWithMigrations(path,
+      migrations fs.FS, dir string)`, `Open` now a thin wrapper -- zero behavior change,
+      confirmed by the existing `db_test.go` passing unchanged plus a new test proving a
+      second, independent database works). `clientIP`/`loginLimiter` moved out of
+      `internal/webadmin` into `internal/httpx` (`ClientIP`/`LoginLimiter`) and are now
+      shared by both GUIs — a concrete instance of "create a shared library when possible."
+      `internal/openteapublisher` (one package: data layer + HTTP/GUI, not opentea's
+      three-way repo/admin/webadmin split — appropriately scoped for its current size) has
+      its own database (`staff`, `session`, `target` tables — Layer A/B, §10.1/§10.5),
+      bcrypt login mirroring `internal/repo/user.go`'s own contract, a minimal GUI (login,
+      dashboard listing configured targets, add/remove a target), and `cmd/openteapublisher`
+      itself (own small config, own `createstaff` bootstrap subcommand mirroring `opentea
+      createadmin`). Verified: repo-layer unit tests, an HTTP-level test driving the full
+      login→dashboard→add-target→list flow, a manual smoke test against the real built
+      binary (`createstaff`, login via `curl`, session cookie confirmed, target added and
+      listed), `make check`/`golangci-lint`/`go test -race` all clean, new `make
+      build-publisher` Makefile target. **Deliberately not built** (§17.3's own flagged
+      gap): the internal multi-team business-approval workflow (not designed yet -- no
+      draft assembly, no CI/CD-facing JSON API against it, since there's nothing real yet
+      for CI/CD to call), anything that calls `pkg/teapublisherclient` against a stored
+      `Target` (plain CRUD only so far), and a Docker image (separate item, still open).
+      Known limitation carried from the design: `target.bearer_token` is stored as
+      plaintext, no encryption-at-rest -- this app must present the actual usable
+      credential on outbound calls, unlike opentea's own `publisher_credential`, which only
+      ever stores a verifier-side hash.
 - [ ] **Publisher API: derive approval actor from authenticated identity, not a
       caller-supplied string** (found 2026-08-28, during `design/opentea-server.md` review —
       see its §11.4). `design/publisher-openapi.yaml`'s `approval-decision.actor` is

@@ -1,0 +1,29 @@
+{{define "content"}}
+<h1>Targets</h1>
+{{if .Error}}<div class="error">{{.Error}}</div>{{end}}
+<table>
+  <tr><th>Label</th><th>Base URL</th><th>Added</th><th></th></tr>
+  {{range .Targets}}
+  <tr>
+    <td>{{.Label}}</td>
+    <td><code>{{.BaseURL}}</code></td>
+    <td>{{.CreatedAt.Format "2006-01-02"}}</td>
+    <td>
+      <form class="inline" action="/targets/{{.UUID}}/delete" method="post">
+        <button type="submit">Remove</button>
+      </form>
+    </td>
+  </tr>
+  {{else}}
+  <tr><td colspan="4">No targets configured yet.</td></tr>
+  {{end}}
+</table>
+
+<h1>Add a target</h1>
+<form action="/targets" method="post">
+  <label>Label<input type="text" name="label" placeholder="e.g. Acme production TEA" required></label>
+  <label>Base URL<input type="text" name="baseUrl" placeholder="https://tea.example.com/publisher/v1" required></label>
+  <label>Bearer token<input type="password" name="bearerToken" required></label>
+  <button type="submit">Add target</button>
+</form>
+{{end}}

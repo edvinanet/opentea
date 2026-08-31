@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/oej/opentea/internal/config"
+	"github.com/oej/opentea/internal/httpx"
 	"github.com/oej/opentea/internal/repo"
 )
 
@@ -58,12 +59,12 @@ type Server struct {
 	repo         *repo.Repo
 	cfg          config.Config
 	templates    map[string]*template.Template
-	loginLimiter *loginLimiter
+	loginLimiter *httpx.LoginLimiter
 }
 
 // NewRouter builds the /admin/ui/... mux.
 func NewRouter(r *repo.Repo, cfg config.Config) http.Handler {
-	srv := &Server{repo: r, cfg: cfg, templates: loadTemplates(), loginLimiter: newLoginLimiter()}
+	srv := &Server{repo: r, cfg: cfg, templates: loadTemplates(), loginLimiter: httpx.NewLoginLimiter()}
 	mux := http.NewServeMux()
 	srv.registerRoutes(mux)
 	return limitBody(mux)

@@ -26,13 +26,23 @@ endpoints), with a standalone validator CLI (`cmd/bundlecheck`) — see
 [docs/bundle-format.md](docs/bundle-format.md). A `Dockerfile` builds and runs just the server
 for quick local testing — see [README-docker.md](README-docker.md).
 
+A separate, standalone service also lives in this repo: **opentea-publisher**
+(`cmd/openteapublisher`, `internal/openteapublisher`) — a GUI publisher platform that signs
+locally and calls a target TEA server's `/publisher/v1` (opentea's own implementation:
+`internal/publisher`) as a credentialed client. Its own binary, database, and deployment; not
+part of the opentea server process. See `design/publisher-service.md` §17 for why it lives here
+(shared code, integrated testing) despite being architecturally separate. Currently scaffolded:
+staff login and per-target credential storage only — see `TODO.md`'s **Reference publisher**
+entry for what's not built yet.
+
 ## Building
 
 ```bash
-make all           # or just `make build` -- builds everything: server + consumer + tools
+make all           # or just `make build` -- builds everything: server + consumer + tools + publisher
 make build-server   # just bin/opentea
 make build-consumer # just bin/teaclient
 make build-tools    # just bin/fixtures, bin/bundlecheck
+make build-publisher # just bin/openteapublisher (a separate service, see below)
 sudo make install   # installs everything to /usr/local/bin (override with PREFIX=... or BINDIR=...)
 make help           # list all Makefile targets
 ```
@@ -79,20 +89,28 @@ cmd/
   teaclient/          reference CLI, built on pkg/teaclient
   fixtures/            generic fixture-replay tool, built on the existing /admin/v1 API
   bundlecheck/          standalone bundle validity checker (no server/DB needed)
+  openteapublisher/       opentea-publisher entrypoint (+ `createstaff` CLI subcommand) -- a
+                            separate service, own database, see design/publisher-service.md §17
 pkg/                 importable from outside this module (unlike internal/...)
   tea/                 JSON-facing wire types + enum constants matching spec/openapi.yaml
   teaclient/            reference client library for the /tea/v1 read API
+  teapublisher/           shared wire types for the publisher-only delta (design/publisher-openapi.yaml)
+  teapublisherclient/       reference client library for /publisher/v1
 internal/
   model/             admin-domain types only (User, Stats, roles) -- not part of the TEA spec
-  db/                 SQLite connection + migrations
+  db/                 SQLite connection + migrations (generalized via OpenWithMigrations for
+                        a second, independently-migrated database -- internal/openteapublisher's)
   repo/                data-access layer (one file per aggregate)
   storage/              content-addressed blob storage interface + filesystem impl
   authn/                 shared session-cookie/bearer-token resolution (used by api, admin, webadmin)
   api/                   spec-conformant read API handlers (/tea/v1)
   admin/                  unofficial ingestion API handlers (/admin/v1), now auth-gated
   webadmin/                browser admin GUI (/admin/ui), server-rendered html/template
+  publisher/                opentea's own /publisher/v1 server implementation (see README-admin.md)
   files/                   blob-serving handler (/files/{sha256})
   bundle/                  product import/export bundle format (see docs/bundle-format.md)
+  openteapublisher/         opentea-publisher's own handlers + data layer (separate database from
+                              opentea's own -- see design/publisher-service.md §17)
   httpx/, pagination/, idgen/, config/   shared helpers
 testdata/fixtures/   reference test data for cmd/fixtures
 packaging/systemd/   Debian systemd unit + example environment file (see README-deploy.md)

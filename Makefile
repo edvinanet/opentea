@@ -9,26 +9,30 @@ PREFIX    ?= /usr/local
 BINDIR    ?= $(PREFIX)/bin
 BUILD_DIR ?= bin
 
-SERVER_BINARIES   := opentea
-CONSUMER_BINARIES := teaclient
-TOOLS_BINARIES    := fixtures bundlecheck
+SERVER_BINARIES    := opentea
+CONSUMER_BINARIES  := teaclient
+TOOLS_BINARIES     := fixtures bundlecheck
+PUBLISHER_BINARIES := openteapublisher
 
-BINARIES         := $(SERVER_BINARIES) $(CONSUMER_BINARIES) $(TOOLS_BINARIES)
-SERVER_TARGETS   := $(addprefix $(BUILD_DIR)/,$(SERVER_BINARIES))
-CONSUMER_TARGETS := $(addprefix $(BUILD_DIR)/,$(CONSUMER_BINARIES))
-TOOLS_TARGETS    := $(addprefix $(BUILD_DIR)/,$(TOOLS_BINARIES))
+BINARIES           := $(SERVER_BINARIES) $(CONSUMER_BINARIES) $(TOOLS_BINARIES) $(PUBLISHER_BINARIES)
+SERVER_TARGETS     := $(addprefix $(BUILD_DIR)/,$(SERVER_BINARIES))
+CONSUMER_TARGETS   := $(addprefix $(BUILD_DIR)/,$(CONSUMER_BINARIES))
+TOOLS_TARGETS      := $(addprefix $(BUILD_DIR)/,$(TOOLS_BINARIES))
+PUBLISHER_TARGETS  := $(addprefix $(BUILD_DIR)/,$(PUBLISHER_BINARIES))
 
-.PHONY: all build build-server build-consumer build-tools warn-if-root check-built install uninstall test test-verbose vet fmt fmt-check tidy check clean help
+.PHONY: all build build-server build-consumer build-tools build-publisher warn-if-root check-built install uninstall test test-verbose vet fmt fmt-check tidy check clean help
 
-all: build ## Alias for build (server + consumer + tools)
+all: build ## Alias for build (server + consumer + tools + publisher)
 
-build: build-server build-consumer build-tools ## Build everything into ./bin (server + consumer + tools)
+build: build-server build-consumer build-tools build-publisher ## Build everything into ./bin (server + consumer + tools + publisher)
 
 build-server: warn-if-root $(SERVER_TARGETS) ## Build just the server (opentea)
 
 build-consumer: warn-if-root $(CONSUMER_TARGETS) ## Build just the reference consumer/client CLI (teaclient)
 
 build-tools: warn-if-root $(TOOLS_TARGETS) ## Build just the auxiliary tools (fixtures, bundlecheck)
+
+build-publisher: warn-if-root $(PUBLISHER_TARGETS) ## Build just the GUI publisher platform (openteapublisher) -- a separate service from opentea, see design/publisher-service.md §17
 
 # `go build`/`go test` invoke git to stamp VCS info (Go 1.18+); if run as root
 # against a repo owned by another user, git's "dubious ownership" safety check
@@ -56,6 +60,9 @@ $(BUILD_DIR)/fixtures: | $(BUILD_DIR)
 $(BUILD_DIR)/bundlecheck: | $(BUILD_DIR)
 	$(GO) build -o $@ ./cmd/bundlecheck
 
+$(BUILD_DIR)/openteapublisher: | $(BUILD_DIR)
+	$(GO) build -o $@ ./cmd/openteapublisher
+
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
@@ -68,6 +75,7 @@ install: check-built ## Install already-built ./bin binaries to $(BINDIR) (defau
 	install -m 755 $(BUILD_DIR)/teaclient $(BINDIR)/teaclient
 	install -m 755 $(BUILD_DIR)/fixtures $(BINDIR)/fixtures
 	install -m 755 $(BUILD_DIR)/bundlecheck $(BINDIR)/bundlecheck
+	install -m 755 $(BUILD_DIR)/openteapublisher $(BINDIR)/openteapublisher
 
 check-built:
 	@missing=0; \
@@ -83,7 +91,7 @@ check-built:
 	fi
 
 uninstall: ## Remove binaries previously installed to $(BINDIR)
-	rm -f $(BINDIR)/opentea $(BINDIR)/teaclient $(BINDIR)/fixtures $(BINDIR)/bundlecheck
+	rm -f $(BINDIR)/opentea $(BINDIR)/teaclient $(BINDIR)/fixtures $(BINDIR)/bundlecheck $(BINDIR)/openteapublisher
 
 test: ## Run the full test suite (repo, api, admin, webadmin, client, fixtures -- all real in-process integration tests, no mocks for the server itself)
 	$(GO) test ./...

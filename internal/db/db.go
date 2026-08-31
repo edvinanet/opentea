@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"embed"
 	"fmt"
+	"io/fs"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -19,13 +20,28 @@ import (
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
-// Open opens (creating if needed) the SQLite database at path, applies all
-// migrations, and returns a connection pool pinned to a single connection
-// (SQLite only supports one writer; this also makes the CLE per-owner
-// id-assignment race-free without extra application locking).
+// Open opens (creating if needed) opentea's own SQLite database at path,
+// applies its migrations (this package's own embedded migrations/*.sql),
+// and returns a connection pool pinned to a single connection (SQLite only
+// supports one writer; this also makes the CLE per-owner id-assignment
+// race-free without extra application locking). A thin wrapper over
+// OpenWithMigrations for opentea's own callers.
 func Open(path string) (*sql.DB, error) {
-	if dir := filepath.Dir(path); dir != "." {
-		if err := os.MkdirAll(dir, 0o750); err != nil {
+	return OpenWithMigrations(path, migrationsFS, "migrations")
+}
+
+// OpenWithMigrations is Open generalized to a caller-supplied migrations
+// source -- for a second, independently-migrated database (e.g.
+// internal/openteapublisher's own) that needs the same open/migrate
+// mechanics through this one runner instead of a duplicate. migrations is
+// typically a package-level `//go:embed <dir>/*.sql` var in the caller's
+// own package (embed directives only see files under the declaring
+// package's own directory tree, so each database's migrations must be
+// embedded where they live); dir is the directory within migrations that
+// holds the *.sql files, e.g. "migrations".
+func OpenWithMigrations(path string, migrations fs.FS, dir string) (*sql.DB, error) {
+	if d := filepath.Dir(path); d != "." {
+		if err := os.MkdirAll(d, 0o750); err != nil {
 			return nil, fmt.Errorf("create db dir: %w", err)
 		}
 	}
@@ -44,19 +60,19 @@ func Open(path string) (*sql.DB, error) {
 	}
 	sqlDB.SetMaxOpenConns(1)
 
-	if err := migrate(sqlDB); err != nil {
+	if err := migrate(sqlDB, migrations, dir); err != nil {
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
 	return sqlDB, nil
 }
 
-func migrate(sqlDB *sql.DB) error {
+func migrate(sqlDB *sql.DB, migrations fs.FS, dir string) error {
 	if _, err := sqlDB.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')))`); err != nil {
 		return fmt.Errorf("create schema_migrations: %w", err)
 	}
 
-	entries, err := migrationsFS.ReadDir("migrations")
+	entries, err := fs.ReadDir(migrations, dir)
 	if err != nil {
 		return err
 	}
@@ -75,7 +91,7 @@ func migrate(sqlDB *sql.DB) error {
 			continue
 		}
 
-		contents, err := migrationsFS.ReadFile("migrations/" + name)
+		contents, err := fs.ReadFile(migrations, dir+"/"+name)
 		if err != nil {
 			return fmt.Errorf("read migration %s: %w", name, err)
 		}

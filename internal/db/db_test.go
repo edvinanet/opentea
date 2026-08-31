@@ -4,9 +4,45 @@
 package db
 
 import (
+	"embed"
 	"path/filepath"
 	"testing"
 )
+
+//go:embed testdata/otherdb/*.sql
+var otherMigrationsFS embed.FS
+
+// TestOpenWithMigrationsIndependentDatabase proves OpenWithMigrations
+// serves a second, independently-migrated database through a caller-
+// supplied embed.FS -- the prerequisite internal/openteapublisher's own
+// database needs, so Open's own embedded migrations/*.sql don't leak into
+// (or get required by) an unrelated database.
+func TestOpenWithMigrationsIndependentDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "other.db")
+
+	sqlDB, err := OpenWithMigrations(path, otherMigrationsFS, "testdata/otherdb")
+	if err != nil {
+		t.Fatalf("OpenWithMigrations: %v", err)
+	}
+	defer func() { _ = sqlDB.Close() }()
+
+	var widgetCount int
+	if err := sqlDB.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='widget'`).Scan(&widgetCount); err != nil {
+		t.Fatalf("query sqlite_master: %v", err)
+	}
+	if widgetCount != 1 {
+		t.Fatalf("expected widget table to exist, got count=%d", widgetCount)
+	}
+	// Confirms this database is genuinely independent of opentea's own --
+	// it must NOT have opentea's product table (or any of its migrations).
+	var productCount int
+	if err := sqlDB.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='product'`).Scan(&productCount); err != nil {
+		t.Fatalf("query sqlite_master: %v", err)
+	}
+	if productCount != 0 {
+		t.Fatalf("expected no product table in the independent database, got count=%d", productCount)
+	}
+}
 
 func TestOpenAppliesMigrationsIdempotently(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "test.db")

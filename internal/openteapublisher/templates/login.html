@@ -1,0 +1,28 @@
+{{define "login"}}<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Login - opentea-publisher</title>
+<style>
+  body { font-family: system-ui, sans-serif; background: #1a1a2e; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+  .box { background: #fff; padding: 2rem; border-radius: 8px; width: 300px; }
+  h1 { font-size: 1.25rem; margin-top: 0; }
+  label { display: block; margin-top: 0.75rem; font-size: 0.9rem; color: #475569; }
+  input { width: 100%; box-sizing: border-box; padding: 0.5rem; margin-top: 0.25rem; border: 1px solid #cbd5e1; border-radius: 4px; }
+  button { width: 100%; margin-top: 1.25rem; padding: 0.6rem; background: #1a1a2e; color: #fff; border: none; border-radius: 4px; cursor: pointer; }
+  .error { background: #fee2e2; color: #991b1b; padding: 0.6rem; border-radius: 6px; margin-top: 1rem; font-size: 0.9rem; }
+</style>
+</head>
+<body>
+<div class="box">
+  <h1>opentea-publisher</h1>
+  <form method="post" action="/login">
+    <label>Username<input type="text" name="username" required autofocus></label>
+    <label>Password<input type="password" name="password" required></label>
+    <button type="submit">Log in</button>
+  </form>
+  {{if .Error}}<div class="error">{{.Error}}</div>{{end}}
+</div>
+</body>
+</html>
+{{end}}

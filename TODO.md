@@ -107,25 +107,106 @@ they don't get lost.
       `cmd/teapublisherclient` remain on hold (separate item below).
 
       **External security review 2026-08-28** (`docs/security-review-publisher-design-260828.md`,
-      reviewed the design docs before this implementation existed) found 16 issues. Three
-      narrow, unambiguous ones fixed 2026-08-31, in both `design/publisher-openapi.yaml`
-      (now v0.10) and the code: (1) `uploadArtifactFile` now rejects (409) once evidence
-      exists for that artifact version — a re-upload could otherwise silently invalidate a
-      signature's meaning without the stored evidence bundle reflecting it; (2)
-      `uploadArtifactFile` addresses a format by `mediaType` instead of the fragile,
-      reorderable `formatIndex`; (3) `CreateComponent` (`internal/repo/component.go`, shared
-      by `/admin/v1` and `/publisher/v1`) now enforces `identifiers` uniqueness inside its
-      own transaction (409 on conflict) instead of relying on a client's find-before-create
-      convention two concurrent callers could both defeat. Remaining findings not yet
-      addressed, roughly by size: the approval-actor-identity gap already tracked below
-      (review's finding 2); no explicit `prepareId`/nonce binding commit to a specific
-      prepare call (finding 3 — largely mitigated in practice by the lock+lock_date
-      mechanism already built, but not explicit/documented as such); no way to create a new
-      version of an existing artifact (finding 4); missing capability-scoped tokens finer
-      than full/cicd (finding 6); evidence modeled at the artifact level while the wire
-      schema's `evidenceBundle`/`evidenceBundleRef` live on `artifact-format` (finding 7);
-      OpenAPI completeness/idempotency/error-contract gaps (findings 9, 13, 15); several
-      more medium-severity findings (10, 11) not evaluated against the current code yet.
+      reviewed the design docs before this implementation existed) found 16 issues; 3 fixed
+      2026-08-31 (findings 1, 12, 14 — file-upload-after-evidence lock, component identifier
+      uniqueness, `mediaType`-based format addressing). Findings 2 and 13 were already
+      tracked below/in `design/publisher-service.md` §11 before the review. Remaining
+      findings are their own entries below, each prefixed **[security review finding N]**
+      for cross-reference.
+- [ ] **[security review finding 3] Publisher API: explicit prepare→commit transaction
+      binding** — `prepareCollectionCommit`/`commitCollectionDraft` bind to each other only
+      implicitly, via the draft's own `lock_expires_at`/`lock_date` columns
+      (`internal/repo/collectiondraft.go`), not an explicit `prepareId`/nonce the OpenAPI
+      documents. Traced through each concrete failure mode the review named (commit after
+      lock expiry, after `cancelPrepare`, without a prior prepare, approval expiring between
+      prepare and commit) — all are already correctly rejected by the lock mechanism, so
+      this is a documentation/explicitness gap, not an open vulnerability. Worth doing
+      before calling the protocol stable: add a real `prepareId` to
+      `prepare-commit-response`, require it in `commit`, document the binding explicitly
+      instead of leaving it implicit in the reference implementation's own choices.
+- [ ] **[security review finding 4] Publisher API: create a new version of an existing
+      artifact** — `createArtifact` always mints a fresh UUID at version 1
+      (`internal/repo/artifact.go`'s `CreateArtifact`); there's no `/publisher/v1` operation
+      to add version 2 under an existing artifact identity, even though
+      `design/publisher-service.md` §3's own SBOM-correction scenario assumes this is
+      possible. Needs a design pass: version allocation/concurrency semantics, which
+      metadata carries forward, whether a new format set on an existing version is a new
+      version or a pre-finalization update (finding 4's own framing).
+- [ ] **[security review finding 5] Publisher API: byte-exact signing format specification**
+      — `digestToSign`/`signatureValue` say "sign the digest bytes" but leave real
+      ambiguity open: ASCII hex vs. decoded bytes, whether JWS/CMS wrap the digest or the
+      canonical JSON, required protected headers/signed attributes, accepted algorithm
+      identifiers. opentea's own Phase 1 only ever produces/verifies one concrete case
+      (raw Ed25519 over hex-decoded digest bytes, `internal/trust.Sign`/`Verify`), so this
+      hasn't bitten anything yet, but a second implementation (or opentea's own Web
+      PKI/HSM mode, `design/publisher-service.md` §9.5) would have nothing precise to
+      interoperate against. Needs published byte-exact test vectors, not just prose.
+- [ ] **[security review finding 6] Publisher API: finer-grained capability model** — the
+      shipped `full`/`cicd` credential scopes (`internal/publisher`, `model.PublisherScope*`)
+      are a coarse first cut, not the per-operation capability vocabulary the review
+      proposes (`artifact.evidence.submit`, `collection.approve`, etc., mirroring
+      `internal/authz`'s existing read-side capability naming). Revisit once a real
+      deployment needs something between "can do everything" and "can do everything except
+      approve/reject and identity-defining creates."
+- [ ] **[security review finding 7] Publisher API: evidence storage level doesn't match the
+      signing flow** — `prepareArtifactEvidence`/`submitArtifactEvidence` sign the artifact
+      as a whole, but the consumer spec's `evidenceBundle`/`evidenceBundleRef` extension
+      fields live on `artifact-format`, not `artifact` (`pkg/tea/trust.go`,
+      `internal/repo/evidencebundle.go`'s `OwnerType` is `"ARTIFACT"`, an
+      opentea-internal choice, not a spec-defined owner type). Unclear for a multi-format
+      artifact (e.g. SBOM as both XML and JSON) whether one signature covers every format
+      or only one. Resolve by either moving evidence to the `artifact` object at the spec
+      level, or scoping prepare/submit per-format with a stable format identifier (also
+      needed for finding 14's fix to go further than upload addressing).
+- [ ] **[security review finding 9/10] Publisher API OpenAPI draft: completeness and
+      schema-reuse accuracy** — `design/publisher-openapi.yaml` still omits
+      component/componentRelease CLE endpoints and the componentRelease collection-draft
+      path variants (explicitly marked as omitted-for-brevity, not a scope decision —
+      `internal/publisher`'s actual implementation already covers all of these). Separately,
+      the review found a structural comparison shows 21 of the 24 schemas the document
+      calls "reused verbatim" from the consumer spec actually differ (e.g. the publisher
+      `uuid`/`date-time` schemas drop the consumer schema's format patterns) — some
+      differences are editorial, some weaken validation. Needs a pass reconciling the draft
+      against both what's actually implemented and the consumer spec's real schemas.
+- [ ] **[security review finding 11] Publisher API: caller-supplied creation timestamps**
+      — `productRelease-create`/`release-create`'s `createdDate` and CLE's `published` are
+      required request fields a caller can backdate or future-date; the consumer spec
+      describes `createdDate` as server-assigned. opentea's own implementation already
+      does the right thing for artifacts (`internal/publisher/artifact.go`'s `createArtifact`
+      sets `createdDate` to `time.Now()`, ignoring any caller input — the OpenAPI schema
+      never exposed it there in the first place) but not for releases, which still take
+      the caller's value as-is. Decide whether `createdDate` should become
+      server-assigned everywhere (breaking bundle-import's need to set a historical value)
+      or stay caller-supplied with the field explicitly redefined as a manufacturer
+      assertion, not a target-authoritative fact.
+- [ ] **[security review finding 13] Publisher API: idempotency for write operations** —
+      already an open question before the review (`design/publisher-service.md` §11 #13,
+      §14.4), but the review confirms it's now also a real gap in the shipped
+      `internal/publisher`: retried `createProduct`/`createArtifact` calls allocate a new
+      identity each time, retried `submitArtifactEvidence` would hit
+      `ErrFingerprintReused` (a confusing error for an intended retry), and a lost
+      `commitCollectionDraft` response leaves the caller with no way to check whether
+      publication actually happened. Needs `Idempotency-Key` support and a defined replay
+      window before CI/CD integrations can retry safely.
+- [ ] **[security review finding 15] Publisher API: standard error-response schema** —
+      `internal/publisher` handlers mostly reuse `httpx`'s existing `{"message": ...}` shape
+      (`BadRequest`/`Conflict`/etc.), which doesn't distinguish, say, a stale-digest 400 from
+      a bad-signature-format 400 by machine-readable code. Needs a real problem/error schema
+      (stable code, correlation id, retryability) before automated clients can branch on
+      failure reasons instead of string-matching messages.
+- [x] **[security review finding 8]** N/A against the shipped implementation — the review's
+      concern was a phased rollout that commits unsigned collections before signing becomes
+      mandatory. `internal/publisher`'s `commitCollectionDraft` was built signed-only from
+      the start (always verifies evidence before persisting, `repo.CommitCollectionDraft`);
+      there was never an unsigned-commit code path to begin with.
+- [x] **[security review finding 16]** Considered and resolved differently than the review's
+      own recommendation, with reasoning already on record — not a gap. The review suggests
+      editable drafts live in the publisher platform, with the target only ever seeing an
+      immutable prepare transaction. This project explicitly chose target-owned staging
+      instead (`design/publisher-service.md` §4/§11 Q1, `design/opentea-server.md` §8.4),
+      grounded in a real workflow the review's alternative can't support: direct CI/CD
+      publication with no publisher-platform database in the loop at all, where the target
+      is the only state CI/CD and the human approver share.
 - [ ] **Reference publisher** (part of the server/client/publisher reference-implementation
       trio) — explicitly deferred by the user (2026-07-04); not started. The design blocker
       that deferred it is resolved — the protocol is fully designed

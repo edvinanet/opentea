@@ -1,6 +1,6 @@
 # TEA Publisher — protocol and service design
 
-**Status:** draft v0.20, for discussion. Nothing here is scheduled or approved; no
+**Status:** draft v0.21, for discussion. Nothing here is scheduled or approved; no
 implementation exists yet. This document is the design opentea's `TODO.md` "Reference
 publisher" entry has been blocked on since 2026-07-04.
 
@@ -230,6 +230,33 @@ than repeated here.
   (open question #10) and expiry defaults (open question #14) — as resolved-for-now, with
   the caveat that neither was actually settled by discussion here, just decided pragmatically
   during the build. `TODO.md`'s **Publisher API** entry updated to match.
+- **v0.21 (this revision)** moves the GUI publisher platform's *repository* into this one —
+  **not** its deployment. Per explicit direction: *"the publisher code should be in this
+  repository as it reuse a lot of the objects in the opentea server and we need to be able
+  to test them together."* This does **not** reopen v0.2's corrected mistake (§ this
+  document's own history above) — the GUI platform is still a separate **service**: its own
+  binary (`cmd/openteapublisher`), own database, own auth, own deployment/Docker image,
+  still just one *client* of the target-owned `/publisher/v1` protocol, exactly as v0.3
+  settled. What changes is only that its source now lives alongside opentea's, specifically
+  to reuse `internal/trust` (so the signer and opentea's own verifier can never silently
+  drift on canonical form — today `internal/trust` only ever runs server-side to *verify*;
+  this is its first real producer-side use), `pkg/tea`, `pkg/teapublisher`, and `pkg/teaclient`
+  (for reading a target — browsing existing products/releases in the GUI, per the decision
+  below), and so the two can be integration-tested together in one test suite instead of
+  hand-simulating one side of the protocol the way `cmd/opentea/publisher_test.go` already
+  has to. New package: `pkg/teapublisherclient` (the HTTP client for *writing* to a target's
+  `/publisher/v1` — §14.1 put this on hold in v0.19 as "the reference CLI's library"; it's
+  load-bearing again now, as `opentea-publisher`'s own backend-to-target client, not
+  optional). Three v1-scoping
+  decisions made in discussion, recorded here: signing is **ephemeral-only** for v1 (no
+  persistent/HSM key storage designed yet — narrows §9.5 to its first mode only, for now);
+  the GUI **queries a target live** via `pkg/teaclient` rather than mirroring/caching its
+  product data locally (no read-side sync-consistency problem to solve yet); CI/CD talks to
+  **`opentea-publisher`'s own API endpoints**, not directly to a target — confirming
+  workflow (b) below as the one this implementation targets first, workflow (a)'s direct-
+  to-target reference-CLI shape stays designed but unbuilt. `TODO.md`'s **Reference
+  publisher** entry updated to match; new §17 below records the concrete package/storage
+  architecture.
 
 ## 1. Problem statement
 
@@ -250,7 +277,8 @@ Three things don't exist today:
   in this space today; the closest thing is hand-assembling JSON against `/admin/v1`.
 
 This document designs both halves: the protocol (§8), and the publisher server that speaks
-it (§4, §7) — a new, standalone service, not a mode of opentea.
+it (§4, §7, §17) — a new, standalone *service* (own binary, own database, own deployment),
+not a mode of opentea, even though its source now lives in this repository (v0.21, §17).
 
 ## 2. Goals
 
@@ -258,8 +286,9 @@ it (§4, §7) — a new, standalone service, not a mode of opentea.
   what `spec/openapi.yaml` already is for reads — so a publisher tool isn't locked to one
   server implementation.
 - A **new, standalone publisher server**: its own service, own GUI, configurable to target
-  any server implementing that protocol (opentea's own eventual implementation of it is
-  one target among possibly several, not a dependency this design is built around).
+  any server implementing that protocol (opentea's own implementation of it, `internal/publisher`,
+  is one target among possibly several this deployment can be pointed at, not a dependency
+  this design is built around — even though the two now share a repository, §17).
 - The GUI/workflow organized around the manufacturer's process, not the TEA object model.
 - Real staging: an in-progress collection (and, per §7, in-progress artifact/CLE/compliance
   streams) that exists on the *publisher's own* server, independent of any target TEA
@@ -276,10 +305,12 @@ it (§4, §7) — a new, standalone service, not a mode of opentea.
 
 ## 3. Non-goals (v1)
 
-- Not part of opentea. opentea is, at most, one reference *implementation* of the target
-  protocol (§8) — a separate, later piece of work, not bundled with building the publisher
-  server itself. Nothing in the publisher server's design should assume opentea-specific
-  behavior beyond what the protocol itself defines.
+- Not a mode of opentea, not a shared process, and not opentea-specific in behavior — it's
+  a separate binary/service/database (`cmd/openteapublisher`, §17) that treats opentea's own
+  `internal/publisher` as one conformant target among possibly several, using nothing beyond
+  what the standard protocol (§8) defines. Sharing a *repository* with opentea (v0.21, §17,
+  for code reuse and integrated testing) is a source-control and build convenience, not an
+  architectural coupling — this non-goal is about behavior, not location.
 - Not multi-tenant in the sense of serving multiple unrelated manufacturers from one
   publisher deployment — one publisher instance represents one manufacturer/trust domain
   (it may still, per §7, target several different TEA servers for that one manufacturer).
@@ -313,8 +344,9 @@ server" (v0.3-v0.14's framing) into **publisher platform**: any signing-capable 
            │     its own narrowly-scoped credential                 │
            │                                                          ▼
            │                                          ┌─────────────────────────────────┐
-           │                                          │  GUI publisher server               │
-           │                                          │  (new, standalone service)             │
+           │                                          │  opentea-publisher                  │
+           │                                          │  (new, standalone service --           │
+           │                                          │   this repo, §17)                        │
            │                                          │                                          │
            │                                          │  - staging: draft collections,             │
            │                                          │    in-progress CLE/compliance streams        │
@@ -351,22 +383,23 @@ Key relationships:
   separate, additional layer entirely internal to the GUI service, sitting *in front of* —
   not instead of — the target's own protocol-level maker-checker gate. The target only ever
   sees the one decision the calling publisher platform's credentialed identity asserts.
-- **opentea implementing the protocol** (its own `/publisher/v1`, reusing
-  `internal/repo`/`internal/trust` underneath, much like v0.2 sketched) is real, valuable,
-  *separate* work — it's what makes opentea a usable target for testing/using either
-  publisher platform shape, but it is not part of "build the publisher server" and isn't a
-  prerequisite for finishing this design. §8 specifies the protocol precisely enough that
-  either piece can proceed independently once it's settled.
+- **opentea implementing the protocol** (`internal/publisher`, its own `/publisher/v1`,
+  reusing `internal/repo`/`internal/trust` underneath, much like v0.2 sketched, but as a
+  distinct handler package with its own auth, not folded into opentea's process the way v0.2
+  wrongly proposed) **shipped 2026-08-30** — it's what makes opentea a usable target for
+  testing/using either publisher platform shape, and now also `opentea-publisher`'s (§17)
+  own default/reference target during development, since both live in this repo.
 - **CI/CD is a first-class actor**, not a footnote — per oej's workflow document (§5), and
   now confirmed as capable of either shape above: signing individual artifacts and calling
   the target directly via the reference client, or submitting to the GUI service, depending
   on which real workflow a given manufacturer runs.
-- The **GUI publisher server** specifically (not the reference CLI client, which is
-  stateless) needs **its own persistence and auth**, independent of any target — it stages
-  data (drafts, in-progress CLE/compliance work, multi-team approval records) that may
-  target a server that's down, unreachable, or simply not yet chosen, and manufacturer
-  staff need to authenticate to *it*, not to whichever TEA server they happen to be
-  publishing to today.
+- **`opentea-publisher`** specifically (not the reference CLI client, which is stateless)
+  needs **its own persistence and auth**, independent of any target — it stages data
+  (in-progress CLE/compliance work, multi-team approval records — *not* collection drafts,
+  which stay target-owned per the bullet above) that may target a server that's down,
+  unreachable, or simply not yet chosen, and manufacturer staff need to authenticate to
+  *it*, not to whichever TEA server they happen to be publishing to today. §17 details what
+  it actually stores.
 
 ## 5. What oej's publisher-workflow.md establishes
 
@@ -1219,19 +1252,24 @@ exactly —
   `/publisher/v1`.
 - **`cmd/teapublisherclient`** — the reference CLI (`publish-artifact ...` above).
 
-**On hold as of v0.19**: the publisher platform's primary integration surface is expected
-to mainly be its own GUI, not pipelines calling a reference CLI directly, so
-`pkg/teapublisherclient`/`cmd/teapublisherclient` are deprioritized — not building them
-next. `pkg/teapublisher` (the wire types both the GUI service and opentea's own future
-server need either way) is unaffected and stays scaffolded as-is.
+**v0.19 put `pkg/teapublisherclient`/`cmd/teapublisherclient` on hold**, reasoning the
+platform's primary integration surface would mainly be its own GUI. **v0.21 reverses the
+`pkg/teapublisherclient` half of that**: now that `opentea-publisher` (§17) is itself being
+built in this repo, its backend needs exactly this library to call a target's
+`/publisher/v1` — not "the reference CLI's library" as originally framed, but
+`opentea-publisher`'s own client dependency, load-bearing, not optional. `cmd/teapublisherclient`
+(a bare CLI for a pipeline to call directly, workflow (a) above) stays on hold — CI/CD talks
+to `opentea-publisher`'s own API endpoints in the shape being built now (v0.21's third
+scoping decision), not a standalone CLI; revisit only if a real deployment needs
+workflow (a) specifically.
 
-All three live alongside `pkg/tea`/`pkg/teaclient` because opentea's own future
-`/publisher/v1` server implementation (§11 Q8) needs `pkg/teapublisher` as a direct
-dependency regardless of where anything else ends up — the same reasoning that already
-keeps `pkg/tea` in this repo despite being consumed externally. This does **not** reopen
-§3/§4's settled point that the full GUI publisher platform (own DB, own auth, own staging)
-is a separate, standalone project — only the shared library and reference CLI move into
-this repo, not the application built on top of them.
+All of `pkg/tea`/`pkg/teapublisher`/`pkg/teaclient`/`pkg/teapublisherclient` live in this
+repo because both opentea's `/publisher/v1` server implementation (`internal/publisher`,
+shipped) and `opentea-publisher`'s client-of-a-target role need them as direct dependencies
+regardless of where anything else ends up — the same reasoning that already keeps `pkg/tea`
+here despite being consumed externally. As of v0.21, this **is** where the full GUI
+publisher platform lives too (§17) — §3/§4's non-goal was never about repository location,
+only about it staying a separate service/binary/database, which it still is.
 
 ### 14.2 Credential provisioning: reuse Layer A's OIDC machinery, don't invent a second one
 
@@ -1561,7 +1599,91 @@ it. That's domain-ownership verification — tracked as its own item in `TODO.md
 designed here, since it's a prerequisite check, not part of the trust-anchor record format
 or publication mechanism itself.
 
-## 17. Cross-references
+## 17. `opentea-publisher`: in-repo architecture (v0.21)
+
+Settled 2026-08-31, replacing the "separate, standalone project" framing v0.3-v0.20 carried
+(§3's non-goal itself didn't change — see there for exactly what "not part of opentea"
+still means and doesn't).
+
+### 17.1 Package layout
+
+```
+cmd/openteapublisher/          new binary: GUI + CI/CD-facing JSON API + migration runner
+internal/openteapublisher/     handlers, GUI templates, its own repo/DB layer
+  db/migrations/*.sql          its own schema -- a separate database from opentea's
+pkg/teapublisherclient/        HTTP client for a target's /publisher/v1 (new, §14.1)
+```
+
+Named `openteapublisher`/`cmd/openteapublisher` to avoid colliding with the existing
+`internal/publisher` (opentea's own `/publisher/v1` *server* implementation) — "opentea
+publisher" is the product name; this is its literal, unhyphenated translation, matching
+every other `cmd/` entry in this repo (`opentea`, `teaclient`, `bundlecheck`, `fixtures` —
+none hyphenated).
+
+### 17.2 Shared code
+
+The whole reason this moved into this repo (this document's own v0.21 revision-history entry):
+
+| Package | Reused for |
+|---|---|
+| `pkg/tea` | Base wire types |
+| `pkg/teapublisher` | Publisher wire types |
+| `pkg/teaclient` | **Reading** a target — browsing existing products/releases in the GUI (§17.4: live, not cached) |
+| `pkg/teapublisherclient` | **Writing** to a target's `/publisher/v1` — new, this is `opentea-publisher`'s core dependency |
+| `internal/trust` | Ed25519 keypair generation, certificate building, canonicalization, and **signing** — today only ever exercised server-side to *verify*; this is its first producer-side use, and the reason sharing a repo matters at all: the signer and opentea's own verifier can never silently drift on canonical form if they're the same code |
+| `internal/idgen`, `internal/httpx` | ID generation, HTTP response helpers |
+| `internal/db`'s migration runner | Currently hardcoded to one `//go:embed migrations/*.sql` relative to its own package. Worth a small refactor — take the `embed.FS` (and its subdirectory) as a parameter — so `internal/openteapublisher/db` gets its own independently-migrated SQLite database through the same runner instead of a second, duplicated ~100 lines. Not yet done; a prerequisite of implementation, not of this design. |
+
+### 17.3 Storage
+
+Narrower than it looks, because collection-draft staging deliberately stays target-owned
+(§4/§11 Q1 — unchanged by this revision). What `opentea-publisher` itself persists:
+
+- **Layer A accounts** — manufacturer staff (§10.1).
+- **Layer B credentials** — one bearer credential per target TEA server this deployment
+  publishes to (§10.5).
+- **Internal business-approval workflow state** — the multi-team approval (legal/compliance/
+  security engineering, §10.1/§14.3) that happens *before* this app ever calls a target's
+  collection-draft endpoints. Genuinely new state with no target-side equivalent, and **not
+  designed yet** — its own pass is still needed (approval chain shape, how many approvers,
+  sequential vs. parallel, what it blocks) before this can be built, not just persisted.
+- **Its own audit log** — who did what, against which target.
+- **Signing keys — none, for v1** (settled below, §17.5).
+- **No target-data cache** (settled below, §17.4).
+
+### 17.4 Read strategy: live, not cached
+
+The GUI queries a target live via `pkg/teaclient` for browsing (products, releases,
+existing collections) rather than mirroring/caching that data locally. No staleness, no
+sync-consistency design needed. Revisit only if latency or call volume becomes a real,
+measured problem — not speculatively.
+
+### 17.5 Signing: ephemeral-only for v1
+
+v1 supports only §9.5's first signing mode — a fresh Ed25519 key generated per signing
+event, used immediately, discarded (`internal/trust.GenerateEphemeralKey`/`Sign`/`Destroy`)
+— matching the only format opentea's own verifier actually checks today
+(`SignatureFormatJWSDetached`, `internal/admin/evidencebundle.go`/`internal/publisher/evidence.go`'s
+shared restriction). This means **no persistent key storage of any kind** is needed for v1
+— narrows the storage question considerably. §9.5's second mode (Web PKI certificates,
+possibly HSM/PKCS#11-backed, possibly air-gapped) stays designed but unbuilt; it would need
+real secrets-storage design (HSM/PKCS#11 integration or an encrypted-at-rest vault) whenever
+it's picked up.
+
+### 17.6 CI/CD surface
+
+CI/CD calls `opentea-publisher`'s own API endpoints, not a target directly — this
+implementation targets workflow (b) (§4's diagram) first. Workflow (a)'s direct-to-target
+reference-CLI shape (§14.1's `cmd/teapublisherclient`) stays designed but on hold; nothing
+here prevents building it later against the same `pkg/teapublisherclient`.
+
+### 17.7 Deployment
+
+A Docker image, mirroring however opentea's own is packaged (check `packaging/` and any
+existing `Dockerfile`/CI build steps before inventing a new pattern) — not designed further
+here; genuinely just packaging once the binary exists, no open architectural questions.
+
+## 18. Cross-references
 
 - `design/publisher-openapi.yaml` — the OpenAPI 3.1 draft §8 sketches; v0.4's actual
   deliverable (does not yet cover §13's eventing).
@@ -1592,3 +1714,6 @@ or publication mechanism itself.
   full for this revision.
 - `github.com/go-acme/lego` — the DNS-provider abstraction §16.3 points to reusing rather
   than hand-rolling.
+- `internal/publisher`, `internal/trust`, `pkg/teaclient`, `internal/db` — the four existing
+  packages §17.2's shared-code table names as what actually motivated moving
+  `opentea-publisher` into this repo (v0.21).

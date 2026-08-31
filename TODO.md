@@ -207,25 +207,37 @@ they don't get lost.
       grounded in a real workflow the review's alternative can't support: direct CI/CD
       publication with no publisher-platform database in the loop at all, where the target
       is the only state CI/CD and the human approver share.
-- [ ] **Reference publisher** (part of the server/client/publisher reference-implementation
-      trio) — explicitly deferred by the user (2026-07-04); not started. The design blocker
-      that deferred it is resolved — the protocol is fully designed
+- [ ] **Reference publisher / `opentea-publisher`** (part of the server/client/publisher
+      reference-implementation trio) — explicitly deferred by the user (2026-07-04); design
+      work resumed 2026-08-31, implementation not started. The protocol is fully designed
       (`design/publisher-openapi.yaml`, `design/publisher-service.md` §8), and the shared
       library shape is settled (2026-08-29, §8/§14.1 v0.18): `pkg/teapublisher` (wire types
       for the publisher-only delta — `collection-draft`, `approval-decision`,
-      `evidence-submission`, etc. — importing `pkg/tea` for the reused base objects),
-      `pkg/teapublisherclient` (HTTP client library), `cmd/teapublisherclient` (reference
-      CLI) — all three in this repo, mirroring `pkg/tea`/`pkg/teaclient`/`cmd/teaclient`
-      exactly. The full GUI publisher platform (own DB/GUI/staff auth/staging) stays the
-      separate, standalone project `design/publisher-service.md` §3/§4 already settled on —
-      only the shared library and reference CLI move into this repo.
-      **`pkg/teapublisher` is scaffolded and now in real use** (2026-08-29/30 — wire types,
-      imported by opentea's own `internal/publisher` server implementation, see the
-      **Publisher API** entry above). **`pkg/teapublisherclient`/`cmd/teapublisherclient`
-      remain on hold** (2026-08-30, `design/publisher-service.md` §14.1 v0.19): the publisher
-      platform's primary integration surface will mainly be its own GUI, not a CI/CD-embedded
-      reference CLI, so that layer isn't the priority right now. The full, standalone GUI
-      publisher platform itself is unstarted, and out of this repo's scope per §3/§4.
+      `evidence-submission`, etc. — importing `pkg/tea` for the reused base objects).
+      **`pkg/teapublisher` is scaffolded and in real use** (imported by opentea's own
+      `internal/publisher` server implementation, see the **Publisher API** entry above).
+
+      **Repo-location reversal, 2026-08-31** (`design/publisher-service.md` v0.21, new §17):
+      the full GUI publisher platform — previously scoped as "a separate, standalone
+      project" (§3/§4, through v0.20) — now lives in **this** repo too, per explicit
+      direction ("the publisher code should be in this repository as it reuse a lot of the
+      objects in the opentea server and we need to be able to test them together"). Still a
+      separate *service* (own binary `cmd/openteapublisher`, own database, own deployment) —
+      only the repository changed, not the architecture v0.3 corrected v0.2 to establish.
+      Settled alongside the reversal: `pkg/teapublisherclient` (HTTP client for a target's
+      `/publisher/v1`) is load-bearing again, no longer "on hold" — it's `opentea-publisher`'s
+      own backend dependency now, not just a reference-CLI's library.
+      `cmd/teapublisherclient` (a bare CLI for direct-to-target CI/CD use, workflow (a))
+      stays on hold — this build targets workflow (b), CI/CD calling `opentea-publisher`'s
+      own API endpoints, first. Also settled: signing is ephemeral-key-only for v1 (no
+      persistent/HSM key storage needed yet), and the GUI queries a target live via
+      `pkg/teaclient` rather than caching/mirroring product data locally. See
+      `design/publisher-service.md` §17 for the full package layout, shared-code map, and
+      storage scope (including one real remaining design gap: the internal multi-team
+      business-approval workflow's own shape isn't designed yet, only scoped as needed).
+      Not started: `cmd/openteapublisher`, `internal/openteapublisher`,
+      `pkg/teapublisherclient` itself, the `internal/db` migration-runner refactor (§17.2)
+      to support a second, independently-migrated database, and a Docker image.
 - [ ] **Publisher API: derive approval actor from authenticated identity, not a
       caller-supplied string** (found 2026-08-28, during `design/opentea-server.md` review —
       see its §11.4). `design/publisher-openapi.yaml`'s `approval-decision.actor` is

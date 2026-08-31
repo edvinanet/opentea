@@ -235,9 +235,21 @@ they don't get lost.
       `design/publisher-service.md` §17 for the full package layout, shared-code map, and
       storage scope (including one real remaining design gap: the internal multi-team
       business-approval workflow's own shape isn't designed yet, only scoped as needed).
-      Not started: `cmd/openteapublisher`, `internal/openteapublisher`,
-      `pkg/teapublisherclient` itself, the `internal/db` migration-runner refactor (§17.2)
-      to support a second, independently-migrated database, and a Docker image.
+      **`pkg/teapublisherclient` scaffolded 2026-08-31**: full client coverage of every
+      `/publisher/v1` operation `internal/publisher` actually implements (products,
+      components, artifacts + upload + evidence, CLE × 4 owner types, collection-draft ×
+      8 operations × 2 owner types), built against the real handler code rather than the
+      OpenAPI draft (which has known inaccuracies — e.g. `linkComponent`'s real response is
+      `200` + the updated product release, not the draft's documented `204`). Verified two
+      ways: `pkg/teapublisherclient/client_test.go`'s fake-server unit tests, and a new
+      `cmd/opentea/publisherclient_test.go` end-to-end test driving the whole workflow
+      (product→release→artifact→evidence→draft→approve→prepare→commit, with real Ed25519
+      signatures) through the client against the *real* `internal/publisher` server — this
+      is the actual payoff of moving both into one repo, catching client/server drift
+      directly rather than by inspection. Zero third-party dependencies.
+      Not started: `cmd/openteapublisher`, `internal/openteapublisher`, the `internal/db`
+      migration-runner refactor (§17.2) to support a second, independently-migrated
+      database, and a Docker image.
 - [ ] **Publisher API: derive approval actor from authenticated identity, not a
       caller-supplied string** (found 2026-08-28, during `design/opentea-server.md` review —
       see its §11.4). `design/publisher-openapi.yaml`'s `approval-decision.actor` is

@@ -1,6 +1,6 @@
 # TEA Publisher — protocol and service design
 
-**Status:** draft v0.21, for discussion. Nothing here is scheduled or approved; no
+**Status:** draft v0.22, for discussion. Nothing here is scheduled or approved; no
 implementation exists yet. This document is the design opentea's `TODO.md` "Reference
 publisher" entry has been blocked on since 2026-07-04.
 
@@ -257,6 +257,19 @@ than repeated here.
   to-target reference-CLI shape stays designed but unbuilt. `TODO.md`'s **Reference
   publisher** entry updated to match; new §17 below records the concrete package/storage
   architecture.
+- **v0.22 (this revision)** adds §18, a companion to §7: the same manufacturer process
+  mapped onto GUI screens instead of protocol operations, since §17 scaffolded only enough
+  screens (login, target list) to prove the backend plumbing works, not a designed
+  experience. Surfaces three things along the way that weren't visible before: the
+  still-undesigned CI/CD-facing API (§17's own deferred item) needs its own capability
+  scoping mirroring `/publisher/v1`'s full/cicd split, since `opentea-publisher` always
+  presents a "full" credential to the target regardless of who's actually calling it
+  (§18.11); nothing yet limits which staff members may approve a collection draft, since
+  `staff` deliberately has no role column (§18.9); and §17.3's own storage scope named "its
+  own audit log" as part of the plan, but the shipped migration never actually added one
+  (§18.12) — tracked as a new `TODO.md` follow-up. §18.8 (the internal business-approval
+  workflow) stays explicitly undesigned, same as §17.3 left it — this pass doesn't resolve
+  it, only confirms it's still the single biggest remaining gap.
 
 ## 1. Problem statement
 
@@ -1683,7 +1696,166 @@ A Docker image, mirroring however opentea's own is packaged (check `packaging/` 
 existing `Dockerfile`/CI build steps before inventing a new pattern) — not designed further
 here; genuinely just packaging once the binary exists, no open architectural questions.
 
-## 18. Cross-references
+## 18. GUI requirements: manufacturer process mapped to screens
+
+Companion to §7 ("The manufacturer process, mapped to protocol operations") — that section
+maps oej's workflow phases onto `/publisher/v1` operations; this one maps the same phases
+onto what a manufacturer staff member actually sees and does in `opentea-publisher`'s GUI.
+§17 scaffolded the backend (auth, target storage) but built only enough screens to prove
+that plumbing works, not a designed experience — this section is that design pass. Every
+screen below is described by purpose, what it shows/does, and which client call
+(`pkg/teaclient` for reads, `pkg/teapublisherclient` for writes) it drives; open questions
+are called out inline rather than deferred to the end, since most are specific to one screen.
+
+### 18.1 Navigation shape
+
+A persistent target selector (§18.2, already built) scopes every other screen — "the
+currently selected target" is implicit context throughout, the same way a shell's current
+working directory is. Top-level areas: **Products** (§18.3), **Components** (§18.4),
+**Artifacts** (§18.5), **Lifecycle** (§18.6), **Collections/Drafts** (§18.7), **Business
+approval** (§18.8, placeholder only), **Targets** (§18.2, built), **Audit** (§18.12, not
+buildable yet — see there).
+
+**Requirement, not yet wired anywhere:** every write action's `actor` field
+(`CollectionDraftArtifactList.Actor`, `ApprovalDecision.Actor`) must be the logged-in staff
+member's own username, supplied by the GUI server-side from the session
+(`internal/openteapublisher.Staff.Username`, already available to every authenticated
+handler) — never a free-text field a staff member types into. This doesn't resolve
+`TODO.md`'s "derive approval actor from authenticated identity" item (that's about the
+*target* independently verifying the asserted actor, which needs protocol changes) but it
+does close the weaker, GUI-local version of the same problem: today nothing stops the GUI
+itself from asserting an arbitrary actor string, and it should never offer to.
+
+### 18.2 Target management (built, §17)
+
+The one area with real screens already: login, a dashboard listing configured targets, add/
+remove a target. Serves as this section's baseline for visual style (plain HTML, no JS,
+`internal/webadmin`'s own convention) — every screen below extends it, not a fresh design.
+
+### 18.3 Products & releases
+
+- **Browse**: live query against the selected target (`pkg/teaclient.QueryProducts`,
+  `GetProduct`, `ListReleasesByProduct` — read side, no caching, §17.4). A search/list page,
+  a product detail page showing its releases.
+- **Create**: `CreateProduct`/`CreateProductRelease` forms (name + identifiers; version +
+  createdDate + optional releaseDate + identifiers) — requires a "full"-scoped credential
+  (§18.11). `createdDate` is presented as a plain form field the staff member fills in, not
+  hidden as target-assigned — it genuinely is caller-supplied today (security-review finding
+  11, still open in `TODO.md`); the GUI shouldn't imply a guarantee the protocol doesn't
+  provide.
+
+### 18.4 Components
+
+- **Find-before-create**: a search box (`FindComponents`) shown before any create form, so
+  staff pick an existing component when one already represents the real thing. The target
+  now also enforces this server-side (409 on a duplicate identifier, security-review finding
+  12) — the GUI's job is to make the *right* choice easy, not to be the only thing preventing
+  duplicates.
+- **Create + link**: `CreateComponent`, then `LinkComponent` against a chosen product
+  release.
+
+### 18.5 Artifacts: a review surface first, a manual fallback second
+
+Per §5: artifact creation/signing is CI/CD's job, "not a human clicking sign in a GUI" —
+so this screen's primary purpose is **reviewing** what CI/CD already registered (per §17.6's
+decision, CI/CD calls `opentea-publisher`'s own API, not the target directly), not driving
+it. **Currently blocked**: that CI/CD-facing API doesn't exist yet (§17's own explicitly
+deferred item), so there is nothing real for this screen to show until it's designed and
+built — this subsection describes intent, not something buildable today.
+
+A **manual fallback path** should still exist for manufacturers without a CI/CD pipeline
+capable of calling that API directly: create an artifact, upload its file, then prepare +
+sign + submit its evidence — the same local ephemeral-signing action §18.10 describes for
+collection commit, just scoped to one artifact
+(`CreateArtifact`/`UploadArtifactFile`/`PrepareArtifactEvidence`/`SubmitArtifactEvidence`).
+Requires "cicd" scope at minimum (satisfied by the "full" credential `opentea-publisher`
+always holds, §18.11).
+
+### 18.6 Lifecycle (CLE) and compliance
+
+Small forms per owner type (product/productRelease/component/componentRelease — four
+near-identical `CreateXCLEEvent` calls, §18.11 "full" scope), reachable from each owner's
+detail page rather than a standalone top-level area. Compliance documents ride the existing
+artifact path (`ArtifactTypeCertification`/`ArtifactTypeAttestation`) per §11's already-
+resolved open question — no separate screen needed beyond §18.5's artifact flow.
+
+### 18.7 Collection draft assembly
+
+The release detail page grows a "Draft" panel: the current live collection (read,
+`pkg/teaclient`) and the in-progress draft (`GetXCollectionDraft`) shown together, with
+`CollectionDraftDiff`'s added/removed artifacts highlighted — the server already computes
+this diff, the GUI just needs to render it. Add/remove artifacts by reference
+(`PutXCollectionDraft`, "cicd" scope) from the release's already-validated artifact list
+(§18.5) — never a free-text artifact reference.
+
+**Requirement**: every edit bumps `revision` and resets `approval` to `none` server-side
+(§7.7) — surface this plainly ("editing the draft clears any pending approval") rather than
+let staff discover it only when prepare/commit unexpectedly 409s.
+
+### 18.8 Internal business approval — explicitly not designed
+
+Named as a real requirement (multi-team: legal, compliance, security engineering, §4/§10.1)
+but genuinely undesigned — §17.3 already flagged this as the single biggest gap the backend
+scaffold left open, and this GUI pass doesn't resolve it either. The one constraint already
+settled: it sits **in front of**, not instead of, the protocol-level approval in §18.9 (§4's
+"Key relationships"). No screens are specified here because there's no approval-chain shape
+(how many approvers, sequential vs. parallel, what it blocks) to design them against yet —
+this is the single largest remaining unknown this whole pass surfaces.
+
+### 18.9 Protocol-level approval (maker-checker)
+
+Approve/Reject buttons on the draft panel (§18.7), calling
+`ApproveXCollectionDraft`/`RejectXCollectionDraft` with `actor` from the session (§18.1).
+The target already rejects `actor == draftedBy` with a 403 (maker-checker, §7.9) — the GUI
+should also disable/hide the Approve button client-side when the logged-in staff member *is*
+the drafter, as a UX courtesy, not a substitute for the server-side check that actually
+enforces it.
+
+**Gap this surfaces**: nothing today limits *which* staff members may approve —
+`internal/openteapublisher`'s `staff` table deliberately has no role/permission column
+(§17, "every logged-in staff member has equal access"). The protocol's maker-checker only
+checks "not the same person who drafted it," not "is this person authorized to approve at
+all." Left open here the same way §17 left it open — add a role/permission concept when
+there's an actual boundary to enforce, e.g. once §18.8 exists and needs to gate on it.
+
+### 18.10 Prepare, sign, and commit
+
+One **"Sign & Publish"** action, not a multi-step ceremony — v1's ephemeral-only signing
+model (§17.5) makes this possible: server-side, in one request, `opentea-publisher` calls
+`PrepareXCollectionCommit`, generates a fresh Ed25519 key + certificate
+(`internal/trust.GenerateEphemeralKey`/`BuildCertificate`), signs the returned digest,
+immediately discards the key, and calls `CommitXCollectionDraft` with the resulting
+evidence. No separate "download this digest, sign it elsewhere, upload the signature"
+ceremony is needed — that's only required for §9.5's second (Web PKI/HSM/air-gapped) mode,
+out of scope for v1 (§17.5). On success, show the new collection version and a link to it on
+the target's real `/tea/v1` — a genuine, externally-verifiable link, since commit only
+succeeds after atomic evidence-bound publish.
+
+### 18.11 A credential-scoping requirement this pass surfaces
+
+`opentea-publisher` stores one bearer credential per target (§17.3's `target.bearer_token`),
+which must be **"full"**-scoped for the GUI to do everything above — approval requires
+"full", and `internal/publisher`'s `scopeSatisfies` already makes "full" satisfy every
+"cicd"-gated operation too (`internal/publisher/auth_middleware.go`), so one stored
+credential per target is genuinely sufficient; no schema gap. But this has a real
+consequence for §18.5's still-undesigned CI/CD-facing API: because `opentea-publisher`
+always presents "full" to the target, the target's own full/cicd separation provides *no*
+protection against a compromised `opentea-publisher` process or a malicious CI/CD
+submission once CI/CD's access is mediated through `opentea-publisher` rather than calling
+the target directly. That API needs to reintroduce its own capability scoping (mirroring
+full/cicd) at its own boundary — a concrete new requirement on that not-yet-designed piece,
+not something this document resolves.
+
+### 18.12 Audit / activity — blocked on missing storage
+
+Every write action should be visible somewhere after the fact. **Gap found writing this
+section**: §17.3's own plan described "its own audit log" as part of the storage scope, but
+the shipped migration (`internal/openteapublisher/db/migrations/0001_init.sql`) only has
+`staff`/`session`/`target` — no audit table was actually built. Tracked as a follow-up in
+`TODO.md`; this screen can't be designed usefully until that storage exists, so it's named
+here as a requirement rather than specified further.
+
+## 19. Cross-references
 
 - `design/publisher-openapi.yaml` — the OpenAPI 3.1 draft §8 sketches; v0.4's actual
   deliverable (does not yet cover §13's eventing).

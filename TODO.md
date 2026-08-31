@@ -273,6 +273,23 @@ they don't get lost.
       plaintext, no encryption-at-rest -- this app must present the actual usable
       credential on outbound calls, unlike opentea's own `publisher_credential`, which only
       ever stores a verifier-side hash.
+- [ ] **`opentea-publisher`: GUI requirements pass** (`design/publisher-service.md` §18,
+      v0.22, companion to §7) maps the manufacturer process onto actual screens instead of
+      protocol operations, and surfaces three concrete gaps the backend scaffold didn't:
+      (1) **no audit log table** — §17.3's own storage plan named "its own audit log" but
+      the shipped migration (`internal/openteapublisher/db/migrations/0001_init.sql`) only
+      has `staff`/`session`/`target`; needs its own table + write-on-every-mutation before
+      any activity screen is buildable; (2) **no staff role/permission concept** — the
+      protocol's maker-checker only checks "not the same person who drafted it," nothing
+      limits *which* staff members may approve a collection draft at all (§18.9); (3) the
+      still-undesigned CI/CD-facing API (see the **Reference publisher** entry above) needs
+      its own capability scoping mirroring `/publisher/v1`'s full/cicd split, since
+      `opentea-publisher` always presents a "full" credential to the target regardless of
+      who's actually calling it (§18.11) — without that, the target-side scope separation
+      provides no protection against a compromised `opentea-publisher` process or malicious
+      CI/CD submission. The internal multi-team business-approval workflow (§18.8) remains
+      explicitly undesigned — this pass confirmed it's still the single biggest gap, didn't
+      resolve it.
 - [ ] **Publisher API: derive approval actor from authenticated identity, not a
       caller-supplied string** (found 2026-08-28, during `design/opentea-server.md` review —
       see its §11.4). `design/publisher-openapi.yaml`'s `approval-decision.actor` is

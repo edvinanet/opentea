@@ -5,9 +5,16 @@ not anything useful for any type of production. /OEJ
 
 ---
 
-A reference implementation set for the [CycloneDX Transparency Exchange API (TEA)](https://github.com/cyclonedx/transparency-exchange-api) (spec v0.4.0, Beta 2): a server, a client, and shared test data, built for interoperability testing — the server should work with any conformant client, and the client should work against any conformant server, not just each other.
+OpenTEApot is a reference implementation set for the [CycloneDX Transparency Exchange API (TEA)](https://github.com/cyclonedx/transparency-exchange-api) (spec v0.4.0, Beta 2):
+ - a server, OpenTEA Server. An implementation of the TEA consumer API with an admin interface and a proposed publisher interface. The server
+   also includes extensions from Olle's TEA Trust Architecture for testing
+ - a client, OpenTEA consumer, for downloading software transparency data using the CLI
+ - a publisher, OpenTEA Publisher for manufacturers and Open Source projects. A publication workflow support server
+   with a GUI. Includes the proposed publisher API client to communicate with the OpenTEA server and extensions
+   from Olle's TEA Trust Architecture
+ - and shared test data, built for interoperability testing — the server should work with any conformant client, and the client should work against any conformant server, not just each other.
 
-## Scope (Phase 1)
+## Scope for OpenTEA Server (Phase 1)
 
 - The spec-conformant, read-only consumer API at `/tea/v1/...` — Products, Product Releases, Components, Component Releases, Collections, Artifacts, CLE (lifecycle) data, and TEI discovery.
 - An unofficial internal ingestion API at `/admin/v1/...` for loading data (there is no publisher/write API in the official TEA spec yet), plus a browser admin GUI at `/admin/ui/...` — user accounts, roles, a stats dashboard, and API tokens. Both are authenticated; see [README-admin.md](README-admin.md).
@@ -15,7 +22,8 @@ A reference implementation set for the [CycloneDX Transparency Exchange API (TEA
 
 Metadata is stored in SQLite; uploaded files are stored content-addressed on the local filesystem, behind a small `Storage` interface (`internal/storage`) so a different backend (e.g. S3) could be swapped in later.
 
-The trust/evidence-bundle overlay and a real publisher API are out of scope for this phase.
+
+## OpenTEA consumer
 
 Alongside the server: a reference client library + CLI (`pkg/teaclient`, `cmd/teaclient`) that
 works against any conformant TEA server, and a fixtures replay tool (`cmd/fixtures`) with
@@ -25,6 +33,8 @@ ownership transfer, and provider migration (`internal/bundle`, admin-only `/admi
 endpoints), with a standalone validator CLI (`cmd/bundlecheck`) — see
 [docs/bundle-format.md](docs/bundle-format.md). A `Dockerfile` builds and runs just the server
 for quick local testing — see [README-docker.md](README-docker.md).
+
+## OpenTEA Publisher
 
 A separate, standalone service also lives in this repo: **opentea-publisher**
 (`cmd/openteapublisher`, `internal/openteapublisher`) — a GUI publisher platform that signs
@@ -47,7 +57,7 @@ sudo make install   # installs everything to /usr/local/bin (override with PREFI
 make help           # list all Makefile targets
 ```
 
-## Running
+## Running OpenTEA Server
 
 ```bash
 go run ./cmd/opentea createadmin -username=admin -password=<a-real-password>  # once, to bootstrap
@@ -75,13 +85,12 @@ config file (default path `/etc/opentea/opentea.conf`, override with `TEA_CONFIG
 | `TEA_TLS_CERT_FILE` / `TEA_TLS_KEY_FILE` | *(none)* | If both are set, the server listens with HTTPS instead of plain HTTP. Setting only one is a startup error |
 | `TEA_CONFIG_FILE` | `/etc/opentea/opentea.conf` | Path to the config file itself. A missing *default* path is fine (skipped); an explicitly-set path that's missing/malformed is a startup error |
 
-See [SMOKE_TEST.md](SMOKE_TEST.md) for a full walkthrough of creating and reading back data.
-See [README-deploy.md](README-deploy.md) for the config file format and systemd deployment.
-
-See [README-deploy.md](README-deploy.md) for deploying on Debian with systemd (unit files under
+- See [SMOKE_TEST.md](SMOKE_TEST.md) for a full walkthrough of creating and reading back data.
+- See [README-deploy.md](README-deploy.md) for the config file format and systemd deployment.
+- See [README-deploy.md](README-deploy.md) for deploying on Debian with systemd (unit files under
 `packaging/systemd/`).
 
-## Project layout
+## OpenTEApot Project layout
 
 ```
 cmd/

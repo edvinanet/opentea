@@ -1,6 +1,6 @@
 # TEA Publisher — protocol and service design
 
-**Status:** draft v0.23, for discussion. Nothing here is scheduled or approved; no
+**Status:** draft v0.24, for discussion. Nothing here is scheduled or approved; no
 implementation exists yet. This document is the design opentea's `TODO.md` "Reference
 publisher" entry has been blocked on since 2026-07-04.
 
@@ -294,6 +294,26 @@ than repeated here.
   multi-team system (no way to require, say, one legal sign-off *and* one security
   sign-off specifically — §10.1's own single-approver-role simplification is carried
   through as-is, not re-litigated). New `TODO.md` entry records both gaps.
+- **v0.24 (this revision)** resolves §18.11's own gap: `opentea-publisher` now issues its
+  own, narrower bearer credentials (`internal/openteapublisher/cicdcredential.go`,
+  migration `0005_cicd_credential.sql`) and exposes a mediated `/cicdapi/v1` surface
+  (`cicdapi.go`) that proxies straight through to a stored `Target`'s real `/publisher/v1`
+  via `pkg/teapublisherclient` — but only for the operations `internal/publisher` itself
+  treats as cicd-scoped (artifact create/upload/evidence, collection-draft assembly and
+  commit for both owner types). Product/component/CLE creation and draft approve/reject
+  stay unreachable from `/cicdapi/v1` entirely — a structural exclusion (the routes are
+  simply never registered), not a runtime check, mirroring `internal/publisher/router.go`'s
+  own full/cicd line exactly. This also closes a second, longstanding gap in the same
+  motion: `pkg/teapublisherclient` had never been called against a *stored* `Target` before
+  this — it now is, on every `/cicdapi/v1` request. Verified against a real target
+  end-to-end (`cmd/opentea/cicdapi_test.go` — the target genuinely receives and processes a
+  proxied artifact-create and collection-draft PUT, confirmed by reading them back with a
+  full-scoped credential afterward, not just trusting `opentea-publisher`'s own 200) and via
+  a manual smoke test against both real built binaries. **Deliberately not built**: no
+  per-credential scoping *within* cicd (one credential grants every cicd-scoped operation
+  against its one target, same binary-scope shape `internal/publisher` itself uses); no
+  credential expiry/rotation; Docker packaging still doesn't exist to actually run any of
+  this in a real CI pipeline (separate, already-tracked item).
 
 ## 1. Problem statement
 
@@ -1681,9 +1701,13 @@ Narrower than it looks, because collection-draft staging deliberately stays targ
   publishes to (§10.5).
 - **Internal business-approval workflow state** — the multi-team approval (legal/compliance/
   security engineering, §10.1/§14.3) that happens *before* this app ever calls a target's
-  collection-draft endpoints. Genuinely new state with no target-side equivalent, and **not
-  designed yet** — its own pass is still needed (approval chain shape, how many approvers,
-  sequential vs. parallel, what it blocks) before this can be built, not just persisted.
+  collection-draft endpoints. Genuinely new state with no target-side equivalent —
+  scaffolded v0.23 (§18.8): `approval_request`/`approval_decision`, a single
+  `security_compliance_approver` workflow role gates deciding, plain approval-count
+  threshold, not yet wired to any real publish gate.
+- **Its own, narrower CI/CD credentials** — `cicd_credential` (v0.24, §18.11): one per
+  target, letting `opentea-publisher` mediate CI/CD's access without ever handing out its
+  own full-scoped `target.bearer_token`.
 - **Its own audit log** — who did what, against which target.
 - **Signing keys — none, for v1** (settled below, §17.5).
 - **No target-data cache** (settled below, §17.4).
@@ -1783,9 +1807,11 @@ remove a target. Serves as this section's baseline for visual style (plain HTML,
 Per §5: artifact creation/signing is CI/CD's job, "not a human clicking sign in a GUI" —
 so this screen's primary purpose is **reviewing** what CI/CD already registered (per §17.6's
 decision, CI/CD calls `opentea-publisher`'s own API, not the target directly), not driving
-it. **Currently blocked**: that CI/CD-facing API doesn't exist yet (§17's own explicitly
-deferred item), so there is nothing real for this screen to show until it's designed and
-built — this subsection describes intent, not something buildable today.
+it. As of v0.24, that CI/CD-facing API exists (`/cicdapi/v1`, §18.11) and CI/CD calling
+`CreateArtifact`/`UploadArtifactFile`/`SubmitArtifactEvidence` through it genuinely creates
+real, reviewable artifacts on the target — but this review screen itself is still unbuilt,
+so there remains nothing for a staff member to actually look at yet; this subsection still
+describes intent, just against a real backend now rather than an undesigned one.
 
 A **manual fallback path** should still exist for manufacturers without a CI/CD pipeline
 capable of calling that API directly: create an artifact, upload its file, then prepare +
@@ -1881,20 +1907,28 @@ out of scope for v1 (§17.5). On success, show the new collection version and a 
 the target's real `/tea/v1` — a genuine, externally-verifiable link, since commit only
 succeeds after atomic evidence-bound publish.
 
-### 18.11 A credential-scoping requirement this pass surfaces
+### 18.11 A credential-scoping requirement, resolved (v0.24)
 
 `opentea-publisher` stores one bearer credential per target (§17.3's `target.bearer_token`),
 which must be **"full"**-scoped for the GUI to do everything above — approval requires
 "full", and `internal/publisher`'s `scopeSatisfies` already makes "full" satisfy every
 "cicd"-gated operation too (`internal/publisher/auth_middleware.go`), so one stored
-credential per target is genuinely sufficient; no schema gap. But this has a real
-consequence for §18.5's still-undesigned CI/CD-facing API: because `opentea-publisher`
-always presents "full" to the target, the target's own full/cicd separation provides *no*
+credential per target is genuinely sufficient; no schema gap there. But this had a real
+consequence for the (then-undesigned) CI/CD-facing API: because `opentea-publisher` always
+presents "full" to the target, the target's own full/cicd separation provided *no*
 protection against a compromised `opentea-publisher` process or a malicious CI/CD
 submission once CI/CD's access is mediated through `opentea-publisher` rather than calling
-the target directly. That API needs to reintroduce its own capability scoping (mirroring
-full/cicd) at its own boundary — a concrete new requirement on that not-yet-designed piece,
-not something this document resolves.
+the target directly.
+
+**v0.24 resolves this**: `opentea-publisher` now issues its own, narrower
+`cicd_credential`s (one per target, `internal/openteapublisher/cicdcredential.go`) and
+exposes a mediated `/cicdapi/v1` (`cicdapi.go`) that proxies to a target's real
+`/publisher/v1` via `pkg/teapublisherclient`, but only reaches the operations
+`internal/publisher` itself treats as cicd-scoped — product/component/CLE creation and
+draft approve/reject are structurally unreachable through it (the routes are never
+registered on that mux, not merely scope-checked at runtime). A compromised or malicious
+CI/CD credential can now do no more against the target than `internal/publisher`'s own
+"cicd" scope ever allowed — the protection §18.11 originally found missing.
 
 ### 18.12 Audit / activity — blocked on missing storage
 

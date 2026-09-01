@@ -53,14 +53,31 @@ type Server struct {
 	loginLimiter *httpx.LoginLimiter
 }
 
-// NewRouter builds the full opentea-publisher mux.
+// NewRouter builds the full opentea-publisher mux: the GUI (session-
+// cookie auth, small HTML forms, capped at maxRequestBody by limitBody)
+// mounted at "/", and /cicdapi/v1 (bearer-credential auth, up to
+// maxCICDUploadBody per artifact file) mounted separately at "/cicdapi/"
+// -- http.MaxBytesReader can only shrink an already-applied limit, never
+// raise one, so the cicd surface can't sit behind limitBody's tighter
+// cap; it applies its own, per-handler limits instead (cicdapi.go),
+// matching internal/publisher/server.go's own real convention (no
+// blanket body cap there either, only artifact.go's own maxUploadBody).
 func NewRouter(r *Repo, cfg Config) http.Handler {
 	srv := &Server{repo: r, cfg: cfg, templates: loadTemplates(), loginLimiter: httpx.NewLoginLimiter()}
-	mux := http.NewServeMux()
-	srv.registerRoutes(mux)
+
+	guiMux := http.NewServeMux()
+	srv.registerRoutes(guiMux)
+
+	cicdMux := http.NewServeMux()
+	srv.registerCICDRoutes(cicdMux)
+
+	top := http.NewServeMux()
+	top.Handle("/cicdapi/", cicdMux)
+	top.Handle("/", limitBody(guiMux))
+
 	// WithRequestID feeds RecordAudit's RequestID (targets.go) -- lets an
 	// audit entry be correlated back to server logs for the same request.
-	return httpx.WithRequestID(limitBody(mux))
+	return httpx.WithRequestID(top)
 }
 
 // loadTemplates parses each page against the shared layout, in its own
@@ -72,7 +89,7 @@ func loadTemplates() map[string]*template.Template {
 	out := map[string]*template.Template{
 		"login": template.Must(template.New("login").ParseFS(templatesFS, "templates/login.html")),
 	}
-	for _, page := range []string{"dashboard", "staff", "approvals"} {
+	for _, page := range []string{"dashboard", "staff", "approvals", "cicdcredentials"} {
 		out[page] = template.Must(template.New("layout").ParseFS(templatesFS, "templates/layout.html", "templates/"+page+".html"))
 	}
 	return out

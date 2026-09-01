@@ -3,7 +3,10 @@
 
 package openteapublisher
 
-import "time"
+import (
+	"database/sql"
+	"time"
+)
 
 // timeLayout matches internal/repo's own convention -- UTC, no fractional
 // seconds -- for the same reason: a stable, unambiguous stored format.
@@ -15,4 +18,19 @@ func formatTime(t time.Time) string {
 
 func parseTime(s string) (time.Time, error) {
 	return time.Parse(timeLayout, s)
+}
+
+// parseNullTime is parseTime for an optional column (e.g.
+// cicd_credential.revoked_at) -- mirrors internal/repo's own
+// parseNullTime exactly (nil for SQL NULL, never the zero time.Time,
+// which would be indistinguishable from "revoked at the Unix epoch").
+func parseNullTime(s sql.NullString) (*time.Time, error) {
+	if !s.Valid {
+		return nil, nil
+	}
+	t, err := parseTime(s.String)
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
 }

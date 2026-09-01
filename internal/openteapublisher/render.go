@@ -20,6 +20,10 @@ type pageData struct {
 	StaffList []Staff
 
 	ApprovalRequests []ApprovalRequest
+
+	CICDCredentials  []CICDCredential
+	TargetLabels     map[string]string
+	CreatedCICDToken string
 }
 
 func (s *Server) renderAuthenticated(w http.ResponseWriter, page string, data pageData) {

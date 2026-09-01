@@ -32,4 +32,10 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /approvals", s.requireSession(s.approvalsPage))
 	mux.HandleFunc("POST /approvals", s.requireSession(s.createApprovalRequestForm))
 	mux.HandleFunc("POST /approvals/{uuid}/decide", s.requireApprovalRole(s.decideApprovalRequestForm))
+
+	// CI/CD credential management is admin-only too -- a cicd_credential is
+	// a real, usable secret (§18.11), same rationale as target management.
+	mux.HandleFunc("GET /cicd-credentials", s.requireRole(StaffRoleAdmin, s.cicdCredentialsPage))
+	mux.HandleFunc("POST /cicd-credentials", s.requireRole(StaffRoleAdmin, s.createCICDCredentialForm))
+	mux.HandleFunc("POST /cicd-credentials/{uuid}/revoke", s.requireRole(StaffRoleAdmin, s.revokeCICDCredentialForm))
 }

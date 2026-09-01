@@ -306,15 +306,17 @@ they don't get lost.
       new audit-log assertion in the existing HTTP test failed, which also exposed that the
       *test's own* prior assertion (matching "Acme production" against page text) was a
       false positive the whole time, matching a static form placeholder rather than real
-      created data; both are fixed. (3) the
+      created data; both are fixed. ~~(3) the
       still-undesigned CI/CD-facing API (see the **Reference publisher** entry above) needs
       its own capability scoping mirroring `/publisher/v1`'s full/cicd split, since
       `opentea-publisher` always presents a "full" credential to the target regardless of
       who's actually calling it (§18.11) — without that, the target-side scope separation
       provides no protection against a compromised `opentea-publisher` process or malicious
-      CI/CD submission. ~~The internal multi-team business-approval workflow (§18.8) remains
-      explicitly undesigned~~ **scaffolded 2026-09-01** — see the new **`opentea-publisher`:
-      internal business-approval workflow** entry below.
+      CI/CD submission.~~ **scaffolded 2026-09-01** — see the new **`opentea-publisher`:
+      CI/CD-facing API and capability scoping** entry below. ~~The internal multi-team
+      business-approval workflow (§18.8) remains explicitly undesigned~~ **scaffolded
+      2026-09-01** — see the new **`opentea-publisher`: internal business-approval
+      workflow** entry below.
 - [ ] **`opentea-publisher`: internal business-approval workflow** (`design/publisher-
       service.md` §18.8, v0.23) resolves the gap §17.3/§18.8 both flagged as "the single
       biggest remaining unknown" -- a scaffolded approval-request workflow, connecting §10.1's
@@ -355,6 +357,52 @@ they don't get lost.
       federated-identity role mapping (§10.1's own separately-open OIDC/LDAP claim-to-role
       question) -- `workflow_role` is set by hand today by whichever admin creates the
       account.
+- [ ] **`opentea-publisher`: CI/CD-facing API and capability scoping** (`design/publisher-
+      service.md` §18.11, v0.24) resolves the gap §18.11 originally surfaced:
+      `opentea-publisher` always presents a "full" credential to a target regardless of who
+      calls it, so the target's own full/cicd split (`internal/publisher`) gave no
+      protection once CI/CD's access was mediated through `opentea-publisher`. New migration
+      `internal/openteapublisher/db/migrations/0005_cicd_credential.sql`: `cicd_credential`
+      -- one per target, soft-revocable, mirroring `internal/repo/publishercredential.go`'s
+      own shape exactly but with no scope column (this credential type *is* cicd, there's no
+      "full" variant of it). New `internal/openteapublisher/cicdcredential.go` repo layer
+      (create/get-by-token/list/revoke, all mirroring
+      `internal/repo/publishercredential.go` method-for-method). New `cicdapi.go` +
+      `cicdapi_middleware.go`: a bearer-credential-gated `/cicdapi/v1` mux, structurally
+      exposing only the operations `internal/publisher/router.go` itself treats as
+      cicd-scoped -- artifact create/upload/evidence-prepare/evidence-submit, and
+      collection-draft PUT/GET/DELETE/prepareCommit/cancelPrepare/commit for both owner
+      types (16 endpoints total) -- product/component/CLE creation, `linkComponent`, and
+      draft approve/reject are simply never registered on this mux, not runtime-scope-
+      checked. Each handler builds a `pkg/teapublisherclient.Client` against the calling
+      credential's associated `Target` (its real, stored, full-scoped `bearer_token`) and
+      proxies straight through, replaying the target's real status/body verbatim on error
+      (`teapublisherclient.APIError`, which was already documented with exactly this use in
+      mind) -- this is also the first real caller of `pkg/teapublisherclient` against a
+      *stored* `Target` (`TODO.md`'s own longstanding "plain CRUD only so far" gap, closed
+      in the same motion). `NewRouter` now mounts two separate muxes (`/` for the GUI behind
+      the existing `limitBody` 64 KiB cap, `/cicdapi/` unwrapped with its own per-handler
+      limits, since `http.MaxBytesReader` can only shrink an already-applied limit, never
+      raise one -- matches `internal/publisher/server.go`'s own real convention of no
+      blanket body cap). New admin-only `/cicd-credentials` GUI screen to issue/revoke
+      credentials -- the raw token is shown exactly once, inline, on the create response
+      (never redirected away from, unlike every other create-form in this app, since only
+      its hash is ever stored). Verified: repo-level tests (create/list/revoke, revoked
+      tokens excluded, unknown-target create fails cleanly), an HTTP-level test proving the
+      401 gate (missing/garbage/revoked token) and that full-scoped routes structurally
+      don't exist even for a *valid* cicd token, and -- the real payoff proof, in
+      `cmd/opentea/cicdapi_test.go` since `internal/publisher` has no test-server helper of
+      its own -- a genuine three-party test: a real `internal/publisher` target, a real
+      `opentea-publisher` pointed at it, and a proxied artifact-create + collection-draft
+      PUT confirmed to have actually landed on the target (read back with a full-scoped
+      credential afterward, not just trusting opentea-publisher's own 200). Also confirmed
+      via a manual smoke test against both real built binaries with `curl`. `make
+      check`/`golangci-lint`/`go test -race` all clean. **Deliberately not built**: no
+      per-credential scoping *within* cicd (one credential grants every cicd-scoped
+      operation against its one target -- `internal/publisher` itself doesn't sub-scope
+      cicd either, so this matches, not falls short of, the thing it mirrors); no credential
+      expiry/rotation reminders; Docker packaging (separate, already-tracked item) still
+      doesn't exist to actually run any of this in a real CI pipeline.
 - [ ] **Publisher API: derive approval actor from authenticated identity, not a
       caller-supplied string** (found 2026-08-28, during `design/opentea-server.md` review —
       see its §11.4). `design/publisher-openapi.yaml`'s `approval-decision.actor` is

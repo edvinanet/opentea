@@ -25,7 +25,7 @@ func newTestServer(t *testing.T) (srv *httptest.Server, r *Repo, username, passw
 	r = newTestRepo(t)
 
 	username, password = "alice", "hunter222"
-	if _, err := r.CreateStaff(context.Background(), username, password); err != nil {
+	if _, err := r.CreateStaff(context.Background(), username, password, StaffRoleAdmin); err != nil {
 		t.Fatalf("CreateStaff: %v", err)
 	}
 
@@ -102,8 +102,12 @@ func TestLoginDashboardAddTargetFlow(t *testing.T) {
 		t.Fatalf("GET / (authenticated): status=%d body=%q", dashResp.StatusCode, dashBody)
 	}
 
-	// Add a target.
-	form := url.Values{"label": {"Acme production"}, "baseUrl": {"https://tea.example.com/publisher/v1"}, "bearerToken": {"s3cr3t"}}
+	// Add a target. Label/base URL are deliberately distinct from
+	// dashboard.html's own form placeholders ("e.g. Acme production TEA",
+	// "https://tea.example.com/publisher/v1") -- a substring check against
+	// those would pass even if the target were never actually created,
+	// since the empty form itself already contains that text.
+	form := url.Values{"label": {"Acme Corp Widgets Prod"}, "baseUrl": {"https://tea.acme-widgets.example/publisher/v1"}, "bearerToken": {"s3cr3t"}}
 	addReq, err := http.NewRequest(http.MethodPost, srv.URL+"/targets", strings.NewReader(form.Encode()))
 	if err != nil {
 		t.Fatalf("new add-target request: %v", err)
@@ -114,7 +118,11 @@ func TestLoginDashboardAddTargetFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /targets: %v", err)
 	}
+	addBody, _ := io.ReadAll(addResp.Body)
 	_ = addResp.Body.Close()
+	if addResp.StatusCode != http.StatusOK { // client follows the 303 redirect automatically; this is the redirected-to page
+		t.Fatalf("POST /targets: status=%d body=%s, want to end up back on the dashboard", addResp.StatusCode, addBody)
+	}
 
 	dashResp2, err := client.Get(srv.URL + "/")
 	if err != nil {
@@ -122,7 +130,7 @@ func TestLoginDashboardAddTargetFlow(t *testing.T) {
 	}
 	dashBody2, _ := io.ReadAll(dashResp2.Body)
 	_ = dashResp2.Body.Close()
-	if !strings.Contains(string(dashBody2), "Acme production") || !strings.Contains(string(dashBody2), "https://tea.example.com/publisher/v1") {
+	if !strings.Contains(string(dashBody2), "Acme Corp Widgets Prod") || !strings.Contains(string(dashBody2), "https://tea.acme-widgets.example/publisher/v1") {
 		t.Fatalf("dashboard after add doesn't show the new target: %s", dashBody2)
 	}
 

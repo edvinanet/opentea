@@ -46,10 +46,10 @@ func (r *Repo) GetSessionStaff(ctx context.Context, token string) (Staff, error)
 	var s Staff
 	var expiresAt, createdAt string
 	err := r.conn().QueryRowContext(ctx,
-		`SELECT st.uuid, st.username, st.created_at, se.expires_at
+		`SELECT st.uuid, st.username, st.role, st.created_at, se.expires_at
 		 FROM session se JOIN staff st ON st.uuid = se.staff_uuid
 		 WHERE se.token_hash = ?`, hashToken(token),
-	).Scan(&s.UUID, &s.Username, &createdAt, &expiresAt)
+	).Scan(&s.UUID, &s.Username, &s.Role, &createdAt, &expiresAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Staff{}, ErrNotFound
 	}

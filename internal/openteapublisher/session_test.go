@@ -11,7 +11,7 @@ import (
 func TestCreateSessionAndGetSessionStaff(t *testing.T) {
 	ctx := context.Background()
 	r := newTestRepo(t)
-	staff, err := r.CreateStaff(ctx, "alice", "hunter222")
+	staff, err := r.CreateStaff(ctx, "alice", "hunter222", StaffRoleAdmin)
 	if err != nil {
 		t.Fatalf("CreateStaff: %v", err)
 	}

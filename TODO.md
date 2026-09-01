@@ -288,9 +288,25 @@ they don't get lost.
       request logs. Verified: repo-level tests, and an HTTP-level test confirming the audit
       write actually happens through the real handler, not just in isolation. No GUI page
       to browse it yet (§18.12 named the requirement, not a screen) — a natural, not yet
-      requested, follow-up. (2) **no staff role/permission concept** — the protocol's
-      maker-checker only checks "not the same person who drafted it," nothing limits
-      *which* staff members may approve a collection draft at all (§18.9); (3) the
+      requested, follow-up. (2) ~~no staff role/permission concept~~ **fixed 2026-09-01** —
+      new `internal/openteapublisher/db/migrations/0003_staff_roles.sql` adds `staff.role`
+      (`admin`/`member`, mirroring opentea's own `user.role` shape), `RoleSatisfies`
+      (mirrors `internal/authn.RoleSatisfies`), and a new `requireRole` middleware. Target
+      management (a target's `bearer_token` is a real, usable credential) is now
+      admin-only, closing the immediate, already-real gap this scaffold had; a new
+      admin-only `/staff` page (list/create/delete staff accounts, mirroring
+      `internal/webadmin/users.go`, including `DeleteStaff`'s last-admin protection) makes
+      the role distinction actually exercisable via the GUI, not just schema. Both actions
+      are now audited too (`staff.create`/`staff.delete`, `audit_log.target_type` widened
+      to accept `'staff'`). **Does not resolve §18.9's own framing** (who may approve a
+      collection draft) — that workflow still doesn't exist in the GUI; this is the schema
+      groundwork it will build on, not a solution to it. Caught and fixed a real bug while
+      building this: `GetSessionStaff` never selected the new `role` column, so every
+      session resolved to an empty role and every admin action 403'd — found because the
+      new audit-log assertion in the existing HTTP test failed, which also exposed that the
+      *test's own* prior assertion (matching "Acme production" against page text) was a
+      false positive the whole time, matching a static form placeholder rather than real
+      created data; both are fixed. (3) the
       still-undesigned CI/CD-facing API (see the **Reference publisher** entry above) needs
       its own capability scoping mirroring `/publisher/v1`'s full/cicd split, since
       `opentea-publisher` always presents a "full" credential to the target regardless of

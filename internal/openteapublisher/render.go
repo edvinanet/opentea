@@ -16,6 +16,8 @@ type pageData struct {
 	Error string
 
 	Targets []Target
+
+	StaffList []Staff
 }
 
 func (s *Server) renderAuthenticated(w http.ResponseWriter, page string, data pageData) {

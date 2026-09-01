@@ -21,10 +21,11 @@ func runCreateStaff(args []string) {
 	fs := flag.NewFlagSet("createstaff", flag.ExitOnError)
 	username := fs.String("username", "", "username for the new staff account (required)")
 	password := fs.String("password", "", "password for the new staff account (required)")
+	role := fs.String("role", openteapublisher.StaffRoleAdmin, "role for the new account: \"admin\" or \"member\" (default \"admin\", since this command is normally used to bootstrap the first account, which must be able to manage targets and other staff)")
 	_ = fs.Parse(args)
 
 	if *username == "" || *password == "" {
-		fmt.Fprintln(os.Stderr, "usage: openteapublisher createstaff -username=<name> -password=<password>")
+		fmt.Fprintln(os.Stderr, "usage: openteapublisher createstaff -username=<name> -password=<password> [-role=admin|member]")
 		os.Exit(1)
 	}
 
@@ -37,12 +38,12 @@ func runCreateStaff(args []string) {
 	defer func() { _ = sqlDB.Close() }()
 
 	r := openteapublisher.New(sqlDB)
-	staff, err := r.CreateStaff(context.Background(), *username, *password)
+	staff, err := r.CreateStaff(context.Background(), *username, *password, *role)
 	if errors.Is(err, openteapublisher.ErrUsernameTaken) {
 		fmt.Fprintf(os.Stderr, "username %q is already taken\n", *username)
 		os.Exit(1)
 	}
-	if errors.Is(err, openteapublisher.ErrPasswordTooShort) {
+	if errors.Is(err, openteapublisher.ErrPasswordTooShort) || errors.Is(err, openteapublisher.ErrInvalidRole) {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
 	}
@@ -51,5 +52,5 @@ func runCreateStaff(args []string) {
 		os.Exit(1)
 	}
 
-	fmt.Printf("created staff account %q (uuid %s)\n", staff.Username, staff.UUID)
+	fmt.Printf("created %s staff account %q (uuid %s)\n", staff.Role, staff.Username, staff.UUID)
 }

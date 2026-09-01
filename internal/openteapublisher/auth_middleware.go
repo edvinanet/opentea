@@ -40,12 +40,37 @@ func (s *Server) sessionUser(r *http.Request) (Staff, bool) {
 // session -- otherwise it redirects to the login page (no session) or
 // rejects a cross-origin state-changing request (CSRF defense-in-depth,
 // internal/authn.SameOrigin -- generic, no opentea-specific type
-// dependency, reused as-is).
+// dependency, reused as-is). Any authenticated staff member satisfies
+// this, regardless of role -- use requireRole for actions that need more.
 func (s *Server) requireSession(next staffHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		staff, ok := s.sessionUser(r)
 		if !ok {
 			http.Redirect(w, r, "/login", http.StatusSeeOther)
+			return
+		}
+		if !authn.SameOrigin(r, s.cfg.RootURL) {
+			http.Error(w, "Forbidden: cross-origin request rejected.", http.StatusForbidden)
+			return
+		}
+		next(w, r, staff)
+	}
+}
+
+// requireRole wraps next so it only runs for a logged-in staff member
+// whose role satisfies minRole (RoleSatisfies) -- otherwise it redirects
+// to login (no session) or renders a plain 403 (authenticated,
+// insufficient role). Mirrors internal/admin/auth_middleware.go's own
+// requireRole exactly.
+func (s *Server) requireRole(minRole string, next staffHandler) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		staff, ok := s.sessionUser(r)
+		if !ok {
+			http.Redirect(w, r, "/login", http.StatusSeeOther)
+			return
+		}
+		if !RoleSatisfies(staff.Role, minRole) {
+			http.Error(w, "Forbidden: your role doesn't have access to this page.", http.StatusForbidden)
 			return
 		}
 		if !authn.SameOrigin(r, s.cfg.RootURL) {

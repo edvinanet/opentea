@@ -1,0 +1,32 @@
+{{define "content"}}
+<h1>Staff accounts</h1>
+{{if .Error}}<div class="error">{{.Error}}</div>{{end}}
+<table>
+  <tr><th>Username</th><th>Role</th><th>Added</th><th></th></tr>
+  {{range .StaffList}}
+  <tr>
+    <td>{{.Username}}</td>
+    <td><span class="badge badge-{{.Role}}">{{.Role}}</span></td>
+    <td>{{.CreatedAt.Format "2006-01-02"}}</td>
+    <td>
+      <form class="inline" action="/staff/{{.UUID}}/delete" method="post">
+        <button type="submit">Remove</button>
+      </form>
+    </td>
+  </tr>
+  {{end}}
+</table>
+
+<h1>Add a staff account</h1>
+<form action="/staff" method="post">
+  <label>Username<input type="text" name="username" required autofocus></label>
+  <label>Password<input type="password" name="password" required></label>
+  <label>Role
+    <select name="role">
+      <option value="member">member</option>
+      <option value="admin">admin</option>
+    </select>
+  </label>
+  <button type="submit">Add staff account</button>
+</form>
+{{end}}

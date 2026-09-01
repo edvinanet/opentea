@@ -14,6 +14,14 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// pattern, it would also catch unknown sub-paths as a side effect.
 	mux.HandleFunc("GET /{$}", s.requireSession(s.dashboard))
 
-	mux.HandleFunc("POST /targets", s.requireSession(s.createTargetForm))
-	mux.HandleFunc("POST /targets/{uuid}/delete", s.requireSession(s.deleteTargetForm))
+	// Target management is admin-only: a target's bearer_token is a real,
+	// usable credential (§18.11), not a resource any logged-in staff
+	// member should be able to add/remove.
+	mux.HandleFunc("POST /targets", s.requireRole(StaffRoleAdmin, s.createTargetForm))
+	mux.HandleFunc("POST /targets/{uuid}/delete", s.requireRole(StaffRoleAdmin, s.deleteTargetForm))
+
+	// Staff management is admin-only too.
+	mux.HandleFunc("GET /staff", s.requireRole(StaffRoleAdmin, s.staffPage))
+	mux.HandleFunc("POST /staff", s.requireRole(StaffRoleAdmin, s.createStaffForm))
+	mux.HandleFunc("POST /staff/{uuid}/delete", s.requireRole(StaffRoleAdmin, s.deleteStaffForm))
 }

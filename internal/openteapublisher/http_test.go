@@ -16,11 +16,13 @@ import (
 
 // newTestServer builds a full opentea-publisher handler tree against a
 // fresh temp-file SQLite DB, bootstraps a staff account, and returns a
-// ready-to-use httptest.Server plus that staff account's username/password
-// (for logging in) -- mirrors cmd/opentea's own newTestServer convention.
-func newTestServer(t *testing.T) (srv *httptest.Server, username, password string) {
+// ready-to-use httptest.Server, its underlying Repo (so tests can assert
+// on state the HTTP layer doesn't expose, e.g. audit_test.go-style
+// checks), and that staff account's username/password (for logging in) --
+// mirrors cmd/opentea's own newTestServer convention.
+func newTestServer(t *testing.T) (srv *httptest.Server, r *Repo, username, password string) {
 	t.Helper()
-	r := newTestRepo(t)
+	r = newTestRepo(t)
 
 	username, password = "alice", "hunter222"
 	if _, err := r.CreateStaff(context.Background(), username, password); err != nil {
@@ -30,7 +32,7 @@ func newTestServer(t *testing.T) (srv *httptest.Server, username, password strin
 	srv = httptest.NewServer(nil)
 	srv.Config.Handler = NewRouter(r, Config{RootURL: srv.URL})
 	t.Cleanup(srv.Close)
-	return srv, username, password
+	return srv, r, username, password
 }
 
 // loggedInClient returns an *http.Client with a cookie jar, logged in
@@ -75,7 +77,7 @@ func mustParseURL(t *testing.T, raw string) *url.URL {
 // sets a session cookie, the authenticated dashboard loads, adding a
 // target persists it and it shows up listed, and deleting it removes it.
 func TestLoginDashboardAddTargetFlow(t *testing.T) {
-	srv, username, password := newTestServer(t)
+	srv, r, username, password := newTestServer(t)
 
 	// Unauthenticated: redirected to login, not served the dashboard.
 	noJarClient := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
@@ -122,5 +124,20 @@ func TestLoginDashboardAddTargetFlow(t *testing.T) {
 	_ = dashResp2.Body.Close()
 	if !strings.Contains(string(dashBody2), "Acme production") || !strings.Contains(string(dashBody2), "https://tea.example.com/publisher/v1") {
 		t.Fatalf("dashboard after add doesn't show the new target: %s", dashBody2)
+	}
+
+	// The add-target request went through createTargetForm's real handler
+	// (not RecordAudit called directly, unlike audit_test.go) -- confirms
+	// the audit write is actually wired into the HTTP path, not just
+	// exercised in isolation.
+	entries, err := r.ListAuditEntries(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("ListAuditEntries: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Operation != "target.create" {
+		t.Fatalf("entries = %+v, want one target.create entry", entries)
+	}
+	if entries[0].RequestID == "" {
+		t.Fatal("entries[0].RequestID is empty -- httpx.WithRequestID not wired in?")
 	}
 }

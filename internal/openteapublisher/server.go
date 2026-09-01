@@ -58,7 +58,9 @@ func NewRouter(r *Repo, cfg Config) http.Handler {
 	srv := &Server{repo: r, cfg: cfg, templates: loadTemplates(), loginLimiter: httpx.NewLoginLimiter()}
 	mux := http.NewServeMux()
 	srv.registerRoutes(mux)
-	return limitBody(mux)
+	// WithRequestID feeds RecordAudit's RequestID (targets.go) -- lets an
+	// audit entry be correlated back to server logs for the same request.
+	return httpx.WithRequestID(limitBody(mux))
 }
 
 // loadTemplates parses each page against the shared layout, in its own

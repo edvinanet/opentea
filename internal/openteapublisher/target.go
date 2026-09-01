@@ -28,7 +28,7 @@ type Target struct {
 // CreateTarget stores a new target.
 func (r *Repo) CreateTarget(ctx context.Context, label, baseURL, bearerToken string) (Target, error) {
 	uuid := idgen.New()
-	if _, err := r.db.ExecContext(ctx,
+	if _, err := r.conn().ExecContext(ctx,
 		`INSERT INTO target (uuid, label, base_url, bearer_token) VALUES (?, ?, ?, ?)`,
 		uuid, label, baseURL, bearerToken,
 	); err != nil {
@@ -41,7 +41,7 @@ func (r *Repo) CreateTarget(ctx context.Context, label, baseURL, bearerToken str
 func (r *Repo) GetTarget(ctx context.Context, uuid string) (Target, error) {
 	var t Target
 	var createdAt string
-	err := r.db.QueryRowContext(ctx,
+	err := r.conn().QueryRowContext(ctx,
 		`SELECT uuid, label, base_url, bearer_token, created_at FROM target WHERE uuid = ?`, uuid,
 	).Scan(&t.UUID, &t.Label, &t.BaseURL, &t.BearerToken, &createdAt)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -61,7 +61,7 @@ func (r *Repo) GetTarget(ctx context.Context, uuid string) (Target, error) {
 // ListTargets returns every configured target, ordered by label.
 // Unpaginated -- matches the current dashboard, which lists everyone at once.
 func (r *Repo) ListTargets(ctx context.Context) ([]Target, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT uuid, label, base_url, bearer_token, created_at FROM target ORDER BY label`)
+	rows, err := r.conn().QueryContext(ctx, `SELECT uuid, label, base_url, bearer_token, created_at FROM target ORDER BY label`)
 	if err != nil {
 		return nil, err
 	}
@@ -87,7 +87,7 @@ func (r *Repo) ListTargets(ctx context.Context) ([]Target, error) {
 // DeleteTarget deletes the target identified by uuid. Returns ErrNotFound
 // if uuid doesn't exist.
 func (r *Repo) DeleteTarget(ctx context.Context, uuid string) error {
-	res, err := r.db.ExecContext(ctx, `DELETE FROM target WHERE uuid = ?`, uuid)
+	res, err := r.conn().ExecContext(ctx, `DELETE FROM target WHERE uuid = ?`, uuid)
 	if err != nil {
 		return err
 	}

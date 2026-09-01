@@ -67,7 +67,7 @@ func (r *Repo) CreateStaff(ctx context.Context, username, plaintextPassword stri
 	}
 
 	uuid := idgen.New()
-	_, err = r.db.ExecContext(ctx,
+	_, err = r.conn().ExecContext(ctx,
 		`INSERT INTO staff (uuid, username, password_hash) VALUES (?, ?, ?)`,
 		uuid, username, string(hash),
 	)
@@ -85,7 +85,7 @@ func (r *Repo) CreateStaff(ctx context.Context, username, plaintextPassword stri
 func (r *Repo) GetStaffByUUID(ctx context.Context, uuid string) (Staff, error) {
 	var s Staff
 	var createdAt string
-	err := r.db.QueryRowContext(ctx,
+	err := r.conn().QueryRowContext(ctx,
 		`SELECT uuid, username, created_at FROM staff WHERE uuid = ?`, uuid,
 	).Scan(&s.UUID, &s.Username, &createdAt)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -109,7 +109,7 @@ func (r *Repo) GetStaffByUUID(ctx context.Context, uuid string) (Staff, error) {
 func (r *Repo) VerifyLogin(ctx context.Context, username, plaintextPassword string) (Staff, error) {
 	var s Staff
 	var passwordHash, createdAt string
-	err := r.db.QueryRowContext(ctx,
+	err := r.conn().QueryRowContext(ctx,
 		`SELECT uuid, username, password_hash, created_at FROM staff WHERE username = ?`, username,
 	).Scan(&s.UUID, &s.Username, &passwordHash, &createdAt)
 	if errors.Is(err, sql.ErrNoRows) {

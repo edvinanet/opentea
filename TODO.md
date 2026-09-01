@@ -276,12 +276,21 @@ they don't get lost.
 - [ ] **`opentea-publisher`: GUI requirements pass** (`design/publisher-service.md` §18,
       v0.22, companion to §7) maps the manufacturer process onto actual screens instead of
       protocol operations, and surfaces three concrete gaps the backend scaffold didn't:
-      (1) **no audit log table** — §17.3's own storage plan named "its own audit log" but
-      the shipped migration (`internal/openteapublisher/db/migrations/0001_init.sql`) only
-      has `staff`/`session`/`target`; needs its own table + write-on-every-mutation before
-      any activity screen is buildable; (2) **no staff role/permission concept** — the
-      protocol's maker-checker only checks "not the same person who drafted it," nothing
-      limits *which* staff members may approve a collection draft at all (§18.9); (3) the
+      (1) ~~no audit log table~~ **fixed 2026-08-31** — new
+      `internal/openteapublisher/db/migrations/0002_audit_log.sql` (`audit_log`, mirroring
+      opentea's own `admin_audit_log` shape), `Repo.RecordAudit`/`ListAuditEntries`, wired
+      atomically (new `Repo.WithTx`, matching `internal/repo.Repo`'s own composability —
+      every existing method switched from `r.db` to `r.conn()` so it works both standalone
+      and nested) into `createTargetForm`/`deleteTargetForm`, the only two write actions
+      that exist so far. `bearer_token` is deliberately excluded from what gets written
+      (`redact` helper) — the audit trail must not become a second place a live credential
+      leaks. `httpx.WithRequestID` wired into the router too, so entries correlate to
+      request logs. Verified: repo-level tests, and an HTTP-level test confirming the audit
+      write actually happens through the real handler, not just in isolation. No GUI page
+      to browse it yet (§18.12 named the requirement, not a screen) — a natural, not yet
+      requested, follow-up. (2) **no staff role/permission concept** — the protocol's
+      maker-checker only checks "not the same person who drafted it," nothing limits
+      *which* staff members may approve a collection draft at all (§18.9); (3) the
       still-undesigned CI/CD-facing API (see the **Reference publisher** entry above) needs
       its own capability scoping mirroring `/publisher/v1`'s full/cicd split, since
       `opentea-publisher` always presents a "full" credential to the target regardless of

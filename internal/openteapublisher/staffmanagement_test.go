@@ -17,7 +17,7 @@ import (
 // targets or other staff accounts -- only view the dashboard.
 func TestMemberRoleDeniedAdminActions(t *testing.T) {
 	srv, r, adminUsername, adminPassword := newTestServer(t)
-	if _, err := r.CreateStaff(context.Background(), "bob", "hunter333", StaffRoleMember); err != nil {
+	if _, err := r.CreateStaff(context.Background(), "bob", "hunter333", StaffRoleMember, ""); err != nil {
 		t.Fatalf("CreateStaff (member): %v", err)
 	}
 

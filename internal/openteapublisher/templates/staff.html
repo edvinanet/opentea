@@ -2,11 +2,12 @@
 <h1>Staff accounts</h1>
 {{if .Error}}<div class="error">{{.Error}}</div>{{end}}
 <table>
-  <tr><th>Username</th><th>Role</th><th>Added</th><th></th></tr>
+  <tr><th>Username</th><th>Role</th><th>Workflow role</th><th>Added</th><th></th></tr>
   {{range .StaffList}}
   <tr>
     <td>{{.Username}}</td>
     <td><span class="badge badge-{{.Role}}">{{.Role}}</span></td>
+    <td>{{if .WorkflowRole}}{{.WorkflowRole}}{{else}}&mdash;{{end}}</td>
     <td>{{.CreatedAt.Format "2006-01-02"}}</td>
     <td>
       <form class="inline" action="/staff/{{.UUID}}/delete" method="post">
@@ -25,6 +26,14 @@
     <select name="role">
       <option value="member">member</option>
       <option value="admin">admin</option>
+    </select>
+  </label>
+  <label>Workflow role (§10.1 -- optional, only security_compliance_approver is enforced today)
+    <select name="workflowRole">
+      <option value="">(none)</option>
+      <option value="release_manager">release_manager</option>
+      <option value="component_maintainer">component_maintainer</option>
+      <option value="security_compliance_approver">security_compliance_approver</option>
     </select>
   </label>
   <button type="submit">Add staff account</button>

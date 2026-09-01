@@ -1,6 +1,6 @@
 # TEA Publisher — protocol and service design
 
-**Status:** draft v0.22, for discussion. Nothing here is scheduled or approved; no
+**Status:** draft v0.23, for discussion. Nothing here is scheduled or approved; no
 implementation exists yet. This document is the design opentea's `TODO.md` "Reference
 publisher" entry has been blocked on since 2026-07-04.
 
@@ -270,6 +270,30 @@ than repeated here.
   (§18.12) — tracked as a new `TODO.md` follow-up. §18.8 (the internal business-approval
   workflow) stays explicitly undesigned, same as §17.3 left it — this pass doesn't resolve
   it, only confirms it's still the single biggest remaining gap.
+- **v0.23 (this revision)** resolves §18.8's own gap: a scaffolded internal business-
+  approval workflow (`internal/openteapublisher/approval.go`, migration
+  `0004_business_approval.sql`). Connects a fact that was already sitting in §10.1 but
+  hadn't been wired to §18.8 before now — the "publisher's own three roles: release
+  manager, component maintainer, security/compliance approver" — via a new
+  `staff.workflow_role` column, a second axis orthogonal to the existing `staff.role`
+  (admin/member, `0003_staff_roles.sql`): that axis gates who manages this *tool*
+  (targets, staff accounts); this one records where a staff account sits in the
+  publishing *workflow*, and only its `security_compliance_approver` value is actually
+  enforced anywhere (`requireApprovalRole`, gating `POST /approvals/{uuid}/decide`) —
+  holding the `admin` role does not imply approval capability, a deliberate separation
+  of duties. An `approval_request` references a target + a release identity typed in by
+  hand (`release_kind`/`release_uuid`, no live `pkg/teaclient` lookup to resolve it to a
+  label — there's no draft-assembly screen yet to source a real reference from, §18.7
+  still unbuilt, so that lookup is deferred rather than built speculatively); a plain
+  `required_approvals` count (default 1) plus `approval_decision` rows implement
+  maker-checker exactly as §10.1 stated it — a rejection closes the request immediately,
+  an approval only closes it once enough *distinct* `security_compliance_approver`
+  accounts have signed off, and the requester can never decide their own request even
+  when they hold that role. Not wired to any real gate yet (§18.7/§18.10's "Sign &
+  Publish" action still doesn't exist to block on an approved request) and not a true
+  multi-team system (no way to require, say, one legal sign-off *and* one security
+  sign-off specifically — §10.1's own single-approver-role simplification is carried
+  through as-is, not re-litigated). New `TODO.md` entry records both gaps.
 
 ## 1. Problem statement
 
@@ -1712,9 +1736,9 @@ are called out inline rather than deferred to the end, since most are specific t
 A persistent target selector (§18.2, already built) scopes every other screen — "the
 currently selected target" is implicit context throughout, the same way a shell's current
 working directory is. Top-level areas: **Products** (§18.3), **Components** (§18.4),
-**Artifacts** (§18.5), **Lifecycle** (§18.6), **Collections/Drafts** (§18.7), **Business
-approval** (§18.8, placeholder only), **Targets** (§18.2, built), **Audit** (§18.12, not
-buildable yet — see there).
+**Artifacts** (§18.5), **Lifecycle** (§18.6), **Collections/Drafts** (§18.7), **Approvals**
+(§18.8, built, v0.23), **Targets** (§18.2, built), **Audit** (§18.12, not buildable yet —
+see there).
 
 **Requirement, not yet wired anywhere:** every write action's `actor` field
 (`CollectionDraftArtifactList.Actor`, `ApprovalDecision.Actor`) must be the logged-in staff
@@ -1792,15 +1816,36 @@ this diff, the GUI just needs to render it. Add/remove artifacts by reference
 (§7.7) — surface this plainly ("editing the draft clears any pending approval") rather than
 let staff discover it only when prepare/commit unexpectedly 409s.
 
-### 18.8 Internal business approval — explicitly not designed
+### 18.8 Internal business approval (scaffolded, v0.23)
 
 Named as a real requirement (multi-team: legal, compliance, security engineering, §4/§10.1)
-but genuinely undesigned — §17.3 already flagged this as the single biggest gap the backend
-scaffold left open, and this GUI pass doesn't resolve it either. The one constraint already
-settled: it sits **in front of**, not instead of, the protocol-level approval in §18.9 (§4's
-"Key relationships"). No screens are specified here because there's no approval-chain shape
-(how many approvers, sequential vs. parallel, what it blocks) to design them against yet —
-this is the single largest remaining unknown this whole pass surfaces.
+and, as of v0.23, scaffolded: an `/approvals` screen
+(`internal/openteapublisher/approval.go`, `approvals.go`, migration
+`0004_business_approval.sql`). It sits **in front of**, not instead of, the protocol-level
+approval in §18.9 (§4's "Key relationships") — this workflow governs whether a release is
+*allowed to be prepared for publishing at all*; §18.9 remains the separate, later gate on
+the actual collection-draft commit.
+
+The resolved shape: any authenticated staff member may create a request against a target +
+a release reference (`release_kind`/`release_uuid`, typed in by hand — §18.7's
+draft-assembly screen doesn't exist yet to source a real one from, so there's no live
+`pkg/teaclient` lookup to resolve it to a label either, deferred rather than built
+speculatively). Only a staff account whose new `workflow_role` column is
+`security_compliance_approver` (§10.1's own vocabulary — a second axis, orthogonal to
+the existing `staff.role` admin/member column: that one gates who manages *this tool*, this one
+gates who participates in the publishing *workflow*) may decide one — approve or reject —
+and the requester can never decide their own request even when they hold that role
+(maker-checker, exactly the text §10.1 already gave for this: "whoever approves a commit
+must be a different verified identity than whoever built the draft"). `required_approvals`
+(default 1) lets a deployment ask for more than one distinct approver; a single rejection
+always closes the request immediately, matching the asymmetry of §18.9's own approve/reject.
+
+**Deliberately not built in this pass**: no screen consumes an approved request yet — there
+is no "Sign & Publish" action to block on one (§18.10 still unbuilt, §18.7's draft-assembly
+screen doesn't exist). And this is a plain per-approver-role count, not a true multi-team
+system — there's no way to require, say, one legal sign-off *and* one security sign-off
+specifically; §10.1's own collapse of "legal, compliance, security engineering" down to a
+single `security_compliance_approver` role is carried through as-is here, not re-litigated.
 
 ### 18.9 Protocol-level approval (maker-checker)
 
@@ -1811,12 +1856,17 @@ should also disable/hide the Approve button client-side when the logged-in staff
 the drafter, as a UX courtesy, not a substitute for the server-side check that actually
 enforces it.
 
-**Gap this surfaces**: nothing today limits *which* staff members may approve —
-`internal/openteapublisher`'s `staff` table deliberately has no role/permission column
-(§17, "every logged-in staff member has equal access"). The protocol's maker-checker only
-checks "not the same person who drafted it," not "is this person authorized to approve at
-all." Left open here the same way §17 left it open — add a role/permission concept when
-there's an actual boundary to enforce, e.g. once §18.8 exists and needs to gate on it.
+**Gap this surfaces (updated, v0.23)**: nothing today limits *which* staff members may
+approve *this*, protocol-level, decision specifically. `staff` gained two role axes since
+this gap was first written — `staff.role` (admin/member, administrative capability)
+and, as of §18.8's own v0.23 scaffold, `staff.workflow_role`
+(`security_compliance_approver` and friends, §10.1's workflow vocabulary) — but neither is
+wired into this collection-draft Approve/Reject action; the protocol's own maker-checker
+still only checks "not the same person who drafted it," not "is this person authorized to
+approve at all." Reusing `security_compliance_approver` here too (rather than inventing a
+third axis) is the obvious next step once this screen is actually built, not done now —
+left open the same way it was before, just with the building block it was missing now
+sitting right next to it.
 
 ### 18.10 Prepare, sign, and commit
 

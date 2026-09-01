@@ -72,7 +72,7 @@ func loadTemplates() map[string]*template.Template {
 	out := map[string]*template.Template{
 		"login": template.Must(template.New("login").ParseFS(templatesFS, "templates/login.html")),
 	}
-	for _, page := range []string{"dashboard", "staff"} {
+	for _, page := range []string{"dashboard", "staff", "approvals"} {
 		out[page] = template.Must(template.New("layout").ParseFS(templatesFS, "templates/layout.html", "templates/"+page+".html"))
 	}
 	return out

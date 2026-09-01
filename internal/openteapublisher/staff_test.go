@@ -12,7 +12,7 @@ func TestCreateStaffAndVerifyLogin(t *testing.T) {
 	ctx := context.Background()
 	r := newTestRepo(t)
 
-	created, err := r.CreateStaff(ctx, "alice", "hunter222", StaffRoleAdmin)
+	created, err := r.CreateStaff(ctx, "alice", "hunter222", StaffRoleAdmin, "")
 	if err != nil {
 		t.Fatalf("CreateStaff: %v", err)
 	}
@@ -51,24 +51,24 @@ func TestCreateStaffUsernameTaken(t *testing.T) {
 	ctx := context.Background()
 	r := newTestRepo(t)
 
-	if _, err := r.CreateStaff(ctx, "alice", "hunter222", StaffRoleAdmin); err != nil {
+	if _, err := r.CreateStaff(ctx, "alice", "hunter222", StaffRoleAdmin, ""); err != nil {
 		t.Fatalf("CreateStaff (first): %v", err)
 	}
-	if _, err := r.CreateStaff(ctx, "alice", "different-pw", StaffRoleMember); err != ErrUsernameTaken {
+	if _, err := r.CreateStaff(ctx, "alice", "different-pw", StaffRoleMember, ""); err != ErrUsernameTaken {
 		t.Fatalf("CreateStaff (duplicate): err = %v, want ErrUsernameTaken", err)
 	}
 }
 
 func TestCreateStaffPasswordTooShort(t *testing.T) {
 	r := newTestRepo(t)
-	if _, err := r.CreateStaff(context.Background(), "alice", "short", StaffRoleAdmin); err != ErrPasswordTooShort {
+	if _, err := r.CreateStaff(context.Background(), "alice", "short", StaffRoleAdmin, ""); err != ErrPasswordTooShort {
 		t.Fatalf("err = %v, want ErrPasswordTooShort", err)
 	}
 }
 
 func TestCreateStaffInvalidRole(t *testing.T) {
 	r := newTestRepo(t)
-	if _, err := r.CreateStaff(context.Background(), "alice", "hunter222", "superuser"); err != ErrInvalidRole {
+	if _, err := r.CreateStaff(context.Background(), "alice", "hunter222", "superuser", ""); err != ErrInvalidRole {
 		t.Fatalf("err = %v, want ErrInvalidRole", err)
 	}
 }
@@ -94,11 +94,11 @@ func TestListAndDeleteStaff(t *testing.T) {
 	ctx := context.Background()
 	r := newTestRepo(t)
 
-	admin, err := r.CreateStaff(ctx, "alice", "hunter222", StaffRoleAdmin)
+	admin, err := r.CreateStaff(ctx, "alice", "hunter222", StaffRoleAdmin, "")
 	if err != nil {
 		t.Fatalf("CreateStaff (admin): %v", err)
 	}
-	member, err := r.CreateStaff(ctx, "bob", "hunter333", StaffRoleMember)
+	member, err := r.CreateStaff(ctx, "bob", "hunter333", StaffRoleMember, "")
 	if err != nil {
 		t.Fatalf("CreateStaff (member): %v", err)
 	}
@@ -136,11 +136,11 @@ func TestDeleteStaffAllowsRemovingOneOfMultipleAdmins(t *testing.T) {
 	ctx := context.Background()
 	r := newTestRepo(t)
 
-	first, err := r.CreateStaff(ctx, "alice", "hunter222", StaffRoleAdmin)
+	first, err := r.CreateStaff(ctx, "alice", "hunter222", StaffRoleAdmin, "")
 	if err != nil {
 		t.Fatalf("CreateStaff (first admin): %v", err)
 	}
-	if _, err := r.CreateStaff(ctx, "bob", "hunter333", StaffRoleAdmin); err != nil {
+	if _, err := r.CreateStaff(ctx, "bob", "hunter333", StaffRoleAdmin, ""); err != nil {
 		t.Fatalf("CreateStaff (second admin): %v", err)
 	}
 

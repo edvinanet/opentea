@@ -18,6 +18,8 @@ type pageData struct {
 	Targets []Target
 
 	StaffList []Staff
+
+	ApprovalRequests []ApprovalRequest
 }
 
 func (s *Server) renderAuthenticated(w http.ResponseWriter, page string, data pageData) {

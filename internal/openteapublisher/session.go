@@ -45,17 +45,19 @@ func (r *Repo) CreateSession(ctx context.Context, staffUUID string) (token strin
 func (r *Repo) GetSessionStaff(ctx context.Context, token string) (Staff, error) {
 	var s Staff
 	var expiresAt, createdAt string
+	var workflowRole sql.NullString
 	err := r.conn().QueryRowContext(ctx,
-		`SELECT st.uuid, st.username, st.role, st.created_at, se.expires_at
+		`SELECT st.uuid, st.username, st.role, st.workflow_role, st.created_at, se.expires_at
 		 FROM session se JOIN staff st ON st.uuid = se.staff_uuid
 		 WHERE se.token_hash = ?`, hashToken(token),
-	).Scan(&s.UUID, &s.Username, &s.Role, &createdAt, &expiresAt)
+	).Scan(&s.UUID, &s.Username, &s.Role, &workflowRole, &createdAt, &expiresAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Staff{}, ErrNotFound
 	}
 	if err != nil {
 		return Staff{}, err
 	}
+	s.WorkflowRole = workflowRole.String
 
 	exp, err := parseTime(expiresAt)
 	if err != nil {

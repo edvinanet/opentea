@@ -14,14 +14,15 @@ import (
 // (targets.go), Staff has no secret field to redact (the password hash
 // never leaves staff.go).
 type auditableStaff struct {
-	UUID      string
-	Username  string
-	Role      string
-	CreatedAt string
+	UUID         string
+	Username     string
+	Role         string
+	WorkflowRole string
+	CreatedAt    string
 }
 
 func redactStaff(s Staff) auditableStaff {
-	return auditableStaff{UUID: s.UUID, Username: s.Username, Role: s.Role, CreatedAt: formatTime(s.CreatedAt)}
+	return auditableStaff{UUID: s.UUID, Username: s.Username, Role: s.Role, WorkflowRole: s.WorkflowRole, CreatedAt: formatTime(s.CreatedAt)}
 }
 
 func (s *Server) staffPage(w http.ResponseWriter, r *http.Request, staff Staff) {
@@ -41,6 +42,7 @@ func (s *Server) createStaffForm(w http.ResponseWriter, r *http.Request, staff S
 	username := r.PostFormValue("username")
 	password := r.PostFormValue("password")
 	role := r.PostFormValue("role")
+	workflowRole := r.PostFormValue("workflowRole")
 
 	if username == "" || password == "" {
 		s.rerenderStaffWithError(w, r, staff, "username and password are required")
@@ -50,7 +52,7 @@ func (s *Server) createStaffForm(w http.ResponseWriter, r *http.Request, staff S
 	var created Staff
 	err := s.repo.WithTx(r.Context(), func(tx *Repo) error {
 		var err error
-		created, err = tx.CreateStaff(r.Context(), username, password, role)
+		created, err = tx.CreateStaff(r.Context(), username, password, role, workflowRole)
 		if err != nil {
 			return err
 		}
@@ -64,7 +66,7 @@ func (s *Server) createStaffForm(w http.ResponseWriter, r *http.Request, staff S
 		s.rerenderStaffWithError(w, r, staff, "username already taken")
 		return
 	}
-	if errors.Is(err, ErrPasswordTooShort) || errors.Is(err, ErrInvalidRole) {
+	if errors.Is(err, ErrPasswordTooShort) || errors.Is(err, ErrInvalidRole) || errors.Is(err, ErrInvalidWorkflowRole) {
 		s.rerenderStaffWithError(w, r, staff, err.Error())
 		return
 	}

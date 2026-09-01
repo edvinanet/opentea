@@ -81,6 +81,33 @@ func (s *Server) requireRole(minRole string, next staffHandler) http.HandlerFunc
 	}
 }
 
+// requireApprovalRole wraps next so it only runs for a logged-in staff
+// member whose workflow role is StaffWorkflowRoleSecurityComplianceApprover
+// -- otherwise it redirects to login (no session) or renders a plain 403
+// (authenticated, wrong workflow role). A separate gate from requireRole:
+// StaffRoleAdmin/Member governs administrative capability (who manages
+// this tool); this governs workflow participation (who may decide an
+// approval request, §10.1) -- an admin account does not automatically
+// satisfy this check, by design (separation of duties).
+func (s *Server) requireApprovalRole(next staffHandler) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		staff, ok := s.sessionUser(r)
+		if !ok {
+			http.Redirect(w, r, "/login", http.StatusSeeOther)
+			return
+		}
+		if staff.WorkflowRole != StaffWorkflowRoleSecurityComplianceApprover {
+			http.Error(w, "Forbidden: your workflow role doesn't permit deciding approval requests.", http.StatusForbidden)
+			return
+		}
+		if !authn.SameOrigin(r, s.cfg.RootURL) {
+			http.Error(w, "Forbidden: cross-origin request rejected.", http.StatusForbidden)
+			return
+		}
+		next(w, r, staff)
+	}
+}
+
 // requireSameOrigin applies authn.SameOrigin's CSRF check alone, for
 // routes reachable without a session (login) that requireSession can't
 // cover since it requires an authenticated staff account first.

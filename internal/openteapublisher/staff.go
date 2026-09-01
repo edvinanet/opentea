@@ -45,6 +45,9 @@ var (
 	// ErrInvalidRole is returned by CreateStaff when role isn't
 	// StaffRoleAdmin or StaffRoleMember.
 	ErrInvalidRole = errors.New("openteapublisher: role must be \"admin\" or \"member\"")
+	// ErrInvalidWorkflowRole is returned by CreateStaff when a non-empty
+	// workflowRole isn't one of the StaffWorkflowRole* constants.
+	ErrInvalidWorkflowRole = errors.New("openteapublisher: workflow role must be \"release_manager\", \"component_maintainer\", \"security_compliance_approver\", or empty")
 	// ErrLastAdmin is returned by DeleteStaff when deleting would leave no
 	// admin account -- mirrors internal/repo.ErrLastAdmin exactly (same
 	// reasoning: a deployment must never be able to lock itself out of
@@ -67,6 +70,23 @@ const (
 	StaffRoleMember = "member"
 )
 
+// Workflow roles (staff.workflow_role CHECK values,
+// db/migrations/0004_business_approval.sql) -- §10.1's own vocabulary
+// ("the publisher's own three roles"), a second axis orthogonal to
+// StaffRoleAdmin/Member above: that axis gates *administrative* capability
+// (who manages targets/staff, this tool); this one records where a staff
+// account sits in the publishing workflow itself. Empty string (no
+// constant for it) means "none set" -- not every account participates.
+// Only StaffWorkflowRoleSecurityComplianceApprover is enforced anywhere
+// in this pass (requireApprovalRole, auth_middleware.go); the other two
+// are recorded because §10.1 already names them, not because anything
+// gates on them yet.
+const (
+	StaffWorkflowRoleReleaseManager             = "release_manager"
+	StaffWorkflowRoleComponentMaintainer        = "component_maintainer"
+	StaffWorkflowRoleSecurityComplianceApprover = "security_compliance_approver"
+)
+
 // RoleSatisfies reports whether staffRole grants access requiring minRole
 // -- mirrors internal/authn.RoleSatisfies' own shape exactly (admin
 // satisfies everything; anything else only satisfies itself).
@@ -80,22 +100,32 @@ func RoleSatisfies(staffRole, minRole string) bool {
 // Staff is one manufacturer staff account (Layer A,
 // design/publisher-service.md §10.1).
 type Staff struct {
-	UUID      string
-	Username  string
-	Role      string
-	CreatedAt time.Time
+	UUID         string
+	Username     string
+	Role         string
+	WorkflowRole string
+	CreatedAt    time.Time
 }
 
 // CreateStaff creates a new staff account with a bcrypt-hashed password.
-// Returns ErrPasswordTooShort if plaintextPassword is shorter than
-// minPasswordLength, ErrInvalidRole if role isn't StaffRoleAdmin/Member,
-// or ErrUsernameTaken if username is already in use.
-func (r *Repo) CreateStaff(ctx context.Context, username, plaintextPassword, role string) (Staff, error) {
+// workflowRole may be empty (no workflow role set) or one of the
+// StaffWorkflowRole* constants. Returns ErrPasswordTooShort if
+// plaintextPassword is shorter than minPasswordLength, ErrInvalidRole if
+// role isn't StaffRoleAdmin/Member, ErrInvalidWorkflowRole if workflowRole
+// is non-empty and not a recognized constant, or ErrUsernameTaken if
+// username is already in use.
+func (r *Repo) CreateStaff(ctx context.Context, username, plaintextPassword, role, workflowRole string) (Staff, error) {
 	if len(plaintextPassword) < minPasswordLength {
 		return Staff{}, ErrPasswordTooShort
 	}
 	if role != StaffRoleAdmin && role != StaffRoleMember {
 		return Staff{}, ErrInvalidRole
+	}
+	if workflowRole != "" &&
+		workflowRole != StaffWorkflowRoleReleaseManager &&
+		workflowRole != StaffWorkflowRoleComponentMaintainer &&
+		workflowRole != StaffWorkflowRoleSecurityComplianceApprover {
+		return Staff{}, ErrInvalidWorkflowRole
 	}
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(plaintextPassword), bcryptCost)
@@ -105,8 +135,8 @@ func (r *Repo) CreateStaff(ctx context.Context, username, plaintextPassword, rol
 
 	uuid := idgen.New()
 	_, err = r.conn().ExecContext(ctx,
-		`INSERT INTO staff (uuid, username, password_hash, role) VALUES (?, ?, ?, ?)`,
-		uuid, username, string(hash), role,
+		`INSERT INTO staff (uuid, username, password_hash, role, workflow_role) VALUES (?, ?, ?, ?, ?)`,
+		uuid, username, string(hash), role, nullIfEmpty(workflowRole),
 	)
 	if isUniqueConstraintError(err) {
 		return Staff{}, ErrUsernameTaken
@@ -122,15 +152,17 @@ func (r *Repo) CreateStaff(ctx context.Context, username, plaintextPassword, rol
 func (r *Repo) GetStaffByUUID(ctx context.Context, uuid string) (Staff, error) {
 	var s Staff
 	var createdAt string
+	var workflowRole sql.NullString
 	err := r.conn().QueryRowContext(ctx,
-		`SELECT uuid, username, role, created_at FROM staff WHERE uuid = ?`, uuid,
-	).Scan(&s.UUID, &s.Username, &s.Role, &createdAt)
+		`SELECT uuid, username, role, workflow_role, created_at FROM staff WHERE uuid = ?`, uuid,
+	).Scan(&s.UUID, &s.Username, &s.Role, &workflowRole, &createdAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Staff{}, ErrNotFound
 	}
 	if err != nil {
 		return Staff{}, err
 	}
+	s.WorkflowRole = workflowRole.String
 	created, err := parseTime(createdAt)
 	if err != nil {
 		return Staff{}, err
@@ -143,7 +175,7 @@ func (r *Repo) GetStaffByUUID(ctx context.Context, uuid string) (Staff, error) {
 // -- matches ListTargets' own "list everyone at once" convention for this
 // app's current size.
 func (r *Repo) ListStaff(ctx context.Context) ([]Staff, error) {
-	rows, err := r.conn().QueryContext(ctx, `SELECT uuid, username, role, created_at FROM staff ORDER BY username`)
+	rows, err := r.conn().QueryContext(ctx, `SELECT uuid, username, role, workflow_role, created_at FROM staff ORDER BY username`)
 	if err != nil {
 		return nil, err
 	}
@@ -153,9 +185,11 @@ func (r *Repo) ListStaff(ctx context.Context) ([]Staff, error) {
 	for rows.Next() {
 		var s Staff
 		var createdAt string
-		if err := rows.Scan(&s.UUID, &s.Username, &s.Role, &createdAt); err != nil {
+		var workflowRole sql.NullString
+		if err := rows.Scan(&s.UUID, &s.Username, &s.Role, &workflowRole, &createdAt); err != nil {
 			return nil, err
 		}
+		s.WorkflowRole = workflowRole.String
 		created, err := parseTime(createdAt)
 		if err != nil {
 			return nil, err
@@ -199,9 +233,10 @@ func (r *Repo) DeleteStaff(ctx context.Context, uuid string) error {
 func (r *Repo) VerifyLogin(ctx context.Context, username, plaintextPassword string) (Staff, error) {
 	var s Staff
 	var passwordHash, createdAt string
+	var workflowRole sql.NullString
 	err := r.conn().QueryRowContext(ctx,
-		`SELECT uuid, username, role, password_hash, created_at FROM staff WHERE username = ?`, username,
-	).Scan(&s.UUID, &s.Username, &s.Role, &passwordHash, &createdAt)
+		`SELECT uuid, username, role, workflow_role, password_hash, created_at FROM staff WHERE username = ?`, username,
+	).Scan(&s.UUID, &s.Username, &s.Role, &workflowRole, &passwordHash, &createdAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		_ = bcrypt.CompareHashAndPassword(dummyBcryptHash, []byte(plaintextPassword))
 		return Staff{}, ErrInvalidCredentials
@@ -212,6 +247,7 @@ func (r *Repo) VerifyLogin(ctx context.Context, username, plaintextPassword stri
 	if bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(plaintextPassword)) != nil {
 		return Staff{}, ErrInvalidCredentials
 	}
+	s.WorkflowRole = workflowRole.String
 	created, err := parseTime(createdAt)
 	if err != nil {
 		return Staff{}, err

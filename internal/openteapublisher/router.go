@@ -24,4 +24,12 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /staff", s.requireRole(StaffRoleAdmin, s.staffPage))
 	mux.HandleFunc("POST /staff", s.requireRole(StaffRoleAdmin, s.createStaffForm))
 	mux.HandleFunc("POST /staff/{uuid}/delete", s.requireRole(StaffRoleAdmin, s.deleteStaffForm))
+
+	// Any authenticated staff member may view requests and create one
+	// (mirrors "release manager or component maintainer" not being
+	// admin-only, §10.1) -- only a security_compliance_approver may
+	// decide one (separation of duties, requireApprovalRole).
+	mux.HandleFunc("GET /approvals", s.requireSession(s.approvalsPage))
+	mux.HandleFunc("POST /approvals", s.requireSession(s.createApprovalRequestForm))
+	mux.HandleFunc("POST /approvals/{uuid}/decide", s.requireApprovalRole(s.decideApprovalRequestForm))
 }

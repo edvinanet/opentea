@@ -312,9 +312,49 @@ they don't get lost.
       `opentea-publisher` always presents a "full" credential to the target regardless of
       who's actually calling it (§18.11) — without that, the target-side scope separation
       provides no protection against a compromised `opentea-publisher` process or malicious
-      CI/CD submission. The internal multi-team business-approval workflow (§18.8) remains
-      explicitly undesigned — this pass confirmed it's still the single biggest gap, didn't
-      resolve it.
+      CI/CD submission. ~~The internal multi-team business-approval workflow (§18.8) remains
+      explicitly undesigned~~ **scaffolded 2026-09-01** — see the new **`opentea-publisher`:
+      internal business-approval workflow** entry below.
+- [ ] **`opentea-publisher`: internal business-approval workflow** (`design/publisher-
+      service.md` §18.8, v0.23) resolves the gap §17.3/§18.8 both flagged as "the single
+      biggest remaining unknown" -- a scaffolded approval-request workflow, connecting §10.1's
+      already-named workflow vocabulary ("release manager, component maintainer,
+      security/compliance approver") that hadn't been wired to anything yet. New
+      `internal/openteapublisher/db/migrations/0004_business_approval.sql`: `staff` gains a
+      nullable `workflow_role` column (a second axis orthogonal to the existing admin/member
+      `staff.role` -- that one gates who manages this *tool*, this one gates where a staff
+      account sits in the publishing *workflow*; holding `admin` does not imply approval
+      capability, deliberate separation of duties), plus `approval_request`/
+      `approval_decision` tables. `internal/openteapublisher/approval.go`:
+      `CreateApprovalRequest` (any authenticated staff member, no role gate -- matches "no
+      drafting UI exists yet to enforce who may request"), `RecordApprovalDecision`
+      implementing maker-checker exactly as §10.1 stated it (`ErrSelfApproval` if the decider
+      is the requester, `ErrRequestNotPending` if already closed, a single rejection closes
+      immediately, an approval closes once enough *distinct* approving staff accounts reach
+      `required_approvals`, default 1). New `requireApprovalRole` middleware
+      (`auth_middleware.go`) gates `POST /approvals/{uuid}/decide` on
+      `workflow_role == "security_compliance_approver"` -- a separate check from `requireRole`,
+      not merged into it. New `/approvals` screen (list + create + inline approve/reject),
+      `staff.html` gained a workflow-role select. Verified: repo-level tests (self-approval
+      rejected, decision-on-closed-request rejected, partial-then-complete approval crossing
+      `required_approvals` > 1 with duplicate decisions from the same approver not
+      double-counting, immediate rejection), HTTP-level tests (an admin with no approver
+      workflow role gets 403 deciding, the requester gets 403/self-approval-rejected even when
+      *also* holding the approver role, the approver succeeds, both create and decide are
+      audited), a manual smoke test against the real built binary (admin/requester blocked,
+      approver succeeds, self-approval blocked, all via `curl`), `make check`/
+      `golangci-lint`/`go test -race` all clean. **Deliberately not built**: no screen
+      consumes an approved request yet -- there's no "Sign & Publish" action to gate on one
+      (§18.7's draft-assembly screen and §18.10 both still unbuilt); `release_uuid` is typed
+      in by hand with no live `pkg/teaclient` lookup to resolve it to a human-readable label
+      (deferred until there's a real draft to source a reference from, not built
+      speculatively); this is a plain per-role approval count, not a true multi-team system --
+      no way to require one legal sign-off *and* one security sign-off specifically, §10.1's
+      own collapse of "legal, compliance, security engineering" into one
+      `security_compliance_approver` role is carried through as-is, not re-litigated; no
+      federated-identity role mapping (§10.1's own separately-open OIDC/LDAP claim-to-role
+      question) -- `workflow_role` is set by hand today by whichever admin creates the
+      account.
 - [ ] **Publisher API: derive approval actor from authenticated identity, not a
       caller-supplied string** (found 2026-08-28, during `design/opentea-server.md` review —
       see its §11.4). `design/publisher-openapi.yaml`'s `approval-decision.actor` is

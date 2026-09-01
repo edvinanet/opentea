@@ -1,0 +1,48 @@
+{{define "content"}}
+<h1>Business approval requests</h1>
+{{if .Error}}<div class="error">{{.Error}}</div>{{end}}
+<table>
+  <tr><th>Release</th><th>Target</th><th>Requested by</th><th>Status</th><th></th></tr>
+  {{range .ApprovalRequests}}
+  <tr>
+    <td><code>{{.ReleaseKind}} {{.ReleaseUUID}}</code>{{if .Notes}}<br><small>{{.Notes}}</small>{{end}}</td>
+    <td>{{.TargetUUID}}</td>
+    <td>{{.RequestedBy}}</td>
+    <td><span class="badge badge-{{.Status}}">{{.Status}}</span> ({{.RequiredApprovals}} required)</td>
+    <td>
+      {{if eq .Status "pending"}}
+      <form class="inline" action="/approvals/{{.UUID}}/decide" method="post">
+        <input type="hidden" name="decision" value="approved">
+        <button type="submit">Approve</button>
+      </form>
+      <form class="inline" action="/approvals/{{.UUID}}/decide" method="post">
+        <input type="hidden" name="decision" value="rejected">
+        <button type="submit">Reject</button>
+      </form>
+      {{end}}
+    </td>
+  </tr>
+  {{else}}
+  <tr><td colspan="5">No approval requests yet.</td></tr>
+  {{end}}
+</table>
+
+<h1>Request approval</h1>
+<form action="/approvals" method="post">
+  <label>Target
+    <select name="targetUuid" required>
+      {{range .Targets}}<option value="{{.UUID}}">{{.Label}}</option>{{end}}
+    </select>
+  </label>
+  <label>Release kind
+    <select name="releaseKind">
+      <option value="productRelease">productRelease</option>
+      <option value="componentRelease">componentRelease</option>
+    </select>
+  </label>
+  <label>Release UUID<input type="text" name="releaseUuid" required></label>
+  <label>Notes<input type="text" name="notes"></label>
+  <label>Required approvals<input type="number" name="requiredApprovals" value="1" min="1"></label>
+  <button type="submit">Request approval</button>
+</form>
+{{end}}

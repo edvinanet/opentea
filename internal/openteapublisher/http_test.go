@@ -25,7 +25,7 @@ func newTestServer(t *testing.T) (srv *httptest.Server, r *Repo, username, passw
 	r = newTestRepo(t)
 
 	username, password = "alice", "hunter222"
-	if _, err := r.CreateStaff(context.Background(), username, password, StaffRoleAdmin); err != nil {
+	if _, err := r.CreateStaff(context.Background(), username, password, StaffRoleAdmin, ""); err != nil {
 		t.Fatalf("CreateStaff: %v", err)
 	}
 

@@ -71,18 +71,62 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       (aside from two confirmed pre-existing, unrelated findings: a data race in
       `svcb_test.go`'s DNS test helper, and `cmd/opentea/main.go`'s `gocyclo` complexity —
       neither touched by this fix).
-- [ ] **A baked-in token-exchange auth flow is now part of the core spec** — `POST /token`,
-      `client_credentials` grant, HTTP Basic (API-key-id as user, API-key-secret as password)
-      → opaque Bearer access token, `expires_in`, optional SAML/JWT assertion grants. Distinct
-      from opentea's current model (long-lived API tokens presented directly as bearer tokens,
-      no token endpoint, no exchange step). Also carries a specific, quotable normative rule
-      that conflicts with an existing deliberate design decision: **"A protected object with
-      no valid token shall answer `401`, not a concealing `404`."** opentea's Phase 1 authz
-      work deliberately made "denial always renders as 404, never 403" (see its own commit
-      message) — that policy doesn't currently distinguish "no token presented at all" from
-      "authenticated but unauthorized," and the new spec explicitly requires that distinction.
-      Real design tension in a carefully-built subsystem (`internal/authz`) — needs its own
-      discussion, not a silent patch.
+- [x] ~~**A protected object with no valid token shall answer `401`, not a concealing
+      `404`**~~ — fixed 2026-09-21 (the 401-vs-404 half of the larger token-exchange item
+      below, split out since it's a self-contained fix with no open design question, unlike
+      the `/token` endpoint itself). Verbatim from `spec/openapi.yaml`'s `401-unauthorized`
+      response component: "On a TEA server where some data is available without
+      authentication, but not all, protected endpoints return `401` when no valid token is
+      presented... A protected object shall not answer `404` solely because the client is
+      unauthenticated." opentea's Phase 1 authz work had deliberately made "denial always
+      renders as 404, never 403" (see its own commit message) without distinguishing "no
+      token presented at all" from "authenticated but unauthorized" -- turned out
+      `authz.Principal.IsAuthenticated()` already existed for exactly this distinction
+      (used elsewhere for cache-policy/ETag partitioning), just not wired into the denial
+      path yet. New `Server.writeAuthzDenial` (`internal/api/authz.go`) is now the single
+      shared point both `authorize` (every single-resource GET) and `discovery.go`'s own
+      hand-rolled denial branch call: anonymous + denied → 401 via new
+      `httpx.UnauthorizedBearer(errCode, message)`, which also adds the RFC 6750 §3
+      `WWW-Authenticate: Bearer` challenge the spec separately requires ("Servers shall
+      include a `WWW-Authenticate` header") -- `error="invalid_token"` when a token was
+      presented but rejected, no `error` param when none was presented at all (per RFC 6750
+      §3's own guidance). Authenticated-but-unauthorized keeps the existing, deliberately
+      concealing 404 unchanged -- spec's `403-forbidden` text explicitly allows that:
+      "Servers may instead conceal the existence of a resource from an authenticated but
+      unauthorized client by answering `404`." This is `internal/api`-only (the literal
+      `/tea/v1` surface the spec governs) -- `internal/admin`/`internal/publisher`/
+      `internal/webadmin` keep their own, unrelated 401 conventions (cookie-based or
+      differently-scoped bearer, not RFC 6750 Bearer challenges). Caught and fixed two
+      existing tests that had encoded the *old* semantics as correct
+      (`TestTeaV1AuthzCapabilityIndependence`, `TestTeaV1AuthzDiscoveryDeniedMatchesNoMatch`,
+      both `cmd/opentea/authz_tea_test.go`) -- both now assert 401 for the anonymous case and
+      keep (or add) an authenticated-but-denied companion case proving 404 still applies
+      there, so the split itself stays covered by an actual regression test, not just the
+      fixed assertion. New `TestInvalidBearerTokenChallenge`
+      (`cmd/opentea/integration_test.go`) covers the `error="invalid_token"` challenge shape
+      specifically. Manual smoke test against the real built binary confirms all three cases
+      side by side (no entitlement narrowing → 200 anonymous; narrowed + anonymous → 401 bare
+      challenge; garbage token → 401 `invalid_token` challenge). `go test ./... -race`/
+      `golangci-lint` clean.
+- [ ] **`POST /token`: the actual client_credentials token-exchange endpoint** —
+      `spec/openapi.yaml`'s `/token`: HTTP Basic client authentication (API-key-id as
+      user-id, API-key-secret as password) exchanged for a short-lived, opaque Bearer
+      `access_token` (`token_type: Bearer`, `expires_in`), with an RFC 6749 `token-error-
+      response` shape (`error`/`error_description`/`error_uri`) on failure; servers may
+      support assertion grants (SAML2/JWT bearer) too, but `client_credentials` is the
+      required baseline. "A TEA server that requires authentication on any of its endpoints
+      shall implement this endpoint" -- conditionally mandatory, not optional, once any
+      entitlement narrows beyond the anonymous-read-everything bootstrap (which opentea
+      already supports and exercises today). Genuinely distinct from opentea's current model:
+      today's `api_token` is a single long-lived secret presented *directly* as the bearer
+      token (`internal/repo/apitoken.go`) -- no key-id/secret pair, no exchange step, no
+      separate short-lived access token, no expiry. Real open design questions before
+      building this (not resolved here, needs its own discussion): does the existing
+      long-lived-token-as-bearer path stay usable alongside `/token`, or does `/tea/v1`
+      access now require having gone through the exchange; does a new client-credential pair
+      replace or sit alongside today's `api_token`/"regenerate API token" GUI concept; how
+      are issued (short-lived) access tokens stored/expired/cleaned up, separately from the
+      long-lived credential that mints them.
 - [x] ~~**`error-response` schema is now strict**~~ — fixed 2026-09-21, with a real
       correction to the original finding: `additionalProperties: false` still applies, but
       re-reading the actual spec text turned up an important nuance the first pass missed --

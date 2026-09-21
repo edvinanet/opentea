@@ -54,16 +54,18 @@ func (s *Server) discovery(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// An unauthorized match must be indistinguishable from no match at all
-	// (spec Sec 18) -- discovery reveals a release's existence just as much
-	// as a direct lookup would. Same 404+OBJECT_UNKNOWN response as the
-	// true-no-match branch above, for the same reason.
+	// for an authenticated caller (spec Sec 18) -- discovery reveals a
+	// release's existence just as much as a direct lookup would. An
+	// anonymous caller instead gets 401 (writeAuthzDenial, authz.go) --
+	// TEA 1.0's own 401-unauthorized text draws that line on whether a
+	// token was presented at all, not on what it's entitled to.
 	allowed, err := s.decide(r, authz.CapReleaseDiscover, authz.Resource{ProductReleaseUUID: productReleaseUUID})
 	if err != nil {
 		httpx.InternalError(w, r, err)
 		return
 	}
 	if !allowed {
-		httpx.NotFound(w)
+		s.writeAuthzDenial(w, r)
 		return
 	}
 

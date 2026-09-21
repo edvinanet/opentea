@@ -24,7 +24,7 @@ func resolvePrincipal(r *repo.Repo, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		user, present, valid := authn.BearerUser(req.Context(), req, r)
 		if present && !valid {
-			httpx.Unauthorized(w, "invalid or expired bearer token")
+			httpx.UnauthorizedBearer(w, "invalid_token", "invalid or expired bearer token")
 			return
 		}
 		principal := authz.Principal{}

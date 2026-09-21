@@ -65,6 +65,31 @@ func Unauthorized(w http.ResponseWriter, message string) {
 	WriteJSON(w, http.StatusUnauthorized, messageBody{Message: message})
 }
 
+// UnauthorizedBearer writes a 401 response for a bearer-token-protected
+// /tea/v1 resource, with the WWW-Authenticate challenge TEA 1.0's
+// 401-unauthorized response requires ("Servers shall include a
+// WWW-Authenticate header as defined in RFC 6750 section 3"). errCode is
+// the RFC 6750 §3 "error" auth-param -- "invalid_token" when a token was
+// presented but rejected, or "" when no token was presented at all (RFC
+// 6750 §3: the error parameter should be omitted in that case, since the
+// client made no authentication attempt to have failed). message is
+// optional human-readable detail, carried as error_description on the
+// challenge when errCode is set (RFC 6750 has no error_description slot
+// for the errCode=="" case). The body itself stays untyped, same
+// reasoning as Unauthorized above -- the challenge header is the
+// normative signal here, not the body.
+func UnauthorizedBearer(w http.ResponseWriter, errCode, message string) {
+	challenge := `Bearer realm="tea"`
+	if errCode != "" {
+		challenge += `, error="` + errCode + `"`
+		if message != "" {
+			challenge += `, error_description="` + message + `"`
+		}
+	}
+	w.Header().Set("WWW-Authenticate", challenge)
+	WriteJSON(w, http.StatusUnauthorized, messageBody{Message: message})
+}
+
 // Forbidden writes a 403 response -- used when the caller is authenticated
 // but their role doesn't grant the required access.
 func Forbidden(w http.ResponseWriter, message string) {

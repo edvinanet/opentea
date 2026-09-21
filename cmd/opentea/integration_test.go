@@ -440,6 +440,26 @@ func TestWorkedExample(t *testing.T) {
 	}
 }
 
+// TestInvalidBearerTokenChallenge confirms TEA 1.0's 401-unauthorized
+// requirement ("Servers shall include a WWW-Authenticate header as
+// defined in RFC 6750 section 3") for the other 401 case
+// TestTeaV1AuthzCapabilityIndependence/TestTeaV1AuthzDiscoveryDeniedMatchesNoMatch
+// don't cover: a token that WAS presented but doesn't resolve at all
+// (unlike "no token presented," this gets the RFC 6750 §3
+// error="invalid_token" challenge parameter).
+func TestInvalidBearerTokenChallenge(t *testing.T) {
+	srv := newTestServer(t)
+
+	status, headers, _ := teaRequest(t, srv, http.MethodGet, "/tea/v1/products", "not-a-real-token")
+	if status != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", status)
+	}
+	got := headers.Get("WWW-Authenticate")
+	if !strings.Contains(got, `Bearer realm="tea"`) || !strings.Contains(got, `error="invalid_token"`) {
+		t.Fatalf("WWW-Authenticate = %q, want a Bearer challenge with error=\"invalid_token\"", got)
+	}
+}
+
 func TestErrorResponses(t *testing.T) {
 	srv := newTestServer(t)
 

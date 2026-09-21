@@ -108,9 +108,16 @@ func TestTeaV1AuthzAnonymousDefaultAllowsRead(t *testing.T) {
 // release-scoped entitlement that grants release.read but denies
 // collection.read must NOT leak collection access, even though the
 // broader (migration-seeded) bootstrap entitlement would otherwise allow
-// it -- the narrower, more specific restriction wins.
+// it -- the narrower, more specific restriction wins. Also covers TEA
+// 1.0's 401-vs-404 split for that denial: an anonymous caller (no token
+// presented at all) gets 401 ("a protected object shall not answer 404
+// solely because the client is unauthenticated"), while an authenticated-
+// but-unauthorized one still gets the existing, deliberately concealing
+// 404 (spec Sec 18) -- the "everyone" entitlement below denies both
+// alike, so this is purely about which status each gets, not who's denied.
 func TestTeaV1AuthzCapabilityIndependence(t *testing.T) {
 	srv := newTestServer(t)
+	ctx := context.Background()
 
 	status, raw := jsonRequest(t, srv, http.MethodPost, "/admin/v1/products", map[string]any{"name": "Widget"})
 	if status != http.StatusCreated {
@@ -147,21 +154,42 @@ func TestTeaV1AuthzCapabilityIndependence(t *testing.T) {
 		t.Fatalf("GET productRelease: status=%d body=%s, want 200 (release.read allowed)", status, raw)
 	}
 
-	status, _, raw = teaRequest(t, srv, http.MethodGet, "/tea/v1/productRelease/"+release.UUID+"/collection/latest", "")
+	status, headers, raw := teaRequest(t, srv, http.MethodGet, "/tea/v1/productRelease/"+release.UUID+"/collection/latest", "")
+	if status != http.StatusUnauthorized {
+		t.Fatalf("GET collection/latest (anonymous): status=%d body=%s, want 401 (collection.read denied, no token presented)", status, raw)
+	}
+	if got := headers.Get("WWW-Authenticate"); got != `Bearer realm="tea"` {
+		t.Fatalf("GET collection/latest (anonymous): WWW-Authenticate = %q, want a bare Bearer challenge (no error param -- no token was presented to be invalid)", got)
+	}
+
+	consumer, err := srv.repo.CreateUser(ctx, "consumer", "password123", model.RoleConsumer)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	consumerToken, err := srv.repo.SetAPIToken(ctx, consumer.UUID)
+	if err != nil {
+		t.Fatalf("SetAPIToken: %v", err)
+	}
+	status, _, raw = teaRequest(t, srv, http.MethodGet, "/tea/v1/productRelease/"+release.UUID+"/collection/latest", consumerToken)
 	if status != http.StatusNotFound {
-		t.Fatalf("GET collection/latest: status=%d body=%s, want 404 (collection.read denied, narrower than bootstrap's broader allow)", status, raw)
+		t.Fatalf("GET collection/latest (authenticated): status=%d body=%s, want 404 (collection.read denied, narrower than bootstrap's broader allow, but a valid token was presented)", status, raw)
 	}
 }
 
 // TestTeaV1AuthzDiscoveryDeniedMatchesNoMatch proves spec Sec 18's
-// existence-hiding rule as it applies to discovery specifically: a TEI
-// that resolves to a real release but whose release.discover capability
-// is denied must respond identically (404 + OBJECT_UNKNOWN, upstream TEA
-// 1.0's spec/openapi.yaml /discovery) to a TEI that never resolved at
-// all -- an authorization denial must not itself reveal that the release
-// exists.
+// existence-hiding rule as it applies to discovery specifically, for an
+// *authenticated* caller: a TEI that resolves to a real release but whose
+// release.discover capability is denied must respond identically (404 +
+// OBJECT_UNKNOWN, upstream TEA 1.0's spec/openapi.yaml /discovery) to a
+// TEI that never resolved at all -- an authorization denial must not
+// itself reveal that the release exists. An *anonymous* caller instead
+// gets 401 (TEA 1.0's own 401-unauthorized text: "a protected object
+// shall not answer 404 solely because the client is unauthenticated"),
+// checked first below since it's the same "everyone" denial, just a
+// different caller.
 func TestTeaV1AuthzDiscoveryDeniedMatchesNoMatch(t *testing.T) {
 	srv := newTestServer(t)
+	ctx := context.Background()
 
 	status, raw := jsonRequest(t, srv, http.MethodPost, "/admin/v1/products", map[string]any{"name": "Widget"})
 	if status != http.StatusCreated {
@@ -191,9 +219,34 @@ func TestTeaV1AuthzDiscoveryDeniedMatchesNoMatch(t *testing.T) {
 		"everyone", "", "product_release", release.UUID,
 	)
 
-	status, _, raw = teaRequest(t, srv, http.MethodGet, "/tea/v1/discovery?tei=urn%3Atei%3Auuid%3Aacme.example.com%3Ahidden-1.0.0", "")
+	// Anonymous: no token presented at all -> 401, not a concealing 404.
+	status, headers, raw := teaRequest(t, srv, http.MethodGet, "/tea/v1/discovery?tei=urn%3Atei%3Auuid%3Aacme.example.com%3Ahidden-1.0.0", "")
+	if status != http.StatusUnauthorized {
+		t.Fatalf("GET /discovery (anonymous, denied match): status=%d body=%s, want 401", status, raw)
+	}
+	if got := headers.Get("WWW-Authenticate"); got != `Bearer realm="tea"` {
+		t.Fatalf("GET /discovery (anonymous): WWW-Authenticate = %q, want a bare Bearer challenge", got)
+	}
+	status, _, raw = teaRequest(t, srv, http.MethodGet, "/tea/v1/discovery?purl=pkg%3Ageneric%2Fhidden%401.0.0", "")
+	if status != http.StatusUnauthorized {
+		t.Fatalf("GET /discovery (anonymous, denied purl match): status=%d body=%s, want 401", status, raw)
+	}
+
+	// Authenticated but unauthorized: the pre-existing, deliberately
+	// concealing 404 + OBJECT_UNKNOWN, unchanged and indistinguishable
+	// from a genuine no-match.
+	consumer, err := srv.repo.CreateUser(ctx, "consumer", "password123", model.RoleConsumer)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	consumerToken, err := srv.repo.SetAPIToken(ctx, consumer.UUID)
+	if err != nil {
+		t.Fatalf("SetAPIToken: %v", err)
+	}
+
+	status, _, raw = teaRequest(t, srv, http.MethodGet, "/tea/v1/discovery?tei=urn%3Atei%3Auuid%3Aacme.example.com%3Ahidden-1.0.0", consumerToken)
 	if status != http.StatusNotFound {
-		t.Fatalf("GET /discovery (denied match): status=%d body=%s, want 404", status, raw)
+		t.Fatalf("GET /discovery (authenticated, denied match): status=%d body=%s, want 404", status, raw)
 	}
 	var errResp tea.ErrorResponse
 	decodeInto(t, raw, &errResp)
@@ -204,9 +257,9 @@ func TestTeaV1AuthzDiscoveryDeniedMatchesNoMatch(t *testing.T) {
 	// Same existence-hiding rule applies when the match is found via purl
 	// instead of tei -- the denial doesn't care which identifier resolved
 	// the release.
-	status, _, raw = teaRequest(t, srv, http.MethodGet, "/tea/v1/discovery?purl=pkg%3Ageneric%2Fhidden%401.0.0", "")
+	status, _, raw = teaRequest(t, srv, http.MethodGet, "/tea/v1/discovery?purl=pkg%3Ageneric%2Fhidden%401.0.0", consumerToken)
 	if status != http.StatusNotFound {
-		t.Fatalf("GET /discovery (denied purl match): status=%d body=%s, want 404", status, raw)
+		t.Fatalf("GET /discovery (authenticated, denied purl match): status=%d body=%s, want 404", status, raw)
 	}
 	decodeInto(t, raw, &errResp)
 	if errResp.Error != tea.ErrorObjectUnknown {

@@ -132,6 +132,66 @@ volumes:
 Bootstrap the admin user once with `docker compose run --rm opentea createadmin -username=admin
 -password=<a-real-password>` before `docker compose up -d`.
 
+## opentea-publisher
+
+`docker/openteapublisher.Dockerfile` builds and runs `cmd/openteapublisher` -- the GUI
+publisher platform (`design/publisher-service.md` §4/§17), a genuinely **separate service**
+from opentea itself: own binary, own database, own deployment (it shares this repo only for
+code reuse and integrated testing, and this Dockerfile only for the same
+build-stage/runtime-stage structure). Run it alongside opentea, or entirely on its own
+against any TEA server implementing `/publisher/v1`, not just opentea's.
+
+```bash
+docker build -f docker/openteapublisher.Dockerfile -t openteapublisher .
+
+# Bootstrap the first (admin) staff account -- a named volume persists the DB across runs.
+docker run --rm -v openteapublisher-data:/var/lib/openteapublisher openteapublisher \
+    createstaff -username=admin -password=<a-real-password> -role=admin
+
+# Run the server
+docker run -d --name openteapublisher -p 8090:8090 \
+    -v openteapublisher-data:/var/lib/openteapublisher openteapublisher
+```
+
+```bash
+curl -I http://localhost:8090/login
+# log into http://localhost:8090/login with the admin staff account from step 1, then add a
+# target (a TEA server's /publisher/v1 base URL + a "full"-scoped bearer credential for it)
+```
+
+Same persistence (named volume over a host bind mount, see "Persisting data" above) and
+config precedence (env vars, `OPENTEAPUBLISHER_*` instead of `TEA_*` -- see
+`cmd/openteapublisher/config.go`) as the main image, with one difference: no config-file
+support (`OPENTEAPUBLISHER_CONFIG_FILE` doesn't exist -- this app's settings surface is
+small enough that env vars alone are enough). TLS follows the same
+mount-the-cert-and-set-two-env-vars shape:
+
+```bash
+docker run -d --name openteapublisher -p 8443:8443 \
+    -v openteapublisher-data:/var/lib/openteapublisher \
+    -v $(pwd)/tls:/etc/openteapublisher/tls:ro \
+    -e OPENTEAPUBLISHER_LISTEN_ADDR=:8443 \
+    -e OPENTEAPUBLISHER_TLS_CERT_FILE=/etc/openteapublisher/tls/cert.pem \
+    -e OPENTEAPUBLISHER_TLS_KEY_FILE=/etc/openteapublisher/tls/key.pem \
+    openteapublisher
+```
+
+```yaml
+services:
+  openteapublisher:
+    build:
+      context: .
+      dockerfile: docker/openteapublisher.Dockerfile
+    ports:
+      - "8090:8090"
+    volumes:
+      - openteapublisher-data:/var/lib/openteapublisher
+    environment:
+      OPENTEAPUBLISHER_ROOT_URL: http://localhost:8090
+volumes:
+  openteapublisher-data:
+```
+
 ## Caveats
 
 - `docker build` may print `WARNING: current commit information was not captured by the build:

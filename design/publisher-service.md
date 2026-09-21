@@ -1,6 +1,6 @@
 # TEA Publisher — protocol and service design
 
-**Status:** draft v0.26, for discussion. Nothing here is scheduled or approved; no
+**Status:** draft v0.27, for discussion. Nothing here is scheduled or approved; no
 implementation exists yet. This document is the design opentea's `TODO.md` "Reference
 publisher" entry has been blocked on since 2026-07-04.
 
@@ -351,6 +351,23 @@ than repeated here.
   rendering needed no changes at all -- confirmed against a real running server) nor
   `internal/openteapublisher` (§18.4's Components screen is still unbuilt intent) got any
   GUI work this pass -- both write APIs are already fully usable via JSON today.
+- **v0.27 (this revision)** adds `uploadArtifactSignatureFile`
+  (`design/publisher-openapi.yaml` v0.11), the write-side half of TEA 1.0's other major
+  addition: real, normative artifact content/signature download endpoints on the consumer
+  API (`spec/openapi.yaml`'s `/artifact/{uuid}/{latest|version}/download` and their
+  `/signature/download` counterparts -- `TODO.md`'s **Artifact content download** entry has
+  the full read-side detail, out of this design document's scope). Two decisions made
+  together: `formats[].url`/`signatureUrl` become spec-faithful (always an external
+  location; self-hosted content/signatures are retrieved via the new download endpoints
+  instead, never opentea's own storage location) -- a **behavior change** for any existing
+  self-hosted-content consumer, flagged rather than silently absorbed; and local signature
+  hosting is built as real new capability, not just external `signatureUrl` pass-through --
+  uploadable through all three existing write surfaces (`/admin/v1`, `/publisher/v1`, and
+  `internal/openteapublisher`'s `/cicdapi/v1`, the last simply proxying to the second per
+  §18.11's existing pattern), each mirroring its content-upload sibling exactly. Unlike
+  content, a signature upload is never rejected once evidence has been submitted for that
+  artifact version (§9.2-§9.4) -- evidence attests to the format's content checksum, which a
+  signature upload never changes, so there is nothing for it to invalidate.
 
 ## 1. Problem statement
 

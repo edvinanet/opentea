@@ -10,6 +10,7 @@ import (
 
 	"github.com/oej/opentea/internal/httpx"
 	"github.com/oej/opentea/internal/repo"
+	"github.com/oej/opentea/pkg/tea"
 	"github.com/oej/opentea/pkg/teapublisher"
 )
 
@@ -127,40 +128,127 @@ func (s *Server) uploadArtifactFile(w http.ResponseWriter, r *http.Request) {
 		httpx.BadRequest(w, "mediaType is required")
 		return
 	}
-	formatIndex := -1
+	formatIndex, ok := resolveArtifactFormatIndex(w, artifact, mediaType)
+	if !ok {
+		return
+	}
+	sha256Hex, ok := s.receiveUploadedFile(w, r)
+	if !ok {
+		return
+	}
+	// No url is published for self-hosted content -- TEA 1.0 reserves that
+	// field for genuinely external locations (spec/openapi.yaml); this
+	// server's own content is instead retrieved via the artifact download
+	// endpoints (internal/api/artifactdownload.go), resolved from the
+	// checksum SetArtifactFormatFile records.
+	if _, err := s.repo.SetArtifactFormatFile(r.Context(), uuid, version, formatIndex, sha256Hex); err != nil {
+		if errors.Is(err, repo.ErrNotFound) {
+			httpx.NotFound(w)
+			return
+		}
+		httpx.InternalError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// resolveArtifactFormatIndex finds the index of the one format among
+// artifact.Formats whose MediaType matches mediaType exactly -- not a
+// positional array index (security review finding 14, docs/security-
+// review-publisher-design-260828.md). Writes the appropriate error
+// response and returns ok=false if none match (404) or more than one does
+// (400, ambiguous -- this draft has no server-assigned per-format id to
+// disambiguate that case).
+func resolveArtifactFormatIndex(w http.ResponseWriter, artifact tea.Artifact, mediaType string) (formatIndex int, ok bool) {
+	formatIndex = -1
 	for i, f := range artifact.Formats {
 		if f.MediaType != mediaType {
 			continue
 		}
 		if formatIndex != -1 {
 			httpx.BadRequest(w, "mediaType is ambiguous: more than one format of this artifact version shares it")
-			return
+			return -1, false
 		}
 		formatIndex = i
 	}
 	if formatIndex == -1 {
 		httpx.NotFound(w)
-		return
+		return -1, false
 	}
+	return formatIndex, true
+}
+
+// receiveUploadedFile extracts the "file" multipart field (already parsed
+// by ParseMultipartForm), stores it via the blob store, and records blob
+// bookkeeping -- shared by uploadArtifactFile and uploadArtifactSignatureFile,
+// which differ only in what they do with the resulting sha256Hex.
+func (s *Server) receiveUploadedFile(w http.ResponseWriter, r *http.Request) (sha256Hex string, ok bool) {
 	file, header, err := r.FormFile("file")
 	if err != nil {
 		httpx.BadRequest(w, "missing \"file\" form field: "+err.Error())
-		return
+		return "", false
 	}
 	defer func() { _ = file.Close() }()
 
 	sha256Hex, size, err := s.storage.Put(r.Context(), file)
 	if err != nil {
 		httpx.InternalError(w, r, err)
-		return
+		return "", false
 	}
 	if err := s.repo.UpsertBlob(r.Context(), sha256Hex, size, header.Header.Get("Content-Type")); err != nil {
 		httpx.InternalError(w, r, err)
+		return "", false
+	}
+	return sha256Hex, true
+}
+
+// uploadArtifactSignatureFile mirrors uploadArtifactFile, addressing the
+// target format by mediaType the same way, but stores the uploaded bytes as
+// the format's detached signature (artifact_format.signature_sha256)
+// instead of its content. Unlike uploadArtifactFile, this is not blocked by
+// an already-submitted evidence bundle: evidence attests to the format's
+// content checksum, which a signature upload never changes.
+func (s *Server) uploadArtifactSignatureFile(w http.ResponseWriter, r *http.Request) {
+	uuid, err := httpx.PathUUID(r, "uuid")
+	if err != nil {
+		httpx.BadRequest(w, "invalid uuid")
 		return
 	}
-	url := s.cfg.RootURL + "/files/" + sha256Hex
+	version, err := httpx.PathPositiveInt(r, "version")
+	if err != nil {
+		httpx.BadRequest(w, "invalid version")
+		return
+	}
 
-	if _, err := s.repo.SetArtifactFormatFile(r.Context(), uuid, version, formatIndex, url, sha256Hex); err != nil {
+	artifact, err := s.repo.GetArtifactByVersion(r.Context(), uuid, version)
+	if errors.Is(err, repo.ErrNotFound) {
+		httpx.NotFound(w)
+		return
+	}
+	if err != nil {
+		httpx.InternalError(w, r, err)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBody)
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		httpx.BadRequest(w, "invalid multipart form: "+err.Error())
+		return
+	}
+	mediaType := r.FormValue("mediaType")
+	if mediaType == "" {
+		httpx.BadRequest(w, "mediaType is required")
+		return
+	}
+	formatIndex, ok := resolveArtifactFormatIndex(w, artifact, mediaType)
+	if !ok {
+		return
+	}
+	sha256Hex, ok := s.receiveUploadedFile(w, r)
+	if !ok {
+		return
+	}
+	if _, err := s.repo.SetArtifactFormatSignatureFile(r.Context(), uuid, version, formatIndex, sha256Hex); err != nil {
 		if errors.Is(err, repo.ErrNotFound) {
 			httpx.NotFound(w)
 			return

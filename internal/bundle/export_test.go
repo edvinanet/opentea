@@ -95,7 +95,7 @@ func seedProduct(t *testing.T, r *repo.Repo, store storage.Storage) (productUUID
 	if err != nil {
 		t.Fatalf("CreateArtifact: %v", err)
 	}
-	if _, err := r.SetArtifactFormatFile(ctx, artifact.UUID, artifact.Version, 0, "http://source.example/files/"+formatSHA, formatSHA); err != nil {
+	if _, err := r.SetArtifactFormatFile(ctx, artifact.UUID, artifact.Version, 0, formatSHA); err != nil {
 		t.Fatalf("SetArtifactFormatFile: %v", err)
 	}
 	if _, err := r.CreateCollectionForComponentRelease(ctx, componentRelease.UUID, repo.CollectionInput{

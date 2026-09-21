@@ -121,7 +121,7 @@ func TestDownloadAndVerifyChecksumOK(t *testing.T) {
 		URL:       srv.URL + "/files/whatever",
 		Checksums: []tea.Checksum{{AlgType: tea.ChecksumTypeSHA256, AlgValue: hexSum}},
 	}
-	got, err := client.DownloadAndVerify(context.Background(), format)
+	got, err := client.DownloadAndVerify(context.Background(), "artifact-uuid", 1, format)
 	if err != nil {
 		t.Fatalf("DownloadAndVerify: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestDownloadAndVerifyChecksumMismatch(t *testing.T) {
 		URL:       srv.URL + "/files/whatever",
 		Checksums: []tea.Checksum{{AlgType: tea.ChecksumTypeSHA256, AlgValue: "0000000000000000000000000000000000000000000000000000000000000000"}},
 	}
-	if _, err := client.DownloadAndVerify(context.Background(), format); err == nil {
+	if _, err := client.DownloadAndVerify(context.Background(), "artifact-uuid", 1, format); err == nil {
 		t.Fatal("expected a checksum mismatch error")
 	}
 }
@@ -155,7 +155,7 @@ func TestDownloadAndVerifyRejectsOversizedResponse(t *testing.T) {
 	})
 
 	format := tea.ArtifactFormat{URL: srv.URL + "/files/whatever"}
-	if _, err := client.DownloadAndVerify(context.Background(), format); err == nil {
+	if _, err := client.DownloadAndVerify(context.Background(), "artifact-uuid", 1, format); err == nil {
 		t.Fatal("expected an error for a response exceeding maxDownloadAndVerifyBody")
 	}
 }
@@ -178,7 +178,7 @@ func TestDownloadAndVerifyToIgnoresDownloadAndVerifyLimit(t *testing.T) {
 		URL:       srv.URL + "/files/whatever",
 		Checksums: []tea.Checksum{{AlgType: tea.ChecksumTypeSHA256, AlgValue: hexSum}},
 	}
-	if err := client.DownloadAndVerifyTo(context.Background(), format, io.Discard); err != nil {
+	if err := client.DownloadAndVerifyTo(context.Background(), "artifact-uuid", 1, format, io.Discard); err != nil {
 		t.Fatalf("DownloadAndVerifyTo: %v, want success for content over DownloadAndVerify's (unrelated) limit", err)
 	}
 }
@@ -202,7 +202,7 @@ func TestDownloadAndVerifyToStreamsWithoutBuffering(t *testing.T) {
 		Checksums: []tea.Checksum{{AlgType: tea.ChecksumTypeSHA256, AlgValue: hexSum}},
 	}
 	var dst bytes.Buffer
-	if err := client.DownloadAndVerifyTo(context.Background(), format, &dst); err != nil {
+	if err := client.DownloadAndVerifyTo(context.Background(), "artifact-uuid", 1, format, &dst); err != nil {
 		t.Fatalf("DownloadAndVerifyTo: %v", err)
 	}
 	if dst.String() != string(content) {
@@ -225,12 +225,55 @@ func TestDownloadAndVerifyToDiscardsWithoutDownloadingWhenUnsupported(t *testing
 		URL:       srv.URL + "/files/whatever",
 		Checksums: []tea.Checksum{{AlgType: "BLAKE3", AlgValue: "deadbeef"}},
 	}
-	err := client.DownloadAndVerifyTo(context.Background(), format, io.Discard)
+	err := client.DownloadAndVerifyTo(context.Background(), "artifact-uuid", 1, format, io.Discard)
 	if err == nil {
 		t.Fatal("expected an unsupported-algorithm error")
 	}
 	if requested {
 		t.Fatal("expected the unsupported algorithm to be caught before any request was made")
+	}
+}
+
+// TestDownloadAndVerifyToSelfHostedUsesDownloadEndpoint is the regression
+// test for TEA 1.0's own conformance fix: when format.URL is empty
+// (self-hosted, spec/openapi.yaml reserves url for genuinely external
+// locations), DownloadAndVerifyTo must fetch from
+// /artifact/{uuid}/{version}/download?mediaType=... instead of erroring
+// out the way it used to when a format had no URL at all -- and must send
+// this client's bearer token there, unlike the external-URL path.
+func TestDownloadAndVerifyToSelfHostedUsesDownloadEndpoint(t *testing.T) {
+	content := []byte("hello, self-hosted tea client")
+	sum := sha256.Sum256(content)
+	hexSum := hex.EncodeToString(sum[:])
+
+	var gotPath, gotQuery, gotAuth string
+	client, _ := newFakeServer(t, func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotQuery = r.URL.RawQuery
+		gotAuth = r.Header.Get("Authorization")
+		_, _ = w.Write(content)
+	})
+	client.bearerToken = "self-hosted-token"
+
+	format := tea.ArtifactFormat{
+		MediaType: "application/vnd.cyclonedx+json",
+		Checksums: []tea.Checksum{{AlgType: tea.ChecksumTypeSHA256, AlgValue: hexSum}},
+	}
+	got, err := client.DownloadAndVerify(context.Background(), "artifact-uuid-1", 3, format)
+	if err != nil {
+		t.Fatalf("DownloadAndVerify: %v", err)
+	}
+	if string(got) != string(content) {
+		t.Fatalf("got %q, want %q", got, content)
+	}
+	if gotPath != "/artifact/artifact-uuid-1/3/download" {
+		t.Fatalf("path = %q, want the versioned download endpoint", gotPath)
+	}
+	if gotQuery != "mediaType=application%2Fvnd.cyclonedx%2Bjson" {
+		t.Fatalf("query = %q", gotQuery)
+	}
+	if gotAuth != "Bearer self-hosted-token" {
+		t.Fatalf("Authorization = %q, want the client's bearer token sent to this server's own endpoint", gotAuth)
 	}
 }
 

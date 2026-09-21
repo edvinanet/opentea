@@ -4,11 +4,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -110,6 +113,108 @@ func TestCICDAPIProxiesToRealTarget(t *testing.T) {
 	if len(draft.Artifacts) != 1 || draft.Artifacts[0].UUID != artifact.UUID {
 		t.Fatalf("target's own collection draft = %+v, want the proxied artifact", draft)
 	}
+}
+
+// TestCICDAPISignatureUploadProxiesToRealTarget covers the new
+// /cicdapi/v1/.../signature/files proxy operation (added alongside the
+// consumer-API artifact download endpoints, TEA 1.0 conformance) with the
+// same "prove it against the real other side" standard as
+// TestCICDAPIProxiesToRealTarget above: uploads a detached signature
+// through opentea-publisher's proxy, then confirms it landed on the real
+// target server by downloading it back through the target's own consumer
+// API (/tea/v1/.../signature/download), not just trusting the proxy's 204.
+func TestCICDAPISignatureUploadProxiesToRealTarget(t *testing.T) {
+	target := newTestServer(t)
+	fullToken := createPublisherCredential(t, target, "full-cred", model.PublisherScopeFull)
+	ctx := context.Background()
+
+	fullClient := teapublisherclient.NewClient(target.URL+"/publisher/v1", fullToken)
+	artifact, err := fullClient.CreateArtifact(ctx, teapublisher.ArtifactCreate{
+		Type:    "BOM",
+		Formats: []teapublisher.ArtifactFormatCreate{{MediaType: "application/vnd.cyclonedx+json"}},
+	})
+	if err != nil {
+		t.Fatalf("CreateArtifact: %v", err)
+	}
+
+	sqlDB, err := openteapublisher.Open(filepath.Join(t.TempDir(), "publisher.db"))
+	if err != nil {
+		t.Fatalf("openteapublisher.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	r := openteapublisher.New(sqlDB)
+
+	openteaTarget, err := r.CreateTarget(ctx, "test target", target.URL+"/publisher/v1", fullToken)
+	if err != nil {
+		t.Fatalf("CreateTarget: %v", err)
+	}
+	_, cicdToken, err := r.CreateCICDCredential(ctx, openteaTarget.UUID, "CI pipeline")
+	if err != nil {
+		t.Fatalf("CreateCICDCredential: %v", err)
+	}
+
+	opSrv := httptest.NewServer(openteapublisher.NewRouter(r, openteapublisher.Config{RootURL: "http://opentea-publisher.example"}))
+	t.Cleanup(opSrv.Close)
+
+	signature := []byte("fake-detached-signature-bytes")
+	status, body := cicdUploadFile(t, opSrv, cicdToken, "/cicdapi/v1/artifacts/"+artifact.UUID+"/1/signature/files", "application/vnd.cyclonedx+json", signature)
+	if status != http.StatusNoContent {
+		t.Fatalf("cicdapi signature upload: status=%d body=%s", status, body)
+	}
+
+	dlResp, err := http.Get(target.URL + "/tea/v1/artifact/" + artifact.UUID + "/latest/signature/download?mediaType=" + url.QueryEscape("application/vnd.cyclonedx+json"))
+	if err != nil {
+		t.Fatalf("GET signature download against target: %v", err)
+	}
+	dlBody, _ := io.ReadAll(dlResp.Body)
+	_ = dlResp.Body.Close()
+	if dlResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET signature download against target: status=%d body=%s", dlResp.StatusCode, dlBody)
+	}
+	if string(dlBody) != string(signature) {
+		t.Fatalf("downloaded signature = %q, want %q", dlBody, signature)
+	}
+}
+
+// cicdUploadFile POSTs a multipart file upload (with a "mediaType" form
+// field) to an opentea-publisher /cicdapi/v1 server, mirroring
+// publisher_test.go's publisherUploadFile but for a bare *httptest.Server
+// (opentea-publisher's own test servers aren't wrapped in this package's
+// testServer type).
+func cicdUploadFile(t *testing.T, srv *httptest.Server, token, path, mediaType string, content []byte) (int, []byte) {
+	t.Helper()
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	if err := w.WriteField("mediaType", mediaType); err != nil {
+		t.Fatalf("write mediaType field: %v", err)
+	}
+	part, err := w.CreateFormFile("file", "signature.bin")
+	if err != nil {
+		t.Fatalf("create form file: %v", err)
+	}
+	if _, err := part.Write(content); err != nil {
+		t.Fatalf("write file content: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+path, &buf)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST %s: %v", path, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read response body: %v", err)
+	}
+	return resp.StatusCode, respBody
 }
 
 // TestCICDAPIRejectsFullScopedOperationEvenIfAttempted confirms an

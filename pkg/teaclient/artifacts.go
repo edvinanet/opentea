@@ -12,11 +12,11 @@ import (
 	"crypto/sha3"
 	"crypto/sha512"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"hash"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -47,18 +47,19 @@ func (c *Client) GetArtifactByVersion(ctx context.Context, uuid string, version 
 // response in memory, so only it needs a cap.
 const maxDownloadAndVerifyBody = maxResponseBody
 
-// DownloadAndVerify fetches format.URL, verifies it against every checksum
-// format declares, and returns the full downloaded bytes, capped at
-// maxDownloadAndVerifyBody. It's a thin wrapper around DownloadAndVerifyTo
-// for callers that want the content in memory; callers that only need
-// verification (or want to stream to disk) should call DownloadAndVerifyTo
-// directly with io.Discard (or a file) as dst instead, which never buffers
-// the download at all and isn't subject to this limit -- for artifacts
-// that may exceed it, prefer that instead of this convenience method.
-func (c *Client) DownloadAndVerify(ctx context.Context, format tea.ArtifactFormat) ([]byte, error) {
+// DownloadAndVerify fetches artifactUUID/version/format's content, verifies
+// it against every checksum format declares, and returns the full
+// downloaded bytes, capped at maxDownloadAndVerifyBody. It's a thin
+// wrapper around DownloadAndVerifyTo for callers that want the content in
+// memory; callers that only need verification (or want to stream to disk)
+// should call DownloadAndVerifyTo directly with io.Discard (or a file) as
+// dst instead, which never buffers the download at all and isn't subject
+// to this limit -- for artifacts that may exceed it, prefer that instead
+// of this convenience method.
+func (c *Client) DownloadAndVerify(ctx context.Context, artifactUUID string, version int, format tea.ArtifactFormat) ([]byte, error) {
 	var buf bytes.Buffer
 	lw := &limitWriter{w: &buf, remaining: maxDownloadAndVerifyBody}
-	if err := c.DownloadAndVerifyTo(ctx, format, lw); err != nil {
+	if err := c.DownloadAndVerifyTo(ctx, artifactUUID, version, format, lw); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), nil
@@ -86,31 +87,51 @@ func (lw *limitWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-// DownloadAndVerifyTo streams format.URL's content into dst while checking
-// it against every checksum format declares -- unlike DownloadAndVerify,
-// the download is never buffered in memory (pass io.Discard as dst to
-// verify without keeping the content at all, bounding a CLI or embedding
+// DownloadAndVerifyTo streams a format's content into dst while checking it
+// against every checksum format declares -- unlike DownloadAndVerify, the
+// download is never buffered in memory (pass io.Discard as dst to verify
+// without keeping the content at all, bounding a CLI or embedding
 // application's memory use regardless of how large a malicious or
-// malfunctioning remote server's response is). Returns an error naming the
-// first unsupported algorithm or mismatch found (checked in format.Checksums
-// order, once the whole body has been read and hashed), nil if all declared
-// checksums match, or if none are declared -- an artifact-format with no
-// checksums is spec-valid, just unverifiable. BLAKE3 is not yet supported
-// (no stdlib or golang.org/x/crypto implementation without adding a new
+// malfunctioning remote server's response is). artifactUUID/version
+// identify the artifact format belongs to -- TEA 1.0 (spec/openapi.yaml)
+// reserves format.URL for genuinely external locations; when it's empty,
+// content is self-hosted and retrieved from the TEA server's own
+// /artifact/{uuid}/{version}/download endpoint instead, selecting this
+// format by its mediaType (format itself carries no back-reference to its
+// owning artifact, hence these two extra parameters). External URLs are
+// fetched without this client's bearer token, matching the spec's own
+// rule ("A TEA access token is sent only to the TEA server's own API base
+// URL"); the self-hosted request does carry it, same as every other call
+// this client makes. Returns an error naming the first unsupported
+// algorithm or mismatch found (checked in format.Checksums order, once the
+// whole body has been read and hashed), nil if all declared checksums
+// match, or if none are declared -- an artifact-format with no checksums
+// is spec-valid, just unverifiable. BLAKE3 is not yet supported (no
+// stdlib or golang.org/x/crypto implementation without adding a new
 // dependency); an unsupported algorithm is caught before the download
 // starts, not after.
-func (c *Client) DownloadAndVerifyTo(ctx context.Context, format tea.ArtifactFormat, dst io.Writer) error {
-	if format.URL == "" {
-		return errors.New("teaclient: artifact format has no URL")
-	}
+func (c *Client) DownloadAndVerifyTo(ctx context.Context, artifactUUID string, version int, format tea.ArtifactFormat, dst io.Writer) error {
 	hashers, err := newChecksumHashers(format.Checksums)
 	if err != nil {
 		return err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, format.URL, nil)
-	if err != nil {
-		return err
+	var req *http.Request
+	if format.URL != "" {
+		req, err = http.NewRequestWithContext(ctx, http.MethodGet, format.URL, nil)
+		if err != nil {
+			return err
+		}
+	} else {
+		u := c.baseURL + "/artifact/" + artifactUUID + "/" + strconv.Itoa(version) +
+			"/download?mediaType=" + url.QueryEscape(format.MediaType)
+		req, err = http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+		if err != nil {
+			return err
+		}
+		if c.bearerToken != "" {
+			req.Header.Set("Authorization", "Bearer "+c.bearerToken)
+		}
 	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

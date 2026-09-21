@@ -349,13 +349,19 @@ func TestWorkedExample(t *testing.T) {
 	if len(withCollection.LatestCollection.Artifacts) != 1 {
 		t.Fatalf("latestCollection.Artifacts = %+v, want 1", withCollection.LatestCollection.Artifacts)
 	}
-	artifactURL := withCollection.LatestCollection.Artifacts[0].Formats[0].URL
-	if artifactURL == "" {
-		t.Fatal("expected artifact format URL to be set")
+	downloadArtifact := withCollection.LatestCollection.Artifacts[0]
+	downloadFormat := downloadArtifact.Formats[0]
+	// TEA 1.0 (spec/openapi.yaml): url is reserved for genuinely external
+	// locations -- self-hosted content uploaded above must leave it empty,
+	// retrievable only via the new artifact download endpoint instead.
+	if downloadFormat.URL != "" {
+		t.Fatalf("Formats[0].URL = %q, want empty for self-hosted content", downloadFormat.URL)
 	}
 
-	// Fetch the uploaded artifact bytes back out and confirm they round-trip.
-	resp, err := http.Get(artifactURL)
+	// Fetch the uploaded artifact bytes back out via the new download
+	// endpoint and confirm they round-trip.
+	resp, err := http.Get(srv.URL + "/tea/v1/artifact/" + downloadArtifact.UUID + "/" + strconv.Itoa(downloadArtifact.Version) +
+		"/download?mediaType=" + url.QueryEscape(downloadFormat.MediaType))
 	if err != nil {
 		t.Fatalf("GET artifact file: %v", err)
 	}

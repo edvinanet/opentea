@@ -29,12 +29,17 @@ func TestArtifactCreateGetAndUploadFile(t *testing.T) {
 		t.Fatalf("Formats = %+v", a.Formats)
 	}
 
-	updated, err := r.SetArtifactFormatFile(ctx, a.UUID, a.Version, 0, "http://localhost/files/deadbeef", "deadbeef")
+	updated, err := r.SetArtifactFormatFile(ctx, a.UUID, a.Version, 0, "deadbeef")
 	if err != nil {
 		t.Fatalf("SetArtifactFormatFile: %v", err)
 	}
-	if updated.Formats[0].URL != "http://localhost/files/deadbeef" {
-		t.Fatalf("URL = %q", updated.Formats[0].URL)
+	// TEA 1.0 (spec/openapi.yaml): url is reserved for genuinely external
+	// locations -- self-hosted content (this call) must leave it empty, not
+	// populate it with this server's own link. Content-Location is what
+	// the new download endpoints publish instead; url itself is presence-
+	// tested here, not asserted as some particular self-referential value.
+	if updated.Formats[0].URL != "" {
+		t.Fatalf("URL = %q, want empty for self-hosted content", updated.Formats[0].URL)
 	}
 	if len(updated.Formats[0].Checksums) != 1 || updated.Formats[0].Checksums[0].AlgValue != "deadbeef" {
 		t.Fatalf("Checksums = %+v", updated.Formats[0].Checksums)
@@ -44,8 +49,8 @@ func TestArtifactCreateGetAndUploadFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetArtifactLatest: %v", err)
 	}
-	if latest.Formats[0].URL != "http://localhost/files/deadbeef" {
-		t.Fatalf("latest.Formats[0].URL = %q", latest.Formats[0].URL)
+	if latest.Formats[0].URL != "" {
+		t.Fatalf("latest.Formats[0].URL = %q, want empty for self-hosted content", latest.Formats[0].URL)
 	}
 
 	byVersion, err := r.GetArtifactByVersion(ctx, a.UUID, 1)
@@ -65,7 +70,7 @@ func TestArtifactSetFileInvalidFormatIndex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateArtifact: %v", err)
 	}
-	if _, err := r.SetArtifactFormatFile(ctx, a.UUID, a.Version, 5, "http://x", "hash"); err != ErrNotFound {
+	if _, err := r.SetArtifactFormatFile(ctx, a.UUID, a.Version, 5, "hash"); err != ErrNotFound {
 		t.Fatalf("err = %v, want ErrNotFound", err)
 	}
 }
@@ -101,7 +106,7 @@ func TestArtifactRevisionStartsAtOneAndBumpsOnFileUpload(t *testing.T) {
 		t.Fatalf("revision = %d, want 1 for a freshly created artifact", rev)
 	}
 
-	if _, err := r.SetArtifactFormatFile(ctx, a.UUID, a.Version, 0, "http://localhost/files/deadbeef", "deadbeef"); err != nil {
+	if _, err := r.SetArtifactFormatFile(ctx, a.UUID, a.Version, 0, "deadbeef"); err != nil {
 		t.Fatalf("SetArtifactFormatFile: %v", err)
 	}
 	rev, err = r.GetArtifactRevision(ctx, a.UUID, a.Version)
@@ -114,7 +119,7 @@ func TestArtifactRevisionStartsAtOneAndBumpsOnFileUpload(t *testing.T) {
 
 	// A second upload (a different format, say) bumps it again -- not
 	// reset, not left alone.
-	if _, err := r.SetArtifactFormatFile(ctx, a.UUID, a.Version, 0, "http://localhost/files/othersum", "othersum"); err != nil {
+	if _, err := r.SetArtifactFormatFile(ctx, a.UUID, a.Version, 0, "othersum"); err != nil {
 		t.Fatalf("SetArtifactFormatFile (2nd): %v", err)
 	}
 	rev, err = r.GetArtifactRevision(ctx, a.UUID, a.Version)
@@ -130,5 +135,104 @@ func TestGetArtifactRevisionNotFound(t *testing.T) {
 	r := newTestRepo(t)
 	if _, err := r.GetArtifactRevision(context.Background(), "00000000-0000-4000-8000-000000000000", 1); err != ErrNotFound {
 		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+}
+
+// TestGetArtifactFormatForDownload covers GetArtifactFormatForDownload's
+// full outcome matrix: self-hosted (sha256Hex set), external (externalURL
+// set, case-insensitive mediaType match), no matching format at all
+// (ErrNoMatchingFormat), and a matched-but-not-yet-uploaded format
+// (ErrNotFound -- the documented asymmetry vs. signatures).
+func TestGetArtifactFormatForDownload(t *testing.T) {
+	ctx := context.Background()
+	r := newTestRepo(t)
+
+	a, err := r.CreateArtifact(ctx, ArtifactInput{Type: "BOM", Formats: []ArtifactFormatInput{
+		{MediaType: "application/vnd.cyclonedx+json"},
+	}})
+	if err != nil {
+		t.Fatalf("CreateArtifact: %v", err)
+	}
+	if _, err := r.SetArtifactFormatFile(ctx, a.UUID, a.Version, 0, "deadbeef"); err != nil {
+		t.Fatalf("SetArtifactFormatFile: %v", err)
+	}
+
+	// External-url formats aren't reachable through the normal
+	// create-then-upload flow at all (ArtifactFormatInput has no URL field
+	// -- only ImportArtifact, used by bundle import, can set one), so build
+	// a second artifact revision via ImportArtifact to cover that branch.
+	if _, err := r.ImportArtifact(ctx, ImportArtifactInput{
+		UUID: a.UUID, Version: 2, Type: "BOM",
+		Formats: []ImportArtifactFormatInput{
+			{MediaType: "application/spdx+json", URL: "https://example.com/external.json"},
+		},
+	}); err != nil {
+		t.Fatalf("ImportArtifact: %v", err)
+	}
+
+	sha256Hex, externalURL, err := r.GetArtifactFormatForDownload(ctx, a.UUID, a.Version, "APPLICATION/VND.CYCLONEDX+JSON")
+	if err != nil {
+		t.Fatalf("self-hosted lookup (case-insensitive): %v", err)
+	}
+	if sha256Hex != "deadbeef" || externalURL != "" {
+		t.Fatalf("self-hosted lookup = (%q, %q), want (deadbeef, \"\")", sha256Hex, externalURL)
+	}
+
+	sha256Hex, externalURL, err = r.GetArtifactFormatForDownload(ctx, a.UUID, 2, "application/spdx+json")
+	if err != nil {
+		t.Fatalf("external lookup: %v", err)
+	}
+	if externalURL != "https://example.com/external.json" || sha256Hex != "" {
+		t.Fatalf("external lookup = (%q, %q), want (\"\", https://example.com/external.json)", sha256Hex, externalURL)
+	}
+
+	if _, _, err := r.GetArtifactFormatForDownload(ctx, a.UUID, a.Version, "application/does-not-exist"); err != ErrNoMatchingFormat {
+		t.Fatalf("no matching format: err = %v, want ErrNoMatchingFormat", err)
+	}
+
+	a2, err := r.CreateArtifact(ctx, ArtifactInput{Type: "BOM", Formats: []ArtifactFormatInput{{MediaType: "application/json"}}})
+	if err != nil {
+		t.Fatalf("CreateArtifact (2nd): %v", err)
+	}
+	if _, _, err := r.GetArtifactFormatForDownload(ctx, a2.UUID, a2.Version, "application/json"); err != ErrNotFound {
+		t.Fatalf("matched but not yet uploaded: err = %v, want ErrNotFound", err)
+	}
+
+	if _, _, err := r.GetArtifactFormatForDownload(ctx, "00000000-0000-4000-8000-000000000000", 1, "application/json"); err != ErrNotFound {
+		t.Fatalf("nonexistent artifact: err = %v, want ErrNotFound", err)
+	}
+}
+
+// TestGetArtifactFormatForSignatureDownload covers the SIGNATURE_NOT_FOUND/
+// ErrNoMatchingFormat distinction: a real format with no signature at all
+// is ErrSignatureNotFound (spec-defined, not existence-hiding), while a
+// mediaType matching no format is ErrNoMatchingFormat, same as content.
+func TestGetArtifactFormatForSignatureDownload(t *testing.T) {
+	ctx := context.Background()
+	r := newTestRepo(t)
+
+	a, err := r.CreateArtifact(ctx, ArtifactInput{Type: "BOM", Formats: []ArtifactFormatInput{
+		{MediaType: "application/vnd.cyclonedx+json"},
+	}})
+	if err != nil {
+		t.Fatalf("CreateArtifact: %v", err)
+	}
+
+	if _, _, err := r.GetArtifactFormatForSignatureDownload(ctx, a.UUID, a.Version, "application/vnd.cyclonedx+json"); err != ErrSignatureNotFound {
+		t.Fatalf("no signature published: err = %v, want ErrSignatureNotFound", err)
+	}
+	if _, _, err := r.GetArtifactFormatForSignatureDownload(ctx, a.UUID, a.Version, "application/does-not-exist"); err != ErrNoMatchingFormat {
+		t.Fatalf("no matching format: err = %v, want ErrNoMatchingFormat", err)
+	}
+
+	if _, err := r.SetArtifactFormatSignatureFile(ctx, a.UUID, a.Version, 0, "sigsha256"); err != nil {
+		t.Fatalf("SetArtifactFormatSignatureFile: %v", err)
+	}
+	sha256Hex, externalURL, err := r.GetArtifactFormatForSignatureDownload(ctx, a.UUID, a.Version, "application/vnd.cyclonedx+json")
+	if err != nil {
+		t.Fatalf("self-hosted signature lookup: %v", err)
+	}
+	if sha256Hex != "sigsha256" || externalURL != "" {
+		t.Fatalf("self-hosted signature lookup = (%q, %q), want (sigsha256, \"\")", sha256Hex, externalURL)
 	}
 }

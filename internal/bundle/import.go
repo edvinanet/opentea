@@ -332,7 +332,7 @@ func importArtifact(ctx context.Context, r *repo.Repo, a tea.Artifact, sha256ToU
 		formats = append(formats, repo.ImportArtifactFormatInput{
 			MediaType:    f.MediaType,
 			Description:  f.Description,
-			URL:          rewriteURL(f.Checksums, sha256ToURL, f.URL),
+			URL:          selfHostedOrURL(f.Checksums, sha256ToURL, f.URL),
 			SignatureURL: f.SignatureURL,
 			Checksums:    f.Checksums,
 		})
@@ -357,12 +357,38 @@ func importArtifact(ctx context.Context, r *repo.Repo, a tea.Artifact, sha256ToU
 // server's own root URL rather than reusing the source server's original
 // (which wouldn't resolve here). Falls back to the manifest's original URL
 // if no SHA-256 checksum is present to key off of (e.g. a
-// not-yet-uploaded/reference-only entry).
+// not-yet-uploaded/reference-only entry). Used by importDistribution --
+// distributions have no TEA-hosted download endpoint of their own (unlike
+// artifact formats, see selfHostedOrURL below), so a distribution's url
+// must always resolve to *something*, even for embedded/self-hosted
+// content; that's a separate, not-yet-revisited question from this
+// artifact-download conformance pass (TODO.md) and deliberately untouched
+// here.
 func rewriteURL(checksums []tea.Checksum, sha256ToURL map[string]string, fallback string) string {
 	for _, c := range checksums {
 		if c.AlgType == tea.ChecksumTypeSHA256 {
 			if url, ok := sha256ToURL[c.AlgValue]; ok {
 				return url
+			}
+		}
+	}
+	return fallback
+}
+
+// selfHostedOrURL is rewriteURL's artifact-format-specific counterpart:
+// TEA 1.0 (spec/openapi.yaml) reserves an artifact-format's url for
+// genuinely external locations, so unlike rewriteURL this returns "" --
+// not a rewritten self-referential URL -- when the checksum matches a
+// blob embedded in the bundle (self-hosted, retrieved via the new
+// artifact download endpoints instead, internal/api/artifactdownload.go).
+// Falls back to the manifest's original url only when the checksum
+// doesn't match an embedded blob, i.e. it really was external in the
+// source.
+func selfHostedOrURL(checksums []tea.Checksum, sha256ToURL map[string]string, fallback string) string {
+	for _, c := range checksums {
+		if c.AlgType == tea.ChecksumTypeSHA256 {
+			if _, ok := sha256ToURL[c.AlgValue]; ok {
+				return ""
 			}
 		}
 	}

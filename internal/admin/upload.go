@@ -120,12 +120,72 @@ func (s *Server) uploadArtifactFormatFile(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	url, sha256Hex, ok := s.receiveFile(w, r)
+	// receiveFile's returned URL is discarded here -- TEA 1.0's url field is
+	// reserved for genuinely external locations (spec/openapi.yaml); this
+	// server's own /files/{sha256} link is no longer published as it, and
+	// self-hosted content is instead retrieved via the artifact download
+	// endpoints (internal/api/artifactdownload.go), resolved from the
+	// checksum SetArtifactFormatFile records.
+	_, sha256Hex, ok := s.receiveFile(w, r)
 	if !ok {
 		return
 	}
 
-	a, err := s.repo.SetArtifactFormatFile(r.Context(), uuid, version, formatIndex, url, sha256Hex)
+	a, err := s.repo.SetArtifactFormatFile(r.Context(), uuid, version, formatIndex, sha256Hex)
+	if errors.Is(err, repo.ErrNotFound) {
+		httpx.NotFound(w)
+		return
+	}
+	if err != nil {
+		httpx.InternalError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, a)
+}
+
+// uploadArtifactFormatSignatureFile mirrors uploadArtifactFormatFile exactly,
+// but stores the uploaded bytes as the format's detached signature
+// (artifact_format.signature_sha256) instead of its content.
+func (s *Server) uploadArtifactFormatSignatureFile(w http.ResponseWriter, r *http.Request) {
+	uuid, err := httpx.PathUUID(r, "uuid")
+	if err != nil {
+		httpx.BadRequest(w, "invalid uuid")
+		return
+	}
+	version, err := httpx.PathPositiveInt(r, "version")
+	if err != nil {
+		httpx.BadRequest(w, "invalid version")
+		return
+	}
+	formatIndex := 0
+	if v := r.URL.Query().Get("formatIndex"); v != "" {
+		formatIndex, err = strconv.Atoi(v)
+		if err != nil || formatIndex < 0 {
+			httpx.BadRequest(w, "invalid formatIndex")
+			return
+		}
+	}
+
+	artifact, err := s.repo.GetArtifactByVersion(r.Context(), uuid, version)
+	if errors.Is(err, repo.ErrNotFound) {
+		httpx.NotFound(w)
+		return
+	}
+	if err != nil {
+		httpx.InternalError(w, r, err)
+		return
+	}
+	if formatIndex >= len(artifact.Formats) {
+		httpx.NotFound(w)
+		return
+	}
+
+	_, sha256Hex, ok := s.receiveFile(w, r)
+	if !ok {
+		return
+	}
+
+	a, err := s.repo.SetArtifactFormatSignatureFile(r.Context(), uuid, version, formatIndex, sha256Hex)
 	if errors.Is(err, repo.ErrNotFound) {
 		httpx.NotFound(w)
 		return

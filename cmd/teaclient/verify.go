@@ -46,7 +46,7 @@ func runVerify(args []string) error {
 		// buffering the whole download -- this command's memory use should
 		// stay bounded no matter how large a malicious or malfunctioning
 		// server's response is.
-		verr := client.DownloadAndVerifyTo(ctx, format, io.Discard)
+		verr := client.DownloadAndVerifyTo(ctx, uuid, art.Version, format, io.Discard)
 		results[i] = formatVerifyResult{FormatIndex: i, MediaType: format.MediaType, OK: verr == nil}
 		if verr != nil {
 			anyFail = true

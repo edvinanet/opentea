@@ -48,7 +48,7 @@ func newTestServer(t *testing.T) (*httptest.Server, *repo.Repo, storage.Storage)
 	cfg.RootURL = srv.URL
 
 	mux := http.NewServeMux()
-	mux.Handle(cfg.APIBasePath+"/", api.NewRouter(r, cfg))
+	mux.Handle(cfg.APIBasePath+"/", api.NewRouter(r, blobStore, cfg))
 	mux.Handle("/admin/v1/", admin.NewRouter(r, blobStore, cfg, time.Now()))
 	mux.Handle("/files/", files.NewHandler(r, blobStore))
 	srv.Config.Handler = mux
@@ -105,7 +105,7 @@ func TestClientAgainstRealServer(t *testing.T) {
 	if err := r.UpsertBlob(ctx, sha256Hex, int64(len(sbomContent)), "application/vnd.cyclonedx+json"); err != nil {
 		t.Fatalf("UpsertBlob: %v", err)
 	}
-	artifact, err = r.SetArtifactFormatFile(ctx, artifact.UUID, artifact.Version, 0, srv.URL+"/files/"+sha256Hex, sha256Hex)
+	artifact, err = r.SetArtifactFormatFile(ctx, artifact.UUID, artifact.Version, 0, sha256Hex)
 	if err != nil {
 		t.Fatalf("SetArtifactFormatFile: %v", err)
 	}
@@ -157,8 +157,9 @@ func TestClientAgainstRealServer(t *testing.T) {
 		t.Fatalf("LatestCollection.Artifacts = %+v", withCollection.LatestCollection.Artifacts)
 	}
 
-	format := withCollection.LatestCollection.Artifacts[0].Formats[0]
-	downloaded, err := client.DownloadAndVerify(ctx, format)
+	downloadArtifact := withCollection.LatestCollection.Artifacts[0]
+	format := downloadArtifact.Formats[0]
+	downloaded, err := client.DownloadAndVerify(ctx, downloadArtifact.UUID, downloadArtifact.Version, format)
 	if err != nil {
 		t.Fatalf("DownloadAndVerify: %v", err)
 	}

@@ -136,6 +136,49 @@ func (s *Server) cicdUploadArtifactFile(w http.ResponseWriter, r *http.Request, 
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// cicdUploadArtifactSignatureFile mirrors cicdUploadArtifactFile exactly,
+// proxying to the target's UploadArtifactSignatureFile instead.
+func (s *Server) cicdUploadArtifactSignatureFile(w http.ResponseWriter, r *http.Request, targetUUID string) {
+	uuid, err := httpx.PathUUID(r, "uuid")
+	if err != nil {
+		httpx.BadRequest(w, "invalid uuid")
+		return
+	}
+	version, err := httpx.PathPositiveInt(r, "version")
+	if err != nil {
+		httpx.BadRequest(w, "invalid version")
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxCICDUploadBody)
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		httpx.BadRequest(w, "invalid multipart form: "+err.Error())
+		return
+	}
+	mediaType := r.FormValue("mediaType")
+	if mediaType == "" {
+		httpx.BadRequest(w, "mediaType is required")
+		return
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		httpx.BadRequest(w, "missing \"file\" form field: "+err.Error())
+		return
+	}
+	defer func() { _ = file.Close() }()
+
+	client, err := s.clientForTarget(r.Context(), targetUUID)
+	if err != nil {
+		httpx.InternalError(w, r, err)
+		return
+	}
+	if err := client.UploadArtifactSignatureFile(r.Context(), uuid, version, mediaType, header.Filename, file); err != nil {
+		writeClientError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) cicdPrepareArtifactEvidence(w http.ResponseWriter, r *http.Request, targetUUID string) {
 	uuid, err := httpx.PathUUID(r, "uuid")
 	if err != nil {
@@ -392,6 +435,7 @@ func (s *Server) cicdCommitCollectionDraft(ops collectionDraftOps) cicdHandler {
 func (s *Server) registerCICDRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /cicdapi/v1/artifacts", s.requireCICDCredential(s.cicdCreateArtifact))
 	mux.HandleFunc("POST /cicdapi/v1/artifacts/{uuid}/{version}/files", s.requireCICDCredential(s.cicdUploadArtifactFile))
+	mux.HandleFunc("POST /cicdapi/v1/artifacts/{uuid}/{version}/signature/files", s.requireCICDCredential(s.cicdUploadArtifactSignatureFile))
 	mux.HandleFunc("POST /cicdapi/v1/artifacts/{uuid}/{version}/evidence/prepare", s.requireCICDCredential(s.cicdPrepareArtifactEvidence))
 	mux.HandleFunc("POST /cicdapi/v1/artifacts/{uuid}/{version}/evidence", s.requireCICDCredential(s.cicdSubmitArtifactEvidence))
 

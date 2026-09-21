@@ -37,5 +37,19 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET "+base+"/artifact/{uuid}/latest", s.getLatestArtifact)
 	mux.HandleFunc("GET "+base+"/artifact/{uuid}/{artifactVersion}", s.getArtifactByVersion)
 
+	// TEA 1.0 (spec/openapi.yaml): artifact content/signature download,
+	// both GET and HEAD. Registered without a method prefix (matching any
+	// method, then guarded by requireGetOrHead below) rather than separate
+	// "GET "/"HEAD " patterns -- Go's ServeMux rejects that combination
+	// here: a wildcard HEAD pattern (.../{artifactVersion}/...) and a
+	// literal GET pattern (.../latest/...) for an overlapping path panic
+	// at registration ("matches fewer methods... but has a more general
+	// path pattern"), a known ServeMux corner case when literal and
+	// wildcard segments mix across methods.
+	mux.HandleFunc(base+"/artifact/{uuid}/latest/download", requireGetOrHead(s.downloadLatestArtifact))
+	mux.HandleFunc(base+"/artifact/{uuid}/{artifactVersion}/download", requireGetOrHead(s.downloadArtifactByVersion))
+	mux.HandleFunc(base+"/artifact/{uuid}/latest/signature/download", requireGetOrHead(s.downloadLatestArtifactSignature))
+	mux.HandleFunc(base+"/artifact/{uuid}/{artifactVersion}/signature/download", requireGetOrHead(s.downloadArtifactSignatureByVersion))
+
 	mux.HandleFunc("GET "+base+"/discovery", s.discovery)
 }

@@ -190,7 +190,7 @@ func newAdminMux(r *repo.Repo, blobStore storage.Storage, cfg config.Config, sta
 }
 
 func registerAPIRoutes(mux *http.ServeMux, r *repo.Repo, blobStore storage.Storage, cfg config.Config) {
-	mux.Handle(cfg.APIBasePath+"/", api.NewRouter(r, cfg))
+	mux.Handle(cfg.APIBasePath+"/", api.NewRouter(r, blobStore, cfg))
 	mux.Handle("/files/", files.NewHandler(r, blobStore))
 }
 

@@ -1,11 +1,25 @@
 openapi: 3.1.0
 info:
   title: TEA Publisher API
-  version: 0.10.0-draft
+  version: 0.11.0-draft
   description: |
-    **Status: draft v0.10, for discussion. opentea's own server-side implementation
+    **Status: draft v0.11, for discussion. opentea's own server-side implementation
     exists (`internal/publisher`) but this document is still a draft, not approved by
     CycloneDX or any TEA working group.**
+
+    v0.11: TEA 1.0 conformance — new `uploadArtifactSignatureFile` operation, alongside a
+    fix to `formats[].url`/`formats[].signatureUrl` semantics on the consumer API side
+    (`spec/openapi.yaml`, not this document): both are now populated only for genuinely
+    external locations, never opentea's own storage; self-hosted content and signatures
+    are instead retrieved via four new consumer-API download endpoints
+    (`/artifact/{uuid}/{latest|version}/download` and their `/signature/download`
+    counterparts — strong `ETag`/`If-None-Match`, `HEAD`, `Content-Location`, `mediaType`/
+    `Accept`-based format selection, `302` redirect for external locations, `406` for no
+    matching format, `404` for a concealed/nonexistent artifact and, separately, for a real
+    format with no signature published). This is a behavior change for any existing
+    self-hosted-content consumer relying on `formats[].url` being populated. `TODO.md`
+    records the deferred question of whether `release_distribution.url` (which has no
+    TEA-hosted download endpoint at all, unlike artifact formats) needs the same treatment.
 
     v0.10: three fixes from an external security review of this document and
     `design/publisher-service.md` (docs/security-review-publisher-design-260828.md,
@@ -430,6 +444,47 @@ paths:
             per-request rejection at all. One of three plausible status codes for this
             specific case (429, 507, 403 all have an argument, §15.1's own open
             question); not settled here.
+
+  /artifacts/{artifactUuid}/{version}/signature/files:
+    post:
+      operationId: uploadArtifactSignatureFile
+      tags: [Artifacts]
+      summary: >-
+        Upload a detached signature for one of the artifact's formats, selected by
+        `mediaType` the same way as `uploadArtifactFile` (v0.11, TEA 1.0 conformance —
+        `spec/openapi.yaml`'s `formats[].signatureUrl` is now documented as always an
+        external location; a target may instead host the signature itself, retrievable via
+        the TEA consumer API's own `.../signature/download` operation). Unlike
+        `uploadArtifactFile`, never rejected once evidence has been submitted for this
+        artifact version — evidence attests to the format's content checksum, which a
+        signature upload never changes. Subject to the same per-upload size limit and
+        per-principal quota as `uploadArtifactFile` (§15, §15.1).
+      parameters:
+        - $ref: '#/components/parameters/ArtifactUuid'
+        - $ref: '#/components/parameters/ArtifactVersion'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [mediaType, file]
+              properties:
+                mediaType:
+                  type: string
+                  description: >-
+                    Selects which of the artifact's formats this signature belongs to, by
+                    the same `mediaType` value that format was created with — identical
+                    selection rule and `404`/`400`-ambiguous behavior as
+                    `uploadArtifactFile`.
+                file: { type: string, format: binary }
+      responses:
+        '204': { description: Uploaded. }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '413':
+          description: File exceeds the target's per-upload size limit (§15.1).
+        '429':
+          description: This principal's outstanding-bytes/count quota is exhausted (§15.1).
 
   /artifacts/{artifactUuid}/{version}/evidence/prepare:
     post:

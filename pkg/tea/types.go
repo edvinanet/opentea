@@ -137,13 +137,23 @@ type Collection struct {
 type ArtifactFormat struct {
 	MediaType   string `json:"mediaType"`
 	Description string `json:"description,omitempty"`
-	URL         string `json:"url,omitempty"`
-	// SignatureURL is a legacy/simple detached-signature pointer for
-	// deployments that don't claim the TEA Trust Architecture profile --
-	// it is not verified or otherwise interpreted by this server. Retained
-	// for backward wire compatibility rather than replaced outright.
-	// EvidenceBundle/EvidenceBundleRef below are what make a deployment
-	// trust-architecture-conformant.
+	// URL is always a location outside this TEA API (TEA 1.0,
+	// spec/openapi.yaml). Empty means the content is self-hosted -- retrieve
+	// it via the artifact download endpoints
+	// (GET .../artifact/{uuid}/{latest|version}/download) instead, resolved
+	// server-side from the checksum SetArtifactFormatFile records. A
+	// self-hosted format's URL is never populated with this server's own
+	// storage location, even indirectly.
+	URL string `json:"url,omitempty"`
+	// SignatureURL, like URL above, is always a location outside this TEA
+	// API when set (TEA 1.0) -- not verified or otherwise interpreted by
+	// this server, and not part of the TEA Trust Architecture profile
+	// (EvidenceBundle/EvidenceBundleRef below are what make a deployment
+	// trust-architecture-conformant). Empty does not mean no signature
+	// exists: this server may host a self-hosted signature instead,
+	// retrievable via GET .../artifact/{uuid}/{latest|version}/signature/download
+	// (a 404 SIGNATURE_NOT_FOUND there means no signature at all, self-hosted
+	// or otherwise).
 	SignatureURL string     `json:"signatureUrl,omitempty"`
 	Checksums    []Checksum `json:"checksums,omitempty"`
 

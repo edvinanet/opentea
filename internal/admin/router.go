@@ -50,6 +50,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 
 	mux.HandleFunc("POST /admin/v1/artifacts", s.requireRole(admin, s.createArtifact))
 	mux.HandleFunc("POST /admin/v1/artifacts/{uuid}/{version}/files", s.requireRole(admin, s.uploadArtifactFormatFile))
+	mux.HandleFunc("POST /admin/v1/artifacts/{uuid}/{version}/signature", s.requireRole(admin, s.uploadArtifactFormatSignatureFile))
 
 	mux.HandleFunc("POST /admin/v1/users", s.requireRole(admin, s.createUser))
 	mux.HandleFunc("GET /admin/v1/users", s.requireRole(consumer, s.listUsers))

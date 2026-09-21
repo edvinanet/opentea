@@ -13,28 +13,69 @@ below are the substantive deltas found while diffing. The last commit this repo 
 recorded reference to was `be64bc7` (`TODO.md`'s own **BLAKE3 checksum verification** /
 TEI-format entries), now many commits behind. To be worked issue by issue, not as one batch.
 
-- [ ] **Artifact content download is now a standard, normative endpoint** — upstream adds
-      `/artifact/{uuid}/latest/download`, `/artifact/{uuid}/{artifactVersion}/download`, and
-      the `.../signature/download` equivalents, with required `ETag`/`If-None-Match`/`304`,
-      `HEAD` support, `Content-Location` (absolute versioned URL incl. `mediaType`),
-      `Vary: Accept`, mediaType-based content negotiation, and `302` for externally-hosted
-      content. opentea has none of these routes (`internal/api/router.go:13-40` — only
-      metadata GETs exist); content is served today from a separate, non-standard
-      `/files/{sha256}` (`internal/files/handler.go`), referenced via `ArtifactFormat.URL`.
-      The new spec text frames `url`/`signatureUrl` as *external-hosting only*: "This is
-      always a location outside the TEA API... When absent, the TEA server hosts the content
-      itself and clients shall retrieve it from the artifact download endpoint." opentea
-      currently always populates `URL` with its own `/files/{sha256}` link — legal under the
-      old wording, arguably non-conformant self-hosting under the new one. Largest single
-      item here; likely needs its own design pass (ETag/conditional-request reuse from the
-      existing `internal/httpx/etag.go` machinery, `internal/files`'s relationship to the new
-      endpoint).
-- [ ] **`artifact-format.signatureUrl` is now a first-class, normative spec field** — opentea
-      already has `SignatureURL` (`pkg/tea/types.go:145-150`) but its own doc comment calls it
-      "a legacy/simple detached-signature pointer... not verified or otherwise interpreted by
-      this server," which is now inaccurate: upstream gives it a dedicated download endpoint
-      (see above) and a distinct `SIGNATURE_NOT_FOUND` error code. Comment + handling need
-      revisiting together with the download-endpoint item.
+- [x] ~~**Artifact content download is now a standard, normative endpoint**~~ — fixed
+      2026-09-21: added all four endpoints (`internal/api/artifactdownload.go`,
+      `internal/api/router.go`) — `/artifact/{uuid}/latest/download`,
+      `/artifact/{uuid}/{artifactVersion}/download`, and their `.../signature/download`
+      counterparts. Strong `ETag`/`If-None-Match`/`304` and `Cache-Control` reuse the existing
+      per-artifact `revision` counter and `s.conditional` helper (`internal/api/cachepolicy.go`)
+      unchanged; `HEAD` returns identical headers with no body; `Content-Location` is the
+      absolute versioned URL including `mediaType`; format selection is by `mediaType` query
+      param (case-insensitive) falling back to a simple `Accept`-header match (first listed
+      candidate wins — a deliberate, flagged simplification, not full RFC 9110 §12 q-value
+      conformance), `Vary: Accept` set only when `Accept` actually drove the choice; `406` +
+      `NO_ACCEPTABLE_FORMAT` when nothing matches; `404` + `OBJECT_UNKNOWN` for a concealed/
+      nonexistent artifact, extending to the signature sub-resource too (existence-hiding);
+      `404` + `SIGNATURE_NOT_FOUND` (deliberately *not* existence-hiding, per spec) for a real
+      format with no signature published; `302` + `Location` for externally-hosted content,
+      unconditional (never gated by `If-None-Match` — redirect sits outside conditional-request
+      semantics). Registered without an HTTP-method prefix plus a manual `requireGetOrHead`
+      guard (`internal/api/router.go`) — Go's `http.ServeMux` panics at registration when a
+      literal path segment (`.../latest/...`) and a wildcard one (`.../{artifactVersion}/...`)
+      for the same route collide across `GET`/`HEAD` patterns specifically, a real stdlib
+      corner case, not a design choice.
+
+      Alongside this, fixed `url`/`signatureUrl` to match the new external-only spec wording
+      (**behavior change**, flagged explicitly): both fields are now populated only for
+      genuinely external locations; self-hosted content/signatures leave them empty and are
+      retrieved via the new download endpoints instead, resolved server-side from the
+      `checksum` table (content, unchanged schema) and a new `artifact_format.signature_sha256`
+      column (signature, `internal/db/migrations/0008_artifact_download.sql` — a single direct
+      column rather than reusing the polymorphic `checksum` table, since a signature has no
+      `checksums[]` array of its own). `SetArtifactFormatFile` no longer accepts/writes a `url`
+      value; new `SetArtifactFormatSignatureFile` (`internal/repo/artifact.go`) mirrors it for
+      signatures. **Local signature hosting is new capability** (not just external
+      `signatureUrl` pass-through) — real signature-byte upload added across all three write
+      surfaces: `POST /admin/v1/artifacts/{uuid}/{version}/signature`
+      (`internal/admin/upload.go`), `POST /publisher/v1/artifacts/{uuid}/{version}/signature/files`
+      (`internal/publisher/artifact.go`, `design/publisher-openapi.yaml` v0.11), and
+      `POST /cicdapi/v1/artifacts/{uuid}/{version}/signature/files`
+      (`internal/openteapublisher/cicdapi.go`, proxying to the publisher one via a new
+      `pkg/teapublisherclient.UploadArtifactSignatureFile`) — unlike content upload, a
+      signature upload is never blocked by an already-submitted evidence bundle, since it
+      doesn't change the content checksum evidence attests to.
+
+      Deferred, separate question (not addressed here): `release_distribution.url` has no
+      TEA-hosted download endpoint at all in the spec (distributions aren't Artifacts), so
+      `internal/bundle/import.go`'s existing self-referential-rewrite behavior for
+      distributions (`rewriteURL`) was deliberately left untouched — `selfHostedOrURL` (new,
+      same file) only replaces it for artifact formats, which do have one.
+
+      Verified: repo-level tests for the full resolution matrix (self-hosted/external/no-
+      match/not-yet-uploaded for content, `SIGNATURE_NOT_FOUND` vs `ErrNoMatchingFormat` for
+      signatures — `internal/repo/artifact_test.go`); HTTP-level tests for 200/ETag/HEAD/304/
+      406/404/302 and all three signature-upload surfaces round-tripped through a real download
+      (`cmd/opentea/artifactdownload_test.go`, `publisher_test.go`, `cicdapi_test.go`); a manual
+      smoke test against real built binaries (upload content + signature via `curl`, `-I` for
+      `HEAD`, `-H 'If-None-Match: ...'` for `304`, byte-for-byte `diff` against the uploaded
+      files). `go test ./... -race`/`golangci-lint`/`go vet`/`gofmt` clean on every file
+      touched.
+- [x] ~~**`artifact-format.signatureUrl` is now a first-class, normative spec field**~~ — fixed
+      2026-09-21, together with the item above: `pkg/tea.ArtifactFormat`'s `URL`/`SignatureURL`
+      doc comments now state the new external-only meaning explicitly, including that an empty
+      `SignatureURL` no longer means "no signature" (it may be self-hosted — `404`
+      `SIGNATURE_NOT_FOUND` on the download endpoint is the authoritative "no signature at all"
+      signal).
 - [x] ~~**Discovery must support `?purl=` alongside `?tei=`**~~ — fixed 2026-09-21:
       `discoveryByTEI` renamed `discovery` (`internal/api/discovery.go`), now reads either
       `tei` or `purl` (400 if neither or both are supplied, per upstream: "Exactly one of the

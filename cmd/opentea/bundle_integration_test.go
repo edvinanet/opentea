@@ -9,6 +9,8 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
+	"strconv"
 	"testing"
 
 	"github.com/oej/opentea/internal/authn"
@@ -227,8 +229,33 @@ func TestBundleExportImportRoundTrip(t *testing.T) {
 	if len(readBackCollection.Artifacts) != 1 {
 		t.Fatalf("Artifacts = %+v, want 1", readBackCollection.Artifacts)
 	}
-	if len(readBackCollection.Artifacts[0].Formats) != 1 || readBackCollection.Artifacts[0].Formats[0].URL == "" {
-		t.Fatalf("Artifacts[0].Formats = %+v, want one format with a rewritten URL", readBackCollection.Artifacts[0].Formats)
+	// TEA 1.0 (spec/openapi.yaml): url is reserved for genuinely external
+	// locations -- self-hosted content imported from the bundle must leave
+	// it empty (internal/bundle/import.go's selfHostedOrURL), not
+	// "rewritten" to a self-referential link the way it used to be.
+	if len(readBackCollection.Artifacts[0].Formats) != 1 {
+		t.Fatalf("Artifacts[0].Formats = %+v, want 1", readBackCollection.Artifacts[0].Formats)
+	}
+	importedFormat := readBackCollection.Artifacts[0].Formats[0]
+	if importedFormat.URL != "" {
+		t.Fatalf("Formats[0].URL = %q, want empty for self-hosted imported content", importedFormat.URL)
+	}
+	if len(importedFormat.Checksums) != 1 {
+		t.Fatalf("Formats[0].Checksums = %+v, want 1", importedFormat.Checksums)
+	}
+
+	// Prove the content is actually retrievable, not just that the URL is
+	// (correctly) empty -- via the new download endpoint, resolved from
+	// the checksum imported above.
+	importedArtifact := readBackCollection.Artifacts[0]
+	downloadResp, err := http.Get(dst.URL + "/tea/v1/artifact/" + importedArtifact.UUID + "/" + strconv.Itoa(importedArtifact.Version) +
+		"/download?mediaType=" + url.QueryEscape(importedFormat.MediaType))
+	if err != nil {
+		t.Fatalf("GET artifact download: %v", err)
+	}
+	defer func() { _ = downloadResp.Body.Close() }()
+	if downloadResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET artifact download: status=%d", downloadResp.StatusCode)
 	}
 
 	// Re-importing the identical bundle into the destination server must be

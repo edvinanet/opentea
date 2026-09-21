@@ -35,6 +35,17 @@ func (c *Client) UploadArtifactFile(ctx context.Context, artifactUUID string, ve
 	return c.doUpload(ctx, fmt.Sprintf("/artifacts/%s/%d/files", artifactUUID, version), mediaType, filename, r)
 }
 
+// UploadArtifactSignatureFile uploads a detached signature for one format of
+// artifact (artifactUUID, version), selected by mediaType the same way as
+// UploadArtifactFile (POST /artifacts/{uuid}/{version}/signature/files).
+// Unlike UploadArtifactFile, this is never rejected once evidence has been
+// submitted -- a signature upload doesn't change the format's content
+// checksum evidence attests to. r is read to completion, not closed by this
+// method.
+func (c *Client) UploadArtifactSignatureFile(ctx context.Context, artifactUUID string, version int, mediaType, filename string, r io.Reader) error {
+	return c.doUpload(ctx, fmt.Sprintf("/artifacts/%s/%d/signature/files", artifactUUID, version), mediaType, filename, r)
+}
+
 // PrepareArtifactEvidence returns the current artifact and the digest to
 // sign over it (POST /artifacts/{uuid}/{version}/evidence/prepare).
 // Callable repeatedly -- reflects current state each time, locks nothing.

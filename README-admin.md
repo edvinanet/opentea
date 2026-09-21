@@ -137,6 +137,13 @@ curl -b cookies.txt -X POST $BASE/admin/v1/productReleases/$PRODUCT_RELEASE_UUID
 | POST | `/admin/v1/distributions/{id}/files` | admin |
 | POST | `/admin/v1/artifacts` | admin |
 | POST | `/admin/v1/artifacts/{uuid}/{version}/files?formatIndex=N` | admin |
+| POST | `/admin/v1/artifacts/{uuid}/{version}/signature?formatIndex=N` | admin |
+
+Uploaded artifact content/signatures are never re-exposed as a `url`/`signatureUrl` on the
+artifact (TEA 1.0, `spec/openapi.yaml`: those fields are reserved for genuinely external
+locations) — retrieve self-hosted content via the public download endpoints instead:
+`GET /tea/v1/artifact/{uuid}/{latest|version}/download` and its `.../signature/download`
+counterpart, both `mediaType`-selected the same way as `/files`.
 
 ```bash
 curl -b cookies.txt -X POST $BASE/admin/v1/distributions/$DISTRIBUTION_ID/files \

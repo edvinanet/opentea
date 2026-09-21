@@ -11,6 +11,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"testing"
 	"time"
 
@@ -324,8 +325,10 @@ func TestPublisherUploadArtifactFileByMediaType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetArtifactByVersion: %v", err)
 	}
-	if got.Formats[0].URL == "" || len(got.Formats[0].Checksums) == 0 {
-		t.Fatalf("json format (index 0) not populated: %+v", got.Formats[0])
+	// TEA 1.0 (spec/openapi.yaml): url is reserved for genuinely external
+	// locations -- self-hosted content uploaded above must leave it empty.
+	if got.Formats[0].URL != "" || len(got.Formats[0].Checksums) == 0 {
+		t.Fatalf("json format (index 0) not populated as expected (want empty URL, real checksum): %+v", got.Formats[0])
 	}
 	if got.Formats[1].URL != "" || got.Formats[2].URL != "" {
 		t.Fatalf("xml formats should be untouched: %+v / %+v", got.Formats[1], got.Formats[2])
@@ -379,6 +382,83 @@ func TestPublisherUploadArtifactFileRejectedAfterEvidence(t *testing.T) {
 	// A second upload must now be rejected, not silently accepted.
 	if status, body := publisherUploadFile(t, srv, uploadPath, cicd, "application/vnd.cyclonedx+json", []byte(`{"tampered":true}`)); status != http.StatusConflict {
 		t.Fatalf("upload after evidence: status=%d body=%s, want 409", status, body)
+	}
+}
+
+// TestPublisherUploadArtifactSignatureFile covers TEA 1.0 conformance's new
+// local signature hosting: a detached signature uploaded via
+// /publisher/v1's signature/files operation round-trips through the
+// consumer API's signature download endpoint, and -- unlike content
+// (TestPublisherUploadArtifactFileRejectedAfterEvidence) -- remains
+// uploadable even after evidence has been submitted, since a signature
+// upload never changes the content checksum evidence attests to.
+func TestPublisherUploadArtifactSignatureFile(t *testing.T) {
+	srv := newTestServer(t)
+	cicd := createPublisherCredential(t, srv, "cicd-cred", model.PublisherScopeCICD)
+
+	status, raw := publisherRequest(t, srv, http.MethodPost, "/publisher/v1/artifacts", cicd, map[string]any{
+		"type":    "BOM",
+		"formats": []map[string]any{{"mediaType": "application/vnd.cyclonedx+json"}},
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("createArtifact: status=%d body=%s", status, raw)
+	}
+	var artifact tea.Artifact
+	decodeInto(t, raw, &artifact)
+
+	if status, body := publisherUploadFile(t, srv, "/publisher/v1/artifacts/"+artifact.UUID+"/1/files", cicd, "application/vnd.cyclonedx+json", []byte(`{"ok":true}`)); status != http.StatusNoContent {
+		t.Fatalf("content upload: status=%d body=%s, want 204", status, body)
+	}
+
+	sigPath := "/publisher/v1/artifacts/" + artifact.UUID + "/1/signature/files"
+
+	// Unknown mediaType -> 404, same selection rule as content.
+	if status, body := publisherUploadFile(t, srv, sigPath, cicd, "application/does-not-exist", []byte("x")); status != http.StatusNotFound {
+		t.Fatalf("unknown mediaType: status=%d body=%s, want 404", status, body)
+	}
+
+	signature := []byte("fake-detached-signature-bytes")
+	if status, body := publisherUploadFile(t, srv, sigPath, cicd, "application/vnd.cyclonedx+json", signature); status != http.StatusNoContent {
+		t.Fatalf("signature upload: status=%d body=%s, want 204", status, body)
+	}
+
+	// Prepare and submit evidence for the artifact -- content is now
+	// frozen, but the signature must remain uploadable.
+	status, raw = publisherRequest(t, srv, http.MethodPost, "/publisher/v1/artifacts/"+artifact.UUID+"/1/evidence/prepare", cicd, nil)
+	if status != http.StatusOK {
+		t.Fatalf("prepareArtifactEvidence: status=%d body=%s", status, raw)
+	}
+	var prepared struct {
+		DigestToSign string `json:"digestToSign"`
+	}
+	decodeInto(t, raw, &prepared)
+	sigValue, certPEM := signDigest(t, prepared.DigestToSign)
+	status, raw = publisherRequest(t, srv, http.MethodPost, "/publisher/v1/artifacts/"+artifact.UUID+"/1/evidence", cicd, map[string]any{
+		"objectDigestValue": prepared.DigestToSign,
+		"signatureFormat":   "jws-detached",
+		"signatureValue":    sigValue,
+		"certificatePem":    certPEM,
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("submitArtifactEvidence: status=%d body=%s", status, raw)
+	}
+	replacementSig := []byte("replacement-signature-bytes")
+	if status, body := publisherUploadFile(t, srv, sigPath, cicd, "application/vnd.cyclonedx+json", replacementSig); status != http.StatusNoContent {
+		t.Fatalf("signature upload after evidence: status=%d body=%s, want 204 (unlike content, not frozen)", status, body)
+	}
+
+	// Round-trip via the consumer API's own signature download endpoint.
+	dlResp, err := http.Get(srv.URL + "/tea/v1/artifact/" + artifact.UUID + "/latest/signature/download?mediaType=" + url.QueryEscape("application/vnd.cyclonedx+json"))
+	if err != nil {
+		t.Fatalf("GET signature download: %v", err)
+	}
+	dlBody, _ := io.ReadAll(dlResp.Body)
+	_ = dlResp.Body.Close()
+	if dlResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET signature download: status=%d body=%s", dlResp.StatusCode, dlBody)
+	}
+	if string(dlBody) != string(replacementSig) {
+		t.Fatalf("downloaded signature = %q, want %q (the replacement, most recent upload)", dlBody, replacementSig)
 	}
 }
 

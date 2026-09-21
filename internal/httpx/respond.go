@@ -53,6 +53,25 @@ func NotFound(w http.ResponseWriter) {
 	WriteJSON(w, http.StatusNotFound, tea.ErrorResponse{Error: tea.ErrorObjectUnknown})
 }
 
+// NotFoundTyped writes a 404 response matching the spec's error-response
+// schema with an errType other than the default ErrorObjectUnknown -- used
+// for TEA 1.0's SIGNATURE_NOT_FOUND case (spec/openapi.yaml's artifact
+// signature download endpoints), which is a 404 that is deliberately *not*
+// existence-hiding: it reveals the artifact/format itself is real, just
+// unsigned, distinct from NotFound's own "doesn't exist or is concealed"
+// meaning.
+func NotFoundTyped(w http.ResponseWriter, errType string) {
+	WriteJSON(w, http.StatusNotFound, tea.ErrorResponse{Error: errType})
+}
+
+// NotAcceptable writes a 406 response matching the spec's error-response
+// schema (TEA 1.0, spec/openapi.yaml): the object exists, but no format
+// matches the requested mediaType/Accept -- distinct from NotFound, which
+// conceals existence entirely.
+func NotAcceptable(w http.ResponseWriter, message string) {
+	WriteJSON(w, http.StatusNotAcceptable, tea.ErrorResponse{Error: tea.ErrorNoAcceptableFormat, Message: message})
+}
+
 // Unauthorized writes a 401 response -- used both when a session/bearer
 // credential is missing where required, and when one was supplied but
 // didn't resolve to a valid identity. TEA 1.0's error-response schema does

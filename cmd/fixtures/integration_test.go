@@ -48,7 +48,7 @@ func newTestServer(t *testing.T) (*httptest.Server, *repo.Repo) {
 	cfg.RootURL = srv.URL
 
 	mux := http.NewServeMux()
-	mux.Handle(cfg.APIBasePath+"/", api.NewRouter(r, cfg))
+	mux.Handle(cfg.APIBasePath+"/", api.NewRouter(r, blobStore, cfg))
 	mux.Handle("/admin/v1/", admin.NewRouter(r, blobStore, cfg, time.Now()))
 	mux.Handle("/admin/ui/", webadmin.NewRouter(r, cfg))
 	mux.Handle("/files/", files.NewHandler(r, blobStore))
@@ -130,7 +130,8 @@ func TestLoadReferenceFixtures(t *testing.T) {
 	if len(withCollection.LatestCollection.Artifacts) != 1 {
 		t.Fatalf("tomcat collection artifacts = %+v, want 1", withCollection.LatestCollection.Artifacts)
 	}
-	if _, err := client.DownloadAndVerify(ctx, withCollection.LatestCollection.Artifacts[0].Formats[0]); err != nil {
+	tomcatArtifact := withCollection.LatestCollection.Artifacts[0]
+	if _, err := client.DownloadAndVerify(ctx, tomcatArtifact.UUID, tomcatArtifact.Version, tomcatArtifact.Formats[0]); err != nil {
 		t.Fatalf("DownloadAndVerify(tomcat sbom): %v", err)
 	}
 
@@ -148,8 +149,9 @@ func TestLoadReferenceFixtures(t *testing.T) {
 	if len(gatewayWithCollection.LatestCollection.Artifacts[0].Formats) != 2 {
 		t.Fatalf("gateway artifact formats = %+v, want 2", gatewayWithCollection.LatestCollection.Artifacts[0].Formats)
 	}
-	for i, format := range gatewayWithCollection.LatestCollection.Artifacts[0].Formats {
-		if _, err := client.DownloadAndVerify(ctx, format); err != nil {
+	gatewayArtifact := gatewayWithCollection.LatestCollection.Artifacts[0]
+	for i, format := range gatewayArtifact.Formats {
+		if _, err := client.DownloadAndVerify(ctx, gatewayArtifact.UUID, gatewayArtifact.Version, format); err != nil {
 			t.Fatalf("DownloadAndVerify(gateway sbom format %d): %v", i, err)
 		}
 	}

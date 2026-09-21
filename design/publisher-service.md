@@ -1,6 +1,6 @@
 # TEA Publisher — protocol and service design
 
-**Status:** draft v0.25, for discussion. Nothing here is scheduled or approved; no
+**Status:** draft v0.26, for discussion. Nothing here is scheduled or approved; no
 implementation exists yet. This document is the design opentea's `TODO.md` "Reference
 publisher" entry has been blocked on since 2026-07-04.
 
@@ -333,6 +333,24 @@ than repeated here.
   user"). Verified instead by a careful line-by-line comparison against that already-proven
   Dockerfile plus a successful native `go build ./cmd/openteapublisher`; real `docker
   build`/`docker run` verification is still needed from an environment with daemon access.
+- **v0.26 (this revision)** corrects §7.6 against TEA 1.0, which added real structure to
+  what had been a bare identifier type: a `compliance-document-type` enum (~21 values --
+  `SOC_2_TYPE_II`, `ISO_27001`, `HIPAA`, etc.) constraining `identifier.idValue` whenever
+  `idType` is `COMPLIANCE_DOCUMENT`, and a scoping rule restricting that identifier type to
+  Components/ComponentReleases only. §7.6's own text ("attachable to a product/release/
+  component/component-release the same way [CPE/PURL/TEI is]") predates this and is now
+  wrong on that specific point -- the conceptual model it worked out (a compliance
+  reference is an `Identifier`, not a distinct protocol concept; the document's actual file
+  content still rides the `Artifact` path) remains correct and unchanged. Implemented as a
+  single, shared enforcement point (`internal/repo/identifier.go`'s `insertIdentifiers`,
+  `internal/repo/cle.go`'s new `insertCLEEventIdentifiers`) that every existing write path
+  already funnels through -- `internal/admin`'s JSON API, `internal/publisher`'s
+  `/publisher/v1`, and `internal/bundle`'s import all inherit correct behavior with no
+  duplicated validation logic. Deliberately backend-only (explicit decision): neither
+  `internal/webadmin` (browse-only, no create forms exist; its already-generic identifier
+  rendering needed no changes at all -- confirmed against a real running server) nor
+  `internal/openteapublisher` (§18.4's Components screen is still unbuilt intent) got any
+  GUI work this pass -- both write APIs are already fully usable via JSON today.
 
 ## 1. Problem statement
 
@@ -594,14 +612,19 @@ problem.
 
 ### 7.6 Compliance documents
 
-Resolved in v0.4: `pkg/tea/enums.go` already defines `IdentifierTypeComplianceDocument`
-(`"COMPLIANCE_DOCUMENT"`) — a compliance reference is an `Identifier`, attachable to a
-product/release/component/component-release the same way a `CPE`/`PURL`/`TEI` identifier
-is, not a distinct protocol concept and not (necessarily) an artifact. A compliance
-*document* with real file content still goes through the artifact path (§7.4) using an
-appropriate existing `ArtifactType` (`CERTIFICATION`/`ATTESTATION`) when there's an actual
-file to sign and validate, matching oej's own "or represented as artifact" framing — the
-two aren't mutually exclusive, and neither needed inventing.
+Resolved in v0.4, corrected against TEA 1.0 in v0.26: `pkg/tea/enums.go` already defines
+`IdentifierTypeComplianceDocument` (`"COMPLIANCE_DOCUMENT"`) — a compliance reference is an
+`Identifier`, not a distinct protocol concept and not (necessarily) an artifact. **Unlike
+`CPE`/`PURL`/`TEI`, it is *not* attachable to every owner type** — TEA 1.0 restricts it to
+Components and ComponentReleases only ("It shall not be used on products, product
+releases, distributions, or CLE events," upstream `identifier-type`'s own description) and
+constrains `idValue` to a specific `compliance-document-type` enum (~21 values --
+`SOC_2_TYPE_II`, `ISO_27001`, `HIPAA`, etc.) rather than free text. Enforced in
+`internal/repo` (`identifier.go`/`cle.go`), the one place every write path already funnels
+through. A compliance *document* with real file content still goes through the artifact
+path (§7.4) using an appropriate existing `ArtifactType` (`CERTIFICATION`/`ATTESTATION`)
+when there's an actual file to sign and validate, matching oej's own "or represented as
+artifact" framing — the two aren't mutually exclusive, and neither needed inventing.
 
 ### 7.7 Collection assembly (draft) (oej phase 4)
 

@@ -65,6 +65,9 @@ func (s *Server) createCLEEventForOwner(ownerType string) http.HandlerFunc {
 			Description:         req.Description,
 			References:          req.References,
 		})
+		if writeIdentifierValidationError(w, err) {
+			return
+		}
 		if err != nil {
 			httpx.InternalError(w, r, err)
 			return

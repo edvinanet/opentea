@@ -62,13 +62,8 @@ func (r *Repo) CreateCLEEvent(ctx context.Context, ownerType, ownerUUID string, 
 				return tea.CLEEvent{}, err
 			}
 		}
-		for _, ident := range in.Identifiers {
-			if _, err := tx.ExecContext(ctx,
-				`INSERT INTO cle_event_identifier (owner_type, owner_uuid, event_id, id_type, id_value) VALUES (?, ?, ?, ?, ?)`,
-				ownerType, ownerUUID, id, ident.IDType, ident.IDValue,
-			); err != nil {
-				return tea.CLEEvent{}, err
-			}
+		if err := insertCLEEventIdentifiers(ctx, tx, ownerType, ownerUUID, id, in.Identifiers); err != nil {
+			return tea.CLEEvent{}, err
 		}
 		for _, ref := range in.References {
 			if _, err := tx.ExecContext(ctx,
@@ -126,13 +121,8 @@ func (r *Repo) ImportCLEEvent(ctx context.Context, ownerType, ownerUUID string, 
 				return false, err
 			}
 		}
-		for _, ident := range e.Identifiers {
-			if _, err := tx.ExecContext(ctx,
-				`INSERT INTO cle_event_identifier (owner_type, owner_uuid, event_id, id_type, id_value) VALUES (?, ?, ?, ?, ?)`,
-				ownerType, ownerUUID, e.ID, ident.IDType, ident.IDValue,
-			); err != nil {
-				return false, err
-			}
+		if err := insertCLEEventIdentifiers(ctx, tx, ownerType, ownerUUID, e.ID, e.Identifiers); err != nil {
+			return false, err
 		}
 		for _, ref := range e.References {
 			if _, err := tx.ExecContext(ctx,
@@ -429,6 +419,29 @@ func listCLEEventVersions(ctx context.Context, q dbtx, ownerType, ownerUUID stri
 		out = append(out, tea.CLEVersionSpecifier{Version: v.String, Range: rng.String})
 	}
 	return out, rows.Err()
+}
+
+// insertCLEEventIdentifiers factors out the identical identifier-insert
+// loop CreateCLEEvent/ImportCLEEvent both had, and enforces TEA 1.0's
+// COMPLIANCE_DOCUMENT rule for CLE events: unconditionally forbidden,
+// regardless of which owner type the event itself belongs to (upstream
+// identifier-type's own description explicitly names "CLE events" as
+// excluded, no owner-type carve-out the way the generic identifier table
+// has for components/component releases -- see
+// validateComplianceDocumentIdentifier, identifier.go).
+func insertCLEEventIdentifiers(ctx context.Context, q dbtx, ownerType, ownerUUID string, eventID int, ids []tea.Identifier) error {
+	for _, id := range ids {
+		if err := validateComplianceDocumentIdentifier(id, false); err != nil {
+			return err
+		}
+		if _, err := q.ExecContext(ctx,
+			`INSERT INTO cle_event_identifier (owner_type, owner_uuid, event_id, id_type, id_value) VALUES (?, ?, ?, ?, ?)`,
+			ownerType, ownerUUID, eventID, id.IDType, id.IDValue,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func listCLEEventIdentifiers(ctx context.Context, q dbtx, ownerType, ownerUUID string, eventID int) ([]tea.Identifier, error) {

@@ -99,12 +99,51 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       `ChecksumTypeMD5`. Not removing it: MD5's presence in `checksum-type` is itself under
       discussion upstream and may come back in a later spec revision — wait for that to
       settle rather than churn the enum twice.
-- [ ] **New `compliance-document-type` enum, entirely absent locally** — ~20 values
-      (`SOC_2_TYPE_I`, `ISO_27001`, `HIPAA`, `GDPR`, `FEDRAMP`, `PCI_DSS`, `CMMC`,
-      `NIST_800_53`/`171`, etc.), used as valid `idValue`s when `identifier-type` is the
-      already-locally-present `COMPLIANCE_DOCUMENT` (`pkg/tea/enums.go:16`). Also carries an
-      unenforced scoping rule: "shall not be used on products, product releases,
-      distributions, or CLE events" — components/component releases only.
+- [x] ~~**New `compliance-document-type` enum, entirely absent locally**~~ — fixed
+      2026-09-21: 21 `ComplianceDocumentType*` constants added to `pkg/tea/enums.go`
+      (`SOC_2_TYPE_I`/`II`, `SOC_3`, `ISO_27001`/`27017`/`27018`/`27701`/`42001`, `PCI_DSS`,
+      `HIPAA`, `FEDRAMP`, `GDPR`, `CSA_STAR`, `NIST_800_53`/`171`, `CMMC`, `HITRUST`,
+      `TISAX`, `CYBER_ESSENTIALS`/`_PLUS`, `EU_DECLARATION_OF_CONFORMITY`). The scoping rule
+      ("shall not be used on products, product releases, distributions, or CLE events") is
+      now enforced too, in one shared place: `internal/repo/identifier.go`'s
+      `insertIdentifiers` (every Product/ProductRelease/Component/ComponentRelease/
+      Distribution Create+Import path already funnels through it) gained
+      `validateComplianceDocumentIdentifier` -- `ErrComplianceDocumentWrongOwner` unless the
+      owner is a component or component release, `ErrInvalidComplianceDocumentType` unless
+      `idValue` is a real enum value. `internal/repo/cle.go`'s two identical
+      `cle_event_identifier` insert loops got factored into one new
+      `insertCLEEventIdentifiers` (a real DRY fix, not just validation plumbing) that rejects
+      `COMPLIANCE_DOCUMENT` unconditionally -- CLE events are named directly in the spec
+      text, no owner-type carve-out the way the generic identifier table has. Both
+      `internal/admin` (opentea's own ingestion API) and `internal/publisher`
+      (`/publisher/v1`) inherit correct behavior automatically since both already route
+      through the same repo methods -- each handler just needed the new errors mapped to
+      400 (new shared `writeIdentifierValidationError` helper, one per package, mirroring
+      the existing `ErrComponentIdentifierConflict` → 409 precedent). `internal/bundle`'s
+      import needed *no* code changes at all: `Import` already runs a manifest in one
+      transaction and `internal/admin/bundle.go` already maps any `Import` error to 400, so
+      a bad `COMPLIANCE_DOCUMENT` identifier in an imported bundle was already going to fail
+      cleanly once the repo-layer check existed. **Deliberately backend-only** (explicit
+      decision): neither `internal/webadmin` (browse-only, no create forms exist at all;
+      confirmed its identifier rendering is already fully generic --
+      `{{.IDType}}: {{.IDValue}}` -- and needed zero changes, verified against a real running
+      server) nor `internal/openteapublisher` (§18.4's Components screen is still unbuilt
+      intent) got GUI work this pass; both existing JSON write APIs are already fully usable
+      today. Verified: new tests in `internal/repo/identifier_test.go` (valid on
+      component/componentRelease, wrong-owner on product/productRelease/distribution via
+      both Create and Import, invalid `idValue`, forbidden-on-CLE-event via both Create and
+      Import), `cmd/opentea/compliancedocument_test.go` (same behavior through `/admin/v1`
+      and `/publisher/v1` HTTP, confirming each handler's new error-mapping actually fired,
+      not just the repo logic), `internal/bundle/compliancedocument_test.go` (a bundle
+      carrying an invalid identifier fails import cleanly), plus a manual smoke test against
+      the real built binary (created via `/admin/v1`, rendered correctly on the existing,
+      unmodified `/admin/ui` component detail page, found via the existing, unmodified
+      `GET /tea/v1/components?idType=...&idValue=...` `IDFilter` mechanism, wrong-owner
+      rejected with a clear 400). `go test ./... -race`/`golangci-lint` clean.
+      `design/publisher-service.md` §7.6 corrected to match (v0.26) -- it previously claimed
+      `COMPLIANCE_DOCUMENT` was "attachable to a product/release/component/component-release
+      the same way" as CPE/PURL/TEI, which predates and is now contradicted by TEA 1.0's
+      scoping rule.
 - [ ] **`server-info.versions` / `TEA_VERSIONS` needs a version bump** — upstream now requires
       full SemVer 2.0.0 strings, no leading `v` (e.g. `["1.0.0"]`). Do this *last*, once the
       conformance work above actually lands — bumping the advertised version before the server

@@ -29,6 +29,9 @@ func (s *Server) createProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p, err := s.repo.CreateProduct(r.Context(), req.Name, req.Identifiers)
+	if writeIdentifierValidationError(w, err) {
+		return
+	}
 	if err != nil {
 		httpx.InternalError(w, r, err)
 		return
@@ -121,6 +124,9 @@ func (s *Server) createProductRelease(w http.ResponseWriter, r *http.Request) {
 	})
 	if errors.Is(err, repo.ErrNotFound) {
 		httpx.NotFound(w)
+		return
+	}
+	if writeIdentifierValidationError(w, err) {
 		return
 	}
 	if err != nil {

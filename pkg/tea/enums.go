@@ -16,6 +16,35 @@ const (
 	IdentifierTypeComplianceDocument = "COMPLIANCE_DOCUMENT"
 )
 
+// compliance-document-type (TEA 1.0, spec/openapi.yaml) -- the set of
+// values identifier.idValue may take when identifier.idType is
+// IdentifierTypeComplianceDocument. Validated in internal/repo (the
+// single point every identifier-write path funnels through), not here --
+// this file is a shared source of valid *values*, not a validator.
+const (
+	ComplianceDocumentTypeSOC2TypeI                 = "SOC_2_TYPE_I"
+	ComplianceDocumentTypeSOC2TypeII                = "SOC_2_TYPE_II"
+	ComplianceDocumentTypeSOC3                      = "SOC_3"
+	ComplianceDocumentTypeISO27001                  = "ISO_27001"
+	ComplianceDocumentTypeISO27017                  = "ISO_27017"
+	ComplianceDocumentTypeISO27018                  = "ISO_27018"
+	ComplianceDocumentTypeISO27701                  = "ISO_27701"
+	ComplianceDocumentTypeISO42001                  = "ISO_42001"
+	ComplianceDocumentTypePCIDSS                    = "PCI_DSS"
+	ComplianceDocumentTypeHIPAA                     = "HIPAA"
+	ComplianceDocumentTypeFedRAMP                   = "FEDRAMP"
+	ComplianceDocumentTypeGDPR                      = "GDPR"
+	ComplianceDocumentTypeCSAStar                   = "CSA_STAR"
+	ComplianceDocumentTypeNIST80053                 = "NIST_800_53"
+	ComplianceDocumentTypeNIST800171                = "NIST_800_171"
+	ComplianceDocumentTypeCMMC                      = "CMMC"
+	ComplianceDocumentTypeHITRUST                   = "HITRUST"
+	ComplianceDocumentTypeTISAX                     = "TISAX"
+	ComplianceDocumentTypeCyberEssentials           = "CYBER_ESSENTIALS"
+	ComplianceDocumentTypeCyberEssentialsPlus       = "CYBER_ESSENTIALS_PLUS"
+	ComplianceDocumentTypeEUDeclarationOfConformity = "EU_DECLARATION_OF_CONFORMITY"
+)
+
 // artifact-type
 const (
 	ArtifactTypeAttestation     = "ATTESTATION"

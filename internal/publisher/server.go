@@ -24,10 +24,12 @@ package publisher
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 
 	"github.com/oej/opentea/internal/config"
+	"github.com/oej/opentea/internal/httpx"
 	"github.com/oej/opentea/internal/repo"
 	"github.com/oej/opentea/internal/storage"
 )
@@ -52,4 +54,14 @@ const maxJSONBody = 10 << 20 // 10 MiB, matches internal/admin's own limit
 func decodeJSON(r *http.Request, v any) error {
 	defer func() { _ = r.Body.Close() }()
 	return json.NewDecoder(io.LimitReader(r.Body, maxJSONBody)).Decode(v)
+}
+
+// writeIdentifierValidationError mirrors internal/admin's own helper of
+// the same name exactly -- see its doc comment.
+func writeIdentifierValidationError(w http.ResponseWriter, err error) bool {
+	if errors.Is(err, repo.ErrComplianceDocumentWrongOwner) || errors.Is(err, repo.ErrInvalidComplianceDocumentType) {
+		httpx.BadRequest(w, err.Error())
+		return true
+	}
+	return false
 }

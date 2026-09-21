@@ -26,6 +26,9 @@ func (s *Server) createComponent(w http.ResponseWriter, r *http.Request) {
 		httpx.Conflict(w, "an identifier in this request already belongs to another component")
 		return
 	}
+	if writeIdentifierValidationError(w, err) {
+		return
+	}
 	if err != nil {
 		httpx.InternalError(w, r, err)
 		return
@@ -105,6 +108,9 @@ func (s *Server) createComponentRelease(w http.ResponseWriter, r *http.Request) 
 	})
 	if errors.Is(err, repo.ErrNotFound) {
 		httpx.NotFound(w)
+		return
+	}
+	if writeIdentifierValidationError(w, err) {
 		return
 	}
 	if err != nil {

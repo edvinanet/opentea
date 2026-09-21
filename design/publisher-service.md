@@ -1,6 +1,6 @@
 # TEA Publisher — protocol and service design
 
-**Status:** draft v0.24, for discussion. Nothing here is scheduled or approved; no
+**Status:** draft v0.25, for discussion. Nothing here is scheduled or approved; no
 implementation exists yet. This document is the design opentea's `TODO.md` "Reference
 publisher" entry has been blocked on since 2026-07-04.
 
@@ -314,6 +314,25 @@ than repeated here.
   against its one target, same binary-scope shape `internal/publisher` itself uses); no
   credential expiry/rotation; Docker packaging still doesn't exist to actually run any of
   this in a real CI pipeline (separate, already-tracked item).
+- **v0.25 (this revision)** resolves §17.7's own deferred item: `docker/openteapublisher.Dockerfile`
+  builds and runs `cmd/openteapublisher`, mirroring the existing root `Dockerfile`'s
+  structure exactly (same `golang:1.26-alpine` builder + `alpine:3.20` runtime shape, same
+  `CGO_ENABLED=0`/`-buildvcs=false`/non-root-user/named-volume/`HEALTHCHECK` reasoning) --
+  genuinely just packaging, no new architectural questions, as §17.7 predicted. Placed under
+  `docker/` alongside the existing `docker/testdata.Dockerfile`, both built from the repo
+  root via `-f`; a new `README-docker.md` section covers quick start,
+  persistence/config/TLS, and `docker-compose`. One real difference from opentea's own
+  image: there is no unauthenticated, DB-touching route to heathcheck against (`GET
+  /tea/v1/products` has no `opentea-publisher` equivalent), so the healthcheck targets `GET
+  /login` instead -- confirms the process is up and serving HTTP, not that the database is
+  reachable, a narrower guarantee than opentea's own healthcheck gives, flagged here rather
+  than silently matched. **Not build/run-verified in this pass** -- the sandboxed
+  environment this was scaffolded in has no Docker daemon access (`permission denied ...
+  /var/run/docker.sock`), the same constraint the original `Dockerfile` was built under
+  (`TODO.md`'s own entry for it: "Build-tested and runtime-verified end-to-end by the
+  user"). Verified instead by a careful line-by-line comparison against that already-proven
+  Dockerfile plus a successful native `go build ./cmd/openteapublisher`; real `docker
+  build`/`docker run` verification is still needed from an environment with daemon access.
 
 ## 1. Problem statement
 
@@ -1738,11 +1757,13 @@ implementation targets workflow (b) (§4's diagram) first. Workflow (a)'s direct
 reference-CLI shape (§14.1's `cmd/teapublisherclient`) stays designed but on hold; nothing
 here prevents building it later against the same `pkg/teapublisherclient`.
 
-### 17.7 Deployment
+### 17.7 Deployment (Docker image built, v0.25)
 
-A Docker image, mirroring however opentea's own is packaged (check `packaging/` and any
-existing `Dockerfile`/CI build steps before inventing a new pattern) — not designed further
-here; genuinely just packaging once the binary exists, no open architectural questions.
+`docker/openteapublisher.Dockerfile` mirrors the root `Dockerfile`'s own structure exactly
+(README-docker.md's new "opentea-publisher" section) — confirmed genuinely just packaging,
+no open architectural questions, as this section originally predicted. Not yet build/run-
+verified against a real Docker daemon (sandboxed-environment limitation, see the v0.25
+revision-history entry) — a real `docker build`/`docker run` pass is still needed.
 
 ## 18. GUI requirements: manufacturer process mapped to screens
 

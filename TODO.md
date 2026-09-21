@@ -39,13 +39,24 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       `tei` and `purl` query parameters shall be provided... Discovery by PURL requires an
       already-known API base URL and resolves within that server's inventory."
       `internal/api/discovery.go:20` reads only `tei`; no `purl` parameter exists at all.
-- [ ] **Discovery no-match must return `404`, not `200` with an empty array** — upstream: "If
-      the server does not resolve the identifier, it responds with `404` and
-      `error: OBJECT_UNKNOWN`." `discoveryByTEI` (`internal/api/discovery.go:26-45`) currently
-      returns `200 []` both for a genuine no-match and for an authz-denied match. Both need to
-      become 404s. This is a natural, low-risk fix — it actually *aligns* with the rest of the
-      codebase's existing existence-hiding convention (404-not-403 everywhere else in
-      `internal/api`), not a new pattern to introduce.
+- [x] ~~**Discovery no-match must return `404`, not `200` with an empty array**~~ — fixed
+      2026-09-21: `discoveryByTEI` (`internal/api/discovery.go`) now returns `httpx.NotFound`
+      (404 + `OBJECT_UNKNOWN`) for both a genuine no-match and an authz-denied match, aligning
+      with the rest of `internal/api`'s existing existence-hiding convention. Caught and fixed
+      a real, previously-untested bug in `pkg/teaclient` as a side effect: `Discover` used to
+      return `([], nil)` for "this endpoint doesn't have the TEI," which
+      `bootstrapDiscoverWithAuthority`'s multi-endpoint failover loop couldn't distinguish
+      from a genuine (if empty) match — it silently stopped at the *first* endpoint in a
+      well-known document every time, never trying a lower-priority one that actually had the
+      TEI. `Discover` now surfaces a no-match as a 404 `*APIError` (`IsNotFound`), which the
+      existing non-retryable-4xx failover path already handles correctly. New tests:
+      `cmd/opentea/integration_test.go` (updated), `TestTeaV1AuthzDiscoveryDeniedMatchesNoMatch`
+      (`authz_tea_test.go`), `TestDiscoverNoMatchIsNotFound` (`pkg/teaclient/client_test.go`),
+      `TestBootstrapDiscoverFailoverOnNoMatch` (`pkg/teaclient/wellknown_test.go` — the
+      regression test for the failover bug). `go test ./... -race`/`golangci-lint` clean
+      (aside from two confirmed pre-existing, unrelated findings: a data race in
+      `svcb_test.go`'s DNS test helper, and `cmd/opentea/main.go`'s `gocyclo` complexity —
+      neither touched by this fix).
 - [ ] **A baked-in token-exchange auth flow is now part of the core spec** — `POST /token`,
       `client_credentials` grant, HTTP Basic (API-key-id as user, API-key-secret as password)
       → opaque Bearer access token, `expires_in`, optional SAML/JWT assertion grants. Distinct

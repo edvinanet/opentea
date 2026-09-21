@@ -274,3 +274,24 @@ func TestDiscover(t *testing.T) {
 		t.Fatalf("results = %+v", results)
 	}
 }
+
+// TestDiscoverNoMatchIsNotFound confirms Discover surfaces upstream TEA
+// 1.0's no-match response (404 + OBJECT_UNKNOWN, spec/openapi.yaml) as an
+// error, not as a successful empty slice -- the distinction
+// bootstrapDiscoverWithAuthority's failover logic (wellknown.go) relies on
+// to tell "this endpoint doesn't have it, try the next one" apart from "a
+// genuine, if empty, match."
+func TestDiscoverNoMatchIsNotFound(t *testing.T) {
+	client, _ := newFakeServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(tea.ErrorResponse{Error: tea.ErrorObjectUnknown})
+	})
+
+	results, err := client.Discover(context.Background(), "urn:tei:unknown")
+	if !IsNotFound(err) {
+		t.Fatalf("err = %v, want IsNotFound", err)
+	}
+	if results != nil {
+		t.Fatalf("results = %+v, want nil", results)
+	}
+}

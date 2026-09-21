@@ -153,6 +153,52 @@ func TestTeaV1AuthzCapabilityIndependence(t *testing.T) {
 	}
 }
 
+// TestTeaV1AuthzDiscoveryDeniedMatchesNoMatch proves spec Sec 18's
+// existence-hiding rule as it applies to discovery specifically: a TEI
+// that resolves to a real release but whose release.discover capability
+// is denied must respond identically (404 + OBJECT_UNKNOWN, upstream TEA
+// 1.0's spec/openapi.yaml /discovery) to a TEI that never resolved at
+// all -- an authorization denial must not itself reveal that the release
+// exists.
+func TestTeaV1AuthzDiscoveryDeniedMatchesNoMatch(t *testing.T) {
+	srv := newTestServer(t)
+
+	status, raw := jsonRequest(t, srv, http.MethodPost, "/admin/v1/products", map[string]any{"name": "Widget"})
+	if status != http.StatusCreated {
+		t.Fatalf("POST /admin/v1/products: status=%d body=%s", status, raw)
+	}
+	var product tea.Product
+	decodeInto(t, raw, &product)
+
+	status, raw = jsonRequest(t, srv, http.MethodPost, "/admin/v1/products/"+product.UUID+"/releases", map[string]any{
+		"version":     "1.0",
+		"createdDate": "2026-01-01T00:00:00Z",
+		"identifiers": []tea.Identifier{{IDType: "TEI", IDValue: "urn:tei:uuid:acme.example.com:hidden-1.0.0"}},
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("POST .../releases: status=%d body=%s", status, raw)
+	}
+	var release tea.ProductRelease
+	decodeInto(t, raw, &release)
+
+	createTemplateAndEntitlement(t, srv,
+		[]map[string]any{
+			{"capability": "release.discover", "decision": "deny"},
+		},
+		"everyone", "", "product_release", release.UUID,
+	)
+
+	status, _, raw = teaRequest(t, srv, http.MethodGet, "/tea/v1/discovery?tei=urn%3Atei%3Auuid%3Aacme.example.com%3Ahidden-1.0.0", "")
+	if status != http.StatusNotFound {
+		t.Fatalf("GET /discovery (denied match): status=%d body=%s, want 404", status, raw)
+	}
+	var errResp tea.ErrorResponse
+	decodeInto(t, raw, &errResp)
+	if errResp.Error != tea.ErrorObjectUnknown {
+		t.Fatalf("discovery error for denied match = %q, want OBJECT_UNKNOWN", errResp.Error)
+	}
+}
+
 // TestTeaV1AuthzPaginationFiltering proves spec Sec 18: list pagination
 // must operate on the authorized set, not the underlying table -- a denied
 // row must be excluded from results and not distort hasNext.

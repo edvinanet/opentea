@@ -216,6 +216,48 @@ func TestBootstrapDiscoverFailoverOn503(t *testing.T) {
 	}
 }
 
+// TestBootstrapDiscoverFailoverOnNoMatch is the regression test for a real
+// bug this fix uncovered: upstream TEA 1.0 changed GET /discovery's
+// no-match response from 200+[] to 404+OBJECT_UNKNOWN
+// (spec/openapi.yaml). Before that, Discover returning ([], nil) for "this
+// endpoint doesn't have the TEI" was indistinguishable from a genuine
+// match with zero results, so bootstrapDiscoverWithAuthority's `err == nil`
+// success check stopped at the very first endpoint every time, regardless
+// of whether a later, lower-priority endpoint actually had the TEI --
+// never previously caught because no existing failover test exercised a
+// no-match response, only 5xx/401/403. A 404 is correctly non-retryable
+// (isRetryableError) and now correctly triggers failover to the next
+// endpoint, exactly like a 5xx does.
+func TestBootstrapDiscoverFailoverOnNoMatch(t *testing.T) {
+	noMatchSrv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(tea.ErrorResponse{Error: tea.ErrorObjectUnknown})
+	}))
+	t.Cleanup(noMatchSrv.Close)
+	workingSrv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode([]tea.DiscoveryInfo{{ProductReleaseUUID: "from-working-endpoint"}})
+	}))
+	t.Cleanup(workingSrv.Close)
+
+	authority, wkSrv := newFakeWellKnownAuthority(t, wellKnownHandler(t, []tea.WellKnownEndpoint{
+		{URL: noMatchSrv.URL, Versions: []string{"0.4.0"}, Priority: priorityPtr(1.0)},
+		{URL: workingSrv.URL, Versions: []string{"0.4.0"}, Priority: priorityPtr(0.5)},
+	}))
+
+	oldSupported := SupportedVersions
+	SupportedVersions = []string{"0.4.0"}
+	t.Cleanup(func() { SupportedVersions = oldSupported })
+
+	tei := "tei://" + authority + "/uuid/d4d9f54a-abcf-11ee-ac79-1a52914d44b1"
+	result, err := bootstrapDiscoverWithAuthority(context.Background(), authority, tei, trustingOption(wkSrv), trustingOption(noMatchSrv), trustingOption(workingSrv))
+	if err != nil {
+		t.Fatalf("BootstrapDiscover: %v", err)
+	}
+	if len(result.Info) != 1 || result.Info[0].ProductReleaseUUID != "from-working-endpoint" {
+		t.Fatalf("Info = %+v, want failover past the no-match endpoint to the working one", result.Info)
+	}
+}
+
 // TestBootstrapDiscoverNoFailoverOnForbidden is the regression test for the
 // TEA discovery spec's explicit rule: "Authentication error codes (401,
 // 403) should not lead to failover to the next endpoint in the list."

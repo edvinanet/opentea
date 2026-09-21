@@ -25,7 +25,10 @@ func (s *Server) discoveryByTEI(w http.ResponseWriter, r *http.Request) {
 
 	productReleaseUUID, err := s.repo.FindProductReleaseUUIDByTEI(r.Context(), tei)
 	if errors.Is(err, repo.ErrNotFound) {
-		httpx.WriteJSON(w, http.StatusOK, []tea.DiscoveryInfo{})
+		// Upstream TEA 1.0 (spec/openapi.yaml, /discovery): "If the server
+		// does not resolve the identifier, it responds with 404 and
+		// error: OBJECT_UNKNOWN" -- no longer 200 with an empty array.
+		httpx.NotFound(w)
 		return
 	}
 	if err != nil {
@@ -35,14 +38,15 @@ func (s *Server) discoveryByTEI(w http.ResponseWriter, r *http.Request) {
 
 	// An unauthorized match must be indistinguishable from no match at all
 	// (spec Sec 18) -- discovery reveals a release's existence just as much
-	// as a direct lookup would.
+	// as a direct lookup would. Same 404+OBJECT_UNKNOWN response as the
+	// true-no-match branch above, for the same reason.
 	allowed, err := s.decide(r, authz.CapReleaseDiscover, authz.Resource{ProductReleaseUUID: productReleaseUUID})
 	if err != nil {
 		httpx.InternalError(w, r, err)
 		return
 	}
 	if !allowed {
-		httpx.WriteJSON(w, http.StatusOK, []tea.DiscoveryInfo{})
+		httpx.NotFound(w)
 		return
 	}
 

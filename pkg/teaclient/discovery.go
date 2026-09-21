@@ -11,8 +11,9 @@ import (
 )
 
 // Discover resolves a Transparency Exchange Identifier (TEI) via this
-// server's GET /discovery endpoint. Per spec this may return zero, one, or
-// more candidate servers for the TEI.
+// server's GET /discovery endpoint. Per spec (TEA 1.0, spec/openapi.yaml)
+// a match returns one or more candidate servers for the TEI; no match
+// returns a 404 *APIError (IsNotFound), not an empty, successful slice.
 //
 // Note: this only queries the single server baseURL points at (its own
 // self-authoritative discovery endpoint) -- for the full TEI-authority

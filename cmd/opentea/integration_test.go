@@ -392,14 +392,17 @@ func TestWorkedExample(t *testing.T) {
 		t.Fatalf("discovery = %+v, want resolved to %s", discovery, productRelease.UUID)
 	}
 
+	// Upstream TEA 1.0 (spec/openapi.yaml, /discovery): an unresolved
+	// identifier gets 404 + error: OBJECT_UNKNOWN, not 200 with an empty
+	// array.
 	status, raw = jsonRequest(t, srv, http.MethodGet, "/tea/v1/discovery?tei=urn%3Atei%3Aunknown", nil)
-	if status != http.StatusOK {
-		t.Fatalf("GET /discovery (unknown): status=%d", status)
+	if status != http.StatusNotFound {
+		t.Fatalf("GET /discovery (unknown): status=%d, want 404", status)
 	}
-	var emptyDiscovery []tea.DiscoveryInfo
-	decodeInto(t, raw, &emptyDiscovery)
-	if len(emptyDiscovery) != 0 {
-		t.Fatalf("discovery for unknown tei = %+v, want []", emptyDiscovery)
+	var discoveryErr tea.ErrorResponse
+	decodeInto(t, raw, &discoveryErr)
+	if discoveryErr.Error != tea.ErrorObjectUnknown {
+		t.Fatalf("discovery error for unknown tei = %q, want OBJECT_UNKNOWN", discoveryErr.Error)
 	}
 }
 

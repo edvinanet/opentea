@@ -30,10 +30,22 @@ type messageBody struct {
 	Message string `json:"message"`
 }
 
-// BadRequest writes a 400 response. The spec only says "generic 400" for
-// this response, so {"message": ...} is our own convention.
+// BadRequest writes a 400 response with a plain {"message": ...} body --
+// internal/admin's and internal/publisher's own convention, and
+// internal/webadmin's; neither is bound to spec/openapi.yaml's
+// error-response schema (internal/admin/internal/publisher aren't part of
+// the spec at all). internal/api (the literal /tea/v1 surface the spec
+// does govern) uses BadRequestTyped instead, below.
 func BadRequest(w http.ResponseWriter, message string) {
 	WriteJSON(w, http.StatusBadRequest, messageBody{Message: message})
+}
+
+// BadRequestTyped writes a 400 response matching the spec's error-response
+// schema (TEA 1.0, spec/openapi.yaml): errType must be one of the
+// tea.Error* unknown-error-type constants. For internal/api's use --
+// admin/publisher/webadmin keep calling the untyped BadRequest above.
+func BadRequestTyped(w http.ResponseWriter, errType, message string) {
+	WriteJSON(w, http.StatusBadRequest, tea.ErrorResponse{Error: errType, Message: message})
 }
 
 // NotFound writes a 404 response matching the spec's error-response schema.
@@ -43,9 +55,12 @@ func NotFound(w http.ResponseWriter) {
 
 // Unauthorized writes a 401 response -- used both when a session/bearer
 // credential is missing where required, and when one was supplied but
-// didn't resolve to a valid identity. The spec's 401-unauthorized response
-// has no defined body shape ("Authentication required"), so this is our own
-// convention.
+// didn't resolve to a valid identity. TEA 1.0's error-response schema does
+// apply to 401 responses ("any 4xx from a resource endpoint may carry an
+// error-response body"), but its unknown-error-type enum has no value for
+// "missing/invalid credential" -- deliberately left untyped rather than
+// forcing an ill-fitting one; a body is optional here regardless
+// ("clients shall not require a body").
 func Unauthorized(w http.ResponseWriter, message string) {
 	WriteJSON(w, http.StatusUnauthorized, messageBody{Message: message})
 }

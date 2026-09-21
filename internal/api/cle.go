@@ -11,12 +11,13 @@ import (
 	"github.com/oej/opentea/internal/authz"
 	"github.com/oej/opentea/internal/httpx"
 	"github.com/oej/opentea/internal/repo"
+	"github.com/oej/opentea/pkg/tea"
 )
 
 func (s *Server) cleByProduct(w http.ResponseWriter, r *http.Request) {
 	uuid, err := httpx.PathUUID(r, "uuid")
 	if err != nil {
-		httpx.BadRequest(w, "invalid uuid")
+		httpx.BadRequestTyped(w, tea.ErrorInvalidRequest, "invalid uuid")
 		return
 	}
 	if _, err := s.repo.GetProduct(r.Context(), uuid); errors.Is(err, repo.ErrNotFound) {
@@ -40,7 +41,7 @@ func (s *Server) cleByProduct(w http.ResponseWriter, r *http.Request) {
 func (s *Server) cleByProductRelease(w http.ResponseWriter, r *http.Request) {
 	uuid, err := httpx.PathUUID(r, "uuid")
 	if err != nil {
-		httpx.BadRequest(w, "invalid uuid")
+		httpx.BadRequestTyped(w, tea.ErrorInvalidRequest, "invalid uuid")
 		return
 	}
 	if _, err := s.repo.GetProductRelease(r.Context(), uuid); errors.Is(err, repo.ErrNotFound) {
@@ -59,7 +60,7 @@ func (s *Server) cleByProductRelease(w http.ResponseWriter, r *http.Request) {
 func (s *Server) cleByComponent(w http.ResponseWriter, r *http.Request) {
 	uuid, err := httpx.PathUUID(r, "uuid")
 	if err != nil {
-		httpx.BadRequest(w, "invalid uuid")
+		httpx.BadRequestTyped(w, tea.ErrorInvalidRequest, "invalid uuid")
 		return
 	}
 	if _, err := s.repo.GetComponent(r.Context(), uuid); errors.Is(err, repo.ErrNotFound) {
@@ -78,7 +79,7 @@ func (s *Server) cleByComponent(w http.ResponseWriter, r *http.Request) {
 func (s *Server) cleByComponentRelease(w http.ResponseWriter, r *http.Request) {
 	uuid, err := httpx.PathUUID(r, "uuid")
 	if err != nil {
-		httpx.BadRequest(w, "invalid uuid")
+		httpx.BadRequestTyped(w, tea.ErrorInvalidRequest, "invalid uuid")
 		return
 	}
 	if _, err := s.repo.GetComponentRelease(r.Context(), uuid); errors.Is(err, repo.ErrNotFound) {

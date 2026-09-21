@@ -18,7 +18,7 @@ import (
 func (s *Server) getComponent(w http.ResponseWriter, r *http.Request) {
 	uuid, err := httpx.PathUUID(r, "uuid")
 	if err != nil {
-		httpx.BadRequest(w, "invalid uuid")
+		httpx.BadRequestTyped(w, tea.ErrorInvalidRequest, "invalid uuid")
 		return
 	}
 
@@ -59,7 +59,7 @@ var componentReleaseSortFields = []string{"createdDate", "releaseDate", "version
 func (s *Server) listReleasesByComponent(w http.ResponseWriter, r *http.Request) {
 	uuid, err := httpx.PathUUID(r, "uuid")
 	if err != nil {
-		httpx.BadRequest(w, "invalid uuid")
+		httpx.BadRequestTyped(w, tea.ErrorInvalidRequest, "invalid uuid")
 		return
 	}
 	if _, err := s.repo.GetComponent(r.Context(), uuid); errors.Is(err, repo.ErrNotFound) {
@@ -118,7 +118,7 @@ var componentSortFields = []string{"name"}
 func (s *Server) queryComponents(w http.ResponseWriter, r *http.Request) {
 	idType, idValue, err := httpx.IDFilter(r)
 	if err != nil {
-		httpx.BadRequest(w, "invalid idType")
+		httpx.BadRequestTyped(w, tea.ErrorInvalidRequest, "invalid idType")
 		return
 	}
 	pp, ok := parsePageParams(w, r, componentSortFields)

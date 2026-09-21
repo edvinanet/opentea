@@ -83,16 +83,37 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       "authenticated but unauthorized," and the new spec explicitly requires that distinction.
       Real design tension in a carefully-built subsystem (`internal/authz`) — needs its own
       discussion, not a silent patch.
-- [ ] **`error-response` schema is now strict** — `additionalProperties: false`, and
-      `unknown-error-type` is now a defined six-value enum: `OBJECT_UNKNOWN`,
-      `NOT_IMPLEMENTED`, `NO_ACCEPTABLE_FORMAT`, `SIGNATURE_NOT_FOUND`, `INVALID_REQUEST`,
-      `INVALID_PAGE_TOKEN`. opentea's error bodies (`internal/httpx/respond.go`'s
-      `BadRequest`/`Unauthorized`/`Forbidden`/`Conflict`) all emit `{"message": ...}`, not the
-      spec's `{"error": "INVALID_REQUEST", ...}` shape — the code comment justifying this
-      ("the spec only says 'generic 400'") is now wrong; the spec defines a real body.
-      `pkg/tea/types.go:171-181` also has a locally-invented `OBJECT_NOT_SHAREABLE` error type
-      that never existed upstream — confirmed dead code (declared, never emitted), safe to
-      remove once the real enum is wired in rather than carried forward as noise.
+- [x] ~~**`error-response` schema is now strict**~~ — fixed 2026-09-21, with a real
+      correction to the original finding: `additionalProperties: false` still applies, but
+      re-reading the actual spec text turned up an important nuance the first pass missed --
+      "any 4xx from a resource endpoint *may* carry an `error-response` body... clients shall
+      not require a body." A typed body is optional everywhere, not mandatory, so this was a
+      genuine interoperability improvement to make, not a strict compliance gap to close.
+      `unknown-error-type` is a six-value enum: `OBJECT_UNKNOWN`, `NOT_IMPLEMENTED`,
+      `NO_ACCEPTABLE_FORMAT`, `SIGNATURE_NOT_FOUND`, `INVALID_REQUEST`, `INVALID_PAGE_TOKEN`
+      -- confirmed (also by re-checking) that upstream only ever references `error-response`
+      from the 400/401/403/404 shared response components; 409 doesn't appear in
+      `spec/openapi.yaml` at all, so opentea's own `httpx.Conflict` (used only by
+      `/admin/v1`/`/publisher/v1`, never `/tea/v1`) was never in scope. `pkg/tea/types.go`'s
+      `ErrorResponse` gained a `Message` field (optional, matches the schema's own "human-
+      readable explanation for diagnostics") and five new `Error*` constants for the missing
+      enum values; the locally-invented, never-emitted `ErrorObjectNotShareable` was removed.
+      New `httpx.BadRequestTyped(w, errType, message)` writes the real shape --
+      **scoped to `internal/api` only** (the literal `/tea/v1` surface `spec/openapi.yaml`
+      governs): every one of its ~26 `httpx.BadRequest` call sites now calls this instead,
+      mapped to `INVALID_REQUEST` except the two page-token-specific pagination checks
+      (`INVALID_PAGE_TOKEN`). `internal/admin`/`internal/publisher`/`internal/webadmin` keep
+      the plain, untyped `BadRequest` unchanged -- none of their APIs are bound to this
+      schema (admin explicitly isn't part of the spec at all; publisher is its own,
+      independently-designed draft). `httpx.Unauthorized` (401) deliberately stays untyped
+      too, on purpose, not by oversight: the six-value enum has no entry for "missing/invalid
+      credential," and forcing an ill-fitting one would be worse than the optional-body
+      allowance the spec itself grants. Verified: extended `TestErrorResponses`
+      (`cmd/opentea/integration_test.go`) to assert the actual `error` value on every 400
+      case, including a new page-token-specific one, plus a manual smoke test against the
+      real built binary confirming `/tea/v1`'s new shape, `/tea/v1`'s unchanged 404/401
+      shapes, and `/admin/v1`'s unchanged plain-message convention side by side.
+      `go test ./... -race`/`golangci-lint` clean.
 - [ ] ~~**`checksum-type` dropped `MD5`**~~ **on hold (2026-09-21), per explicit user
       decision** — upstream now lists `SHA-1, SHA-256, SHA-384, SHA-512, SHA3-256/384/512,
       BLAKE2b-256/384/512, BLAKE3`; opentea's `pkg/tea/enums.go:33-45` still has

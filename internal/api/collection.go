@@ -32,7 +32,7 @@ func (s *Server) latestCollectionForProductRelease(w http.ResponseWriter, r *htt
 func (s *Server) latestCollection(w http.ResponseWriter, r *http.Request, belongsTo string) {
 	uuid, err := httpx.PathUUID(r, "uuid")
 	if err != nil {
-		httpx.BadRequest(w, "invalid uuid")
+		httpx.BadRequestTyped(w, tea.ErrorInvalidRequest, "invalid uuid")
 		return
 	}
 
@@ -80,12 +80,12 @@ func (s *Server) getCollectionForProductRelease(w http.ResponseWriter, r *http.R
 func (s *Server) getCollectionByVersion(w http.ResponseWriter, r *http.Request, belongsTo string) {
 	uuid, err := httpx.PathUUID(r, "uuid")
 	if err != nil {
-		httpx.BadRequest(w, "invalid uuid")
+		httpx.BadRequestTyped(w, tea.ErrorInvalidRequest, "invalid uuid")
 		return
 	}
 	version, err := httpx.PathPositiveInt(r, "collectionVersion")
 	if err != nil {
-		httpx.BadRequest(w, "invalid collectionVersion")
+		httpx.BadRequestTyped(w, tea.ErrorInvalidRequest, "invalid collectionVersion")
 		return
 	}
 
@@ -135,7 +135,7 @@ func (s *Server) listCollectionsForProductRelease(w http.ResponseWriter, r *http
 func (s *Server) listCollections(w http.ResponseWriter, r *http.Request, belongsTo string) {
 	uuid, err := httpx.PathUUID(r, "uuid")
 	if err != nil {
-		httpx.BadRequest(w, "invalid uuid")
+		httpx.BadRequestTyped(w, tea.ErrorInvalidRequest, "invalid uuid")
 		return
 	}
 	// Every row this lists shares one collection identity (uuid) and thus

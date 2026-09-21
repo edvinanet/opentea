@@ -8,6 +8,7 @@ import (
 
 	"github.com/oej/opentea/internal/httpx"
 	"github.com/oej/opentea/internal/pagination"
+	"github.com/oej/opentea/pkg/tea"
 )
 
 // pageParams holds the parsed & validated pagination/sort query parameters
@@ -28,21 +29,21 @@ func parsePageParams(w http.ResponseWriter, r *http.Request, allowedSortFields [
 
 	pageSize, err := httpx.PageSize(r)
 	if err != nil {
-		httpx.BadRequest(w, "invalid pageSize: must be an integer between 1 and 100")
+		httpx.BadRequestTyped(w, tea.ErrorInvalidRequest, "invalid pageSize: must be an integer between 1 and 100")
 		return p, false
 	}
 	p.PageSize = pageSize
 
 	sortField, err := httpx.SortField(r, allowedSortFields)
 	if err != nil {
-		httpx.BadRequest(w, "invalid sortField")
+		httpx.BadRequestTyped(w, tea.ErrorInvalidRequest, "invalid sortField")
 		return p, false
 	}
 	p.SortField = sortField
 
 	sortOrder, err := httpx.SortOrder(r)
 	if err != nil {
-		httpx.BadRequest(w, "invalid sortOrder: must be \"asc\" or \"desc\"")
+		httpx.BadRequestTyped(w, tea.ErrorInvalidRequest, "invalid sortOrder: must be \"asc\" or \"desc\"")
 		return p, false
 	}
 	p.SortOrder = sortOrder
@@ -50,11 +51,11 @@ func parsePageParams(w http.ResponseWriter, r *http.Request, allowedSortFields [
 	if token := httpx.PageToken(r); token != "" {
 		cursor, err := pagination.Decode(token)
 		if err != nil {
-			httpx.BadRequest(w, "invalid pageToken")
+			httpx.BadRequestTyped(w, tea.ErrorInvalidPageToken, "invalid pageToken")
 			return p, false
 		}
 		if cursor.SortField != sortField || cursor.SortOrder != sortOrder {
-			httpx.BadRequest(w, "pageToken does not match the current sortField/sortOrder")
+			httpx.BadRequestTyped(w, tea.ErrorInvalidPageToken, "pageToken does not match the current sortField/sortOrder")
 			return p, false
 		}
 		p.Cursor = &cursor

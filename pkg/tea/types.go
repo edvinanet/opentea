@@ -168,17 +168,39 @@ type Artifact struct {
 	Formats         []ArtifactFormat `json:"formats"`
 }
 
-// ErrorResponse is the spec's standard error body, with Error set to one of
-// the ErrorObject* constants below.
+// ErrorResponse is the spec's standard error body (TEA 1.0,
+// spec/openapi.yaml's error-response schema): "error is one of the values
+// of unknown-error-type, and message is the only other property allowed."
+// A body is optional on any 4xx from a resource endpoint ("Clients shall
+// not require a body") -- when a server does send one, it must be exactly
+// this shape (additionalProperties: false upstream), so Error/Message are
+// the only fields, ever.
 type ErrorResponse struct {
-	Error string `json:"error"` // "OBJECT_UNKNOWN" | "OBJECT_NOT_SHAREABLE"
+	Error   string `json:"error"`
+	Message string `json:"message,omitempty"`
 }
 
+// unknown-error-type (TEA 1.0, spec/openapi.yaml) -- classification of a
+// TEA error response.
 const (
 	// ErrorObjectUnknown means the requested object doesn't exist on this server.
 	ErrorObjectUnknown = "OBJECT_UNKNOWN"
-	// ErrorObjectNotShareable means the object exists but this server won't return it.
-	ErrorObjectNotShareable = "OBJECT_NOT_SHAREABLE"
+	// ErrorNotImplemented means the server understands the request but
+	// doesn't support the requested operation.
+	ErrorNotImplemented = "NOT_IMPLEMENTED"
+	// ErrorNoAcceptableFormat means none of the artifact's available
+	// formats matches what the caller's Accept header/mediaType
+	// selection requested.
+	ErrorNoAcceptableFormat = "NO_ACCEPTABLE_FORMAT"
+	// ErrorSignatureNotFound means the caller asked for a signature that
+	// doesn't exist for the requested artifact/format.
+	ErrorSignatureNotFound = "SIGNATURE_NOT_FOUND"
+	// ErrorInvalidRequest means the request is malformed in a way none
+	// of the more specific error types name.
+	ErrorInvalidRequest = "INVALID_REQUEST"
+	// ErrorInvalidPageToken means a supplied pageToken is malformed or
+	// doesn't match the request's current sortField/sortOrder.
+	ErrorInvalidPageToken = "INVALID_PAGE_TOKEN"
 )
 
 // ServerInfo identifies one server that hosts a given product release,

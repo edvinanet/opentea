@@ -11,12 +11,13 @@ import (
 	"github.com/oej/opentea/internal/authz"
 	"github.com/oej/opentea/internal/httpx"
 	"github.com/oej/opentea/internal/repo"
+	"github.com/oej/opentea/pkg/tea"
 )
 
 func (s *Server) getLatestArtifact(w http.ResponseWriter, r *http.Request) {
 	uuid, err := httpx.PathUUID(r, "uuid")
 	if err != nil {
-		httpx.BadRequest(w, "invalid uuid")
+		httpx.BadRequestTyped(w, tea.ErrorInvalidRequest, "invalid uuid")
 		return
 	}
 
@@ -79,12 +80,12 @@ func (s *Server) getLatestArtifact(w http.ResponseWriter, r *http.Request) {
 func (s *Server) getArtifactByVersion(w http.ResponseWriter, r *http.Request) {
 	uuid, err := httpx.PathUUID(r, "uuid")
 	if err != nil {
-		httpx.BadRequest(w, "invalid uuid")
+		httpx.BadRequestTyped(w, tea.ErrorInvalidRequest, "invalid uuid")
 		return
 	}
 	version, err := httpx.PathPositiveInt(r, "artifactVersion")
 	if err != nil {
-		httpx.BadRequest(w, "invalid artifactVersion")
+		httpx.BadRequestTyped(w, tea.ErrorInvalidRequest, "invalid artifactVersion")
 		return
 	}
 

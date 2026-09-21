@@ -27,10 +27,10 @@ func (s *Server) discovery(w http.ResponseWriter, r *http.Request) {
 	purl := r.URL.Query().Get("purl")
 	switch {
 	case tei == "" && purl == "":
-		httpx.BadRequest(w, "exactly one of the tei or purl query parameters is required")
+		httpx.BadRequestTyped(w, tea.ErrorInvalidRequest, "exactly one of the tei or purl query parameters is required")
 		return
 	case tei != "" && purl != "":
-		httpx.BadRequest(w, "tei and purl query parameters are mutually exclusive")
+		httpx.BadRequestTyped(w, tea.ErrorInvalidRequest, "tei and purl query parameters are mutually exclusive")
 		return
 	}
 

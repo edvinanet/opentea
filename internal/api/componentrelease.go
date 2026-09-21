@@ -21,7 +21,7 @@ import (
 func (s *Server) getComponentReleaseWithCollection(w http.ResponseWriter, r *http.Request) {
 	uuid, err := httpx.PathUUID(r, "uuid")
 	if err != nil {
-		httpx.BadRequest(w, "invalid uuid")
+		httpx.BadRequestTyped(w, tea.ErrorInvalidRequest, "invalid uuid")
 		return
 	}
 
@@ -92,7 +92,7 @@ func (s *Server) getComponentReleaseWithCollection(w http.ResponseWriter, r *htt
 func (s *Server) queryComponentReleases(w http.ResponseWriter, r *http.Request) {
 	idType, idValue, err := httpx.IDFilter(r)
 	if err != nil {
-		httpx.BadRequest(w, "invalid idType")
+		httpx.BadRequestTyped(w, tea.ErrorInvalidRequest, "invalid idType")
 		return
 	}
 	pp, ok := parsePageParams(w, r, componentReleaseSortFields)

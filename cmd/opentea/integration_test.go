@@ -453,14 +453,47 @@ func TestErrorResponses(t *testing.T) {
 		t.Fatalf("error = %q, want OBJECT_UNKNOWN", errResp.Error)
 	}
 
-	if status, _ := jsonRequest(t, srv, http.MethodGet, "/tea/v1/product/not-a-uuid", nil); status != http.StatusBadRequest {
+	// Upstream TEA 1.0's error-response schema (spec/openapi.yaml) applies
+	// to 400 responses too, now with a defined unknown-error-type enum --
+	// every one of these malformed-request cases must carry error:
+	// INVALID_REQUEST, not just a bare {"message": ...} of our own
+	// invention.
+	status, raw = jsonRequest(t, srv, http.MethodGet, "/tea/v1/product/not-a-uuid", nil)
+	if status != http.StatusBadRequest {
 		t.Fatalf("invalid uuid: status = %d, want 400", status)
 	}
-	if status, _ := jsonRequest(t, srv, http.MethodGet, "/tea/v1/products?pageSize=999", nil); status != http.StatusBadRequest {
+	decodeInto(t, raw, &errResp)
+	if errResp.Error != tea.ErrorInvalidRequest {
+		t.Fatalf("invalid uuid: error = %q, want INVALID_REQUEST", errResp.Error)
+	}
+
+	status, raw = jsonRequest(t, srv, http.MethodGet, "/tea/v1/products?pageSize=999", nil)
+	if status != http.StatusBadRequest {
 		t.Fatalf("invalid pageSize: status = %d, want 400", status)
 	}
-	if status, _ := jsonRequest(t, srv, http.MethodGet, "/tea/v1/products?sortField=bogus", nil); status != http.StatusBadRequest {
+	decodeInto(t, raw, &errResp)
+	if errResp.Error != tea.ErrorInvalidRequest {
+		t.Fatalf("invalid pageSize: error = %q, want INVALID_REQUEST", errResp.Error)
+	}
+
+	status, raw = jsonRequest(t, srv, http.MethodGet, "/tea/v1/products?sortField=bogus", nil)
+	if status != http.StatusBadRequest {
 		t.Fatalf("invalid sortField: status = %d, want 400", status)
+	}
+	decodeInto(t, raw, &errResp)
+	if errResp.Error != tea.ErrorInvalidRequest {
+		t.Fatalf("invalid sortField: error = %q, want INVALID_REQUEST", errResp.Error)
+	}
+
+	// A malformed/mismatched pageToken gets its own, more specific
+	// unknown-error-type value rather than the generic INVALID_REQUEST.
+	status, raw = jsonRequest(t, srv, http.MethodGet, "/tea/v1/products?pageToken=not-a-real-token", nil)
+	if status != http.StatusBadRequest {
+		t.Fatalf("invalid pageToken: status = %d, want 400", status)
+	}
+	decodeInto(t, raw, &errResp)
+	if errResp.Error != tea.ErrorInvalidPageToken {
+		t.Fatalf("invalid pageToken: error = %q, want INVALID_PAGE_TOKEN", errResp.Error)
 	}
 }
 

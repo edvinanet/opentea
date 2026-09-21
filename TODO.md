@@ -3,6 +3,104 @@
 Deferred items identified along the way — not blocking current work, but worth tracking so
 they don't get lost.
 
+## TEA spec conformance: upstream is now v1.0.0 (found 2026-09-21)
+Upstream `CycloneDX/transparency-exchange-api` (`main`, commit `8635688`, 2026-09-21) has
+moved from the v0.4.0 "Beta 2" this project was built against to **`info.version: 1.0.0`**
+in `spec/openapi.yaml` — considerably more than a version bump. `README.md:8`,
+`internal/config/config.go:144` (`TEA_VERSIONS` default `"0.4.0"`), and
+`pkg/tea/types.go:5`'s header comment are all stale on the version number alone; the items
+below are the substantive deltas found while diffing. The last commit this repo had any
+recorded reference to was `be64bc7` (`TODO.md`'s own **BLAKE3 checksum verification** /
+TEI-format entries), now many commits behind. To be worked issue by issue, not as one batch.
+
+- [ ] **Artifact content download is now a standard, normative endpoint** — upstream adds
+      `/artifact/{uuid}/latest/download`, `/artifact/{uuid}/{artifactVersion}/download`, and
+      the `.../signature/download` equivalents, with required `ETag`/`If-None-Match`/`304`,
+      `HEAD` support, `Content-Location` (absolute versioned URL incl. `mediaType`),
+      `Vary: Accept`, mediaType-based content negotiation, and `302` for externally-hosted
+      content. opentea has none of these routes (`internal/api/router.go:13-40` — only
+      metadata GETs exist); content is served today from a separate, non-standard
+      `/files/{sha256}` (`internal/files/handler.go`), referenced via `ArtifactFormat.URL`.
+      The new spec text frames `url`/`signatureUrl` as *external-hosting only*: "This is
+      always a location outside the TEA API... When absent, the TEA server hosts the content
+      itself and clients shall retrieve it from the artifact download endpoint." opentea
+      currently always populates `URL` with its own `/files/{sha256}` link — legal under the
+      old wording, arguably non-conformant self-hosting under the new one. Largest single
+      item here; likely needs its own design pass (ETag/conditional-request reuse from the
+      existing `internal/httpx/etag.go` machinery, `internal/files`'s relationship to the new
+      endpoint).
+- [ ] **`artifact-format.signatureUrl` is now a first-class, normative spec field** — opentea
+      already has `SignatureURL` (`pkg/tea/types.go:145-150`) but its own doc comment calls it
+      "a legacy/simple detached-signature pointer... not verified or otherwise interpreted by
+      this server," which is now inaccurate: upstream gives it a dedicated download endpoint
+      (see above) and a distinct `SIGNATURE_NOT_FOUND` error code. Comment + handling need
+      revisiting together with the download-endpoint item.
+- [ ] **Discovery must support `?purl=` alongside `?tei=`** — upstream: "Exactly one of the
+      `tei` and `purl` query parameters shall be provided... Discovery by PURL requires an
+      already-known API base URL and resolves within that server's inventory."
+      `internal/api/discovery.go:20` reads only `tei`; no `purl` parameter exists at all.
+- [ ] **Discovery no-match must return `404`, not `200` with an empty array** — upstream: "If
+      the server does not resolve the identifier, it responds with `404` and
+      `error: OBJECT_UNKNOWN`." `discoveryByTEI` (`internal/api/discovery.go:26-45`) currently
+      returns `200 []` both for a genuine no-match and for an authz-denied match. Both need to
+      become 404s. This is a natural, low-risk fix — it actually *aligns* with the rest of the
+      codebase's existing existence-hiding convention (404-not-403 everywhere else in
+      `internal/api`), not a new pattern to introduce.
+- [ ] **A baked-in token-exchange auth flow is now part of the core spec** — `POST /token`,
+      `client_credentials` grant, HTTP Basic (API-key-id as user, API-key-secret as password)
+      → opaque Bearer access token, `expires_in`, optional SAML/JWT assertion grants. Distinct
+      from opentea's current model (long-lived API tokens presented directly as bearer tokens,
+      no token endpoint, no exchange step). Also carries a specific, quotable normative rule
+      that conflicts with an existing deliberate design decision: **"A protected object with
+      no valid token shall answer `401`, not a concealing `404`."** opentea's Phase 1 authz
+      work deliberately made "denial always renders as 404, never 403" (see its own commit
+      message) — that policy doesn't currently distinguish "no token presented at all" from
+      "authenticated but unauthorized," and the new spec explicitly requires that distinction.
+      Real design tension in a carefully-built subsystem (`internal/authz`) — needs its own
+      discussion, not a silent patch.
+- [ ] **`error-response` schema is now strict** — `additionalProperties: false`, and
+      `unknown-error-type` is now a defined six-value enum: `OBJECT_UNKNOWN`,
+      `NOT_IMPLEMENTED`, `NO_ACCEPTABLE_FORMAT`, `SIGNATURE_NOT_FOUND`, `INVALID_REQUEST`,
+      `INVALID_PAGE_TOKEN`. opentea's error bodies (`internal/httpx/respond.go`'s
+      `BadRequest`/`Unauthorized`/`Forbidden`/`Conflict`) all emit `{"message": ...}`, not the
+      spec's `{"error": "INVALID_REQUEST", ...}` shape — the code comment justifying this
+      ("the spec only says 'generic 400'") is now wrong; the spec defines a real body.
+      `pkg/tea/types.go:171-181` also has a locally-invented `OBJECT_NOT_SHAREABLE` error type
+      that never existed upstream — confirmed dead code (declared, never emitted), safe to
+      remove once the real enum is wired in rather than carried forward as noise.
+- [ ] **`checksum-type` dropped `MD5`** — upstream now lists `SHA-1, SHA-256, SHA-384,
+      SHA-512, SHA3-256/384/512, BLAKE2b-256/384/512, BLAKE3`. opentea's `pkg/tea/enums.go:33-45`
+      still has `ChecksumTypeMD5`. Not yet checked whether anything server-side actually
+      accepts/validates an MD5 checksum on write — check before deleting the constant.
+- [ ] **New `compliance-document-type` enum, entirely absent locally** — ~20 values
+      (`SOC_2_TYPE_I`, `ISO_27001`, `HIPAA`, `GDPR`, `FEDRAMP`, `PCI_DSS`, `CMMC`,
+      `NIST_800_53`/`171`, etc.), used as valid `idValue`s when `identifier-type` is the
+      already-locally-present `COMPLIANCE_DOCUMENT` (`pkg/tea/enums.go:16`). Also carries an
+      unenforced scoping rule: "shall not be used on products, product releases,
+      distributions, or CLE events" — components/component releases only.
+- [ ] **`server-info.versions` / `TEA_VERSIONS` needs a version bump** — upstream now requires
+      full SemVer 2.0.0 strings, no leading `v` (e.g. `["1.0.0"]`). Do this *last*, once the
+      conformance work above actually lands — bumping the advertised version before the server
+      behaves like it should would be actively misleading to clients.
+- [ ] **Not yet checked, flagged rather than assumed clean** — three areas skipped for scope
+      in the initial diff pass, need their own look before being marked resolved either way:
+      (1) `discovery/tea-well-known.schema.json` vs. `pkg/tea`'s `WellKnownDocument`, not
+      diffed field-by-field, and discovery semantics did change elsewhere (see above) so the
+      well-known doc likely needs a look too; (2) the CLE/ECMA-428 schema family
+      (`cle-event-type`, `cle-version-specifier`, `cle-event`, `cle-support-definition`,
+      `cle-definitions`, `cle`) only skimmed by name, not diffed against `pkg/tea`; (3)
+      whether `spec/TEA_AUTHENTICATION_AUTHORIZATION_SPECIFICATION.md` (the user's own doc,
+      v0.1, 2026-08-06) needs reconciling against the new `/token` mechanism above, since that
+      doc predates it and describes itself as extending TEA auth "without changing normative
+      TEA resource objects" — worth confirming that framing still holds now that auth has its
+      own normative flow baked into `spec/openapi.yaml` itself. Upstream's `auth/readme.md`
+      and `signatures/signature.md` (both exist alongside `spec/`) were not read at all in the
+      initial pass.
+- [x] ~~`spec/publisher/` (the write-API draft `design/publisher-service.md` explicitly
+      designed independently of, calling it superseded)~~ — checked, still stale upstream
+      (last touched 2026-01-16, cosmetic terminology commits only). No reconciliation needed;
+      the decision to treat it as superseded remains sound.
+
 ## Project rename: OpenTEA → OpenTeapot
 - [ ] **Rename the project** (decided 2026-08-28) — "OpenTEA" turned out to already be in use
       by another, unrelated project. New name: **OpenTeapot** — the user has already
@@ -401,8 +499,30 @@ they don't get lost.
       per-credential scoping *within* cicd (one credential grants every cicd-scoped
       operation against its one target -- `internal/publisher` itself doesn't sub-scope
       cicd either, so this matches, not falls short of, the thing it mirrors); no credential
-      expiry/rotation reminders; Docker packaging (separate, already-tracked item) still
-      doesn't exist to actually run any of this in a real CI pipeline.
+      expiry/rotation reminders; ~~Docker packaging (separate, already-tracked item) still
+      doesn't exist to actually run any of this in a real CI pipeline.~~ — see the new
+      **`opentea-publisher`: Docker image** entry below.
+- [ ] **`opentea-publisher`: Docker image** (`design/publisher-service.md` §17.7, v0.25)
+      resolves that section's own deferred item: `docker/openteapublisher.Dockerfile`
+      builds and runs `cmd/openteapublisher`, mirroring the existing root `Dockerfile`'s
+      structure exactly (same `golang:1.26-alpine` builder + `alpine:3.20` runtime,
+      `CGO_ENABLED=0`, non-root user, named-volume persistence, `HEALTHCHECK`) — placed
+      under `docker/` alongside the existing `docker/testdata.Dockerfile`, both built from
+      the repo root via `-f`. New `README-docker.md` "opentea-publisher" section (quick
+      start, persistence, config/TLS, `docker-compose`), mirroring the existing sections'
+      own shape. One real difference from opentea's own image, flagged rather than silently
+      matched: there's no unauthenticated, DB-touching route to healthcheck against (no
+      `opentea-publisher` equivalent of `GET /tea/v1/products`), so the healthcheck targets
+      `GET /login` instead — confirms the process is serving HTTP, not that the database is
+      reachable. **Not build/run-verified in this pass** — the sandboxed environment this
+      was scaffolded in has no Docker daemon access (`permission denied ...
+      /var/run/docker.sock`, same constraint noted when the original `Dockerfile` shipped:
+      that one was "Build-tested and runtime-verified end-to-end by the user," not by the
+      agent). Verified instead by a careful line-by-line comparison against that
+      already-proven `Dockerfile` and a successful native `go build ./cmd/openteapublisher`.
+      **A real `docker build -f docker/openteapublisher.Dockerfile -t openteapublisher .`
+      and `docker run` pass from an environment with daemon access is still needed** before
+      this can be marked verified.
 - [ ] **Publisher API: derive approval actor from authenticated identity, not a
       caller-supplied string** (found 2026-08-28, during `design/opentea-server.md` review —
       see its §11.4). `design/publisher-openapi.yaml`'s `approval-decision.actor` is

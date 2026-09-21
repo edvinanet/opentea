@@ -108,25 +108,49 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       side by side (no entitlement narrowing → 200 anonymous; narrowed + anonymous → 401 bare
       challenge; garbage token → 401 `invalid_token` challenge). `go test ./... -race`/
       `golangci-lint` clean.
-- [ ] **`POST /token`: the actual client_credentials token-exchange endpoint** —
-      `spec/openapi.yaml`'s `/token`: HTTP Basic client authentication (API-key-id as
-      user-id, API-key-secret as password) exchanged for a short-lived, opaque Bearer
-      `access_token` (`token_type: Bearer`, `expires_in`), with an RFC 6749 `token-error-
-      response` shape (`error`/`error_description`/`error_uri`) on failure; servers may
-      support assertion grants (SAML2/JWT bearer) too, but `client_credentials` is the
-      required baseline. "A TEA server that requires authentication on any of its endpoints
-      shall implement this endpoint" -- conditionally mandatory, not optional, once any
-      entitlement narrows beyond the anonymous-read-everything bootstrap (which opentea
-      already supports and exercises today). Genuinely distinct from opentea's current model:
-      today's `api_token` is a single long-lived secret presented *directly* as the bearer
-      token (`internal/repo/apitoken.go`) -- no key-id/secret pair, no exchange step, no
-      separate short-lived access token, no expiry. Real open design questions before
-      building this (not resolved here, needs its own discussion): does the existing
-      long-lived-token-as-bearer path stay usable alongside `/token`, or does `/tea/v1`
-      access now require having gone through the exchange; does a new client-credential pair
-      replace or sit alongside today's `api_token`/"regenerate API token" GUI concept; how
-      are issued (short-lived) access tokens stored/expired/cleaned up, separately from the
-      long-lived credential that mints them.
+- [ ] **`POST /token`: the actual client_credentials token-exchange endpoint** — deliberately
+      deferred as future work (explicit user decision, 2026-09-21), not started. Recorded here
+      in enough detail to pick back up without re-deriving it.
+
+      **Framing from the user, load-bearing for whatever design this eventually gets**:
+      authentication and authorization in TEA are optional end to end -- a server may run
+      with none at all (opentea already does, by default: the bootstrap entitlement grants
+      anonymous read-everything). `/token` is specifically the *recovery/discovery* path: a
+      client that hits an endpoint and gets an authentication error (the `401` +
+      `WWW-Authenticate: Bearer` challenge this repo's own `writeAuthzDenial`/
+      `UnauthorizedBearer` now correctly emit, see the entry above) goes to `/token` next --
+      and `/token` itself can trigger a full OpenIDConnect/OAuth2 workflow, not just a bare
+      key-id/secret exchange. So this isn't only "add one more credential table"; it's a real
+      front door that should be designed with room for a proper external-IdP flow behind it,
+      even though that flow itself isn't being built yet.
+
+      **What the spec actually requires vs. allows** (`spec/openapi.yaml`'s `/token`): HTTP
+      Basic client authentication (API-key-id as user-id, API-key-secret as password)
+      exchanged for a short-lived, opaque Bearer `access_token` (`token_type: Bearer`,
+      `expires_in`), RFC 6749 `token-error-response` shape
+      (`error`/`error_description`/`error_uri`) on failure -- `client_credentials` is the
+      **required baseline** ("shall support"). SAML2-bearer/JWT-bearer **assertion grants**
+      (RFC 7522/7523) -- the actual OIDC/OAuth2-fronting mechanism the user's framing points
+      at -- are explicitly a "may support" extra, RFC 8693 token exchange is explicitly out of
+      scope for TEA 1.0's interoperability profile. "A TEA server that requires authentication
+      on any of its endpoints shall implement this endpoint" -- conditionally mandatory, not
+      optional, once any entitlement narrows beyond the anonymous bootstrap (which opentea
+      already supports and exercises today, so this is a real, not hypothetical, gap once
+      anyone actually narrows an entitlement).
+
+      **Distinct from opentea's current model**: today's `api_token` is a single long-lived
+      secret presented *directly* as the bearer token (`internal/repo/apitoken.go`) -- no
+      key-id/secret pair, no exchange step, no separate short-lived access token, no expiry.
+
+      **Open design questions, still unresolved, to work through when this is picked up**:
+      does the existing long-lived-token-as-bearer path stay usable alongside `/token`, or
+      does `/tea/v1` access now require having gone through the exchange; does a new
+      client-credential pair replace or sit alongside today's `api_token`/"regenerate API
+      token" GUI concept; how are issued (short-lived) access tokens stored/expired/cleaned
+      up, separately from the long-lived credential that mints them; how `grant_type`
+      dispatch should be shaped so a later assertion-grant/OIDC handler can slot in without
+      reworking the endpoint, even though building the actual IdP integration is explicitly
+      out of scope for the first pass whenever it happens.
 - [x] ~~**`error-response` schema is now strict**~~ — fixed 2026-09-21, with a real
       correction to the original finding: `additionalProperties: false` still applies, but
       re-reading the actual spec text turned up an important nuance the first pass missed --

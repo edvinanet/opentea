@@ -192,6 +192,52 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       dispatch should be shaped so a later assertion-grant/OIDC handler can slot in without
       reworking the endpoint, even though building the actual IdP integration is explicitly
       out of scope for the first pass whenever it happens.
+
+      **Additional normative detail found 2026-09-21**, reading `auth/readme.md` (upstream's
+      full authentication narrative doc, alongside `spec/`, not previously read at all — see
+      the "not yet checked" item below) rather than just `spec/openapi.yaml`'s `/token`
+      operation description:
+      - An API key is an **identifier + secret pair**, issued together (identifier need not
+        be confidential, secret is) — distinct from today's single-string `api_token`.
+      - **Hard rule, currently violated by opentea's own `/tea/v1` today, not just a future
+        gap to design around**: "A server shall not accept an API key directly on the
+        resource endpoints, and a client shall not present one there. The API key is
+        exchanged for an access token, and the access token is what the resource endpoints
+        see." `internal/authn.BearerUser` (used by `internal/api/auth_middleware.go`, i.e.
+        `/tea/v1` itself) resolves an `Authorization: Bearer` header **directly** against
+        `Repo.GetUserByAPIToken` (`internal/repo/apitoken.go`) — the long-lived secret *is*
+        the bearer token presented to resource endpoints today, exactly the pattern this rule
+        forbids. Not currently exploitable in practice (the only entitlement opentea ships is
+        the anonymous-read-everything bootstrap — nothing today actually depends on this
+        bearer path for a real access decision), but it means `/token`'s design can't just be
+        "add an exchange step alongside the existing token" — the existing path itself needs
+        to stop being presentable on `/tea/v1` once this is built, not stay as a silent
+        parallel bypass.
+      - Servers **should not** issue refresh tokens for `client_credentials` (RFC 6749
+        §4.4.3) — a client holding its own long-lived API key can just call `/token` again.
+      - Token responses require `Cache-Control: no-store`.
+      - `401` + `WWW-Authenticate: Bearer ... error="invalid_token"` is the client's signal to
+        get a fresh token and retry **once** (RFC 6750 §3.1) — not a general retry policy.
+      - Formal behavior for **"servers without authentication"**: need not implement
+        `/token`; **shall not** answer any resource request with `401`; **shall ignore**
+        (not reject) a stray `Authorization: Bearer` header a client presents anyway. Worth
+        re-checking opentea's current default (unrestricted) mode against this specifically
+        when `/token` is designed, since today's `BearerUser` already treats an unrecognized
+        token as simply "not present" (falls through to anonymous), which is closer to
+        "ignore" than "reject" — plausibly already correct, but not yet explicitly verified
+        against this exact rule.
+      - `RFC 9728` Protected Resource Metadata (external-IdP discovery via
+        `WWW-Authenticate`) is an optional extra, not required for the baseline.
+
+      `signatures/signature.md` (the other previously-unread upstream doc) was also read in
+      full: it's explicitly non-normative ("the framework for digital signatures will not be
+      mandatory for API compliance"), mostly an outline with several empty placeholder
+      sections. It proposes a `/trust-anchors/` endpoint for downloading PEM-encoded PKI trust
+      anchors, but that's prose only — confirmed zero matches for `trust-anchor` anywhere in
+      `spec/openapi.yaml`, so nothing implementable exists yet. Relevant background for, but
+      not in conflict with, oej's separately-maintained `tea-trust-architecture`/
+      `internal/trust` overlay (already a deliberate non-official-spec extension per its own
+      design doc) — no action needed now.
 - [x] ~~**`error-response` schema is now strict**~~ — fixed 2026-09-21, with a real
       correction to the original finding: `additionalProperties: false` still applies, but
       re-reading the actual spec text turned up an important nuance the first pass missed --
@@ -278,20 +324,47 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       full SemVer 2.0.0 strings, no leading `v` (e.g. `["1.0.0"]`). Do this *last*, once the
       conformance work above actually lands — bumping the advertised version before the server
       behaves like it should would be actively misleading to clients.
-- [ ] **Not yet checked, flagged rather than assumed clean** — three areas skipped for scope
-      in the initial diff pass, need their own look before being marked resolved either way:
-      (1) `discovery/tea-well-known.schema.json` vs. `pkg/tea`'s `WellKnownDocument`, not
-      diffed field-by-field, and discovery semantics did change elsewhere (see above) so the
-      well-known doc likely needs a look too; (2) the CLE/ECMA-428 schema family
-      (`cle-event-type`, `cle-version-specifier`, `cle-event`, `cle-support-definition`,
-      `cle-definitions`, `cle`) only skimmed by name, not diffed against `pkg/tea`; (3)
-      whether `spec/TEA_AUTHENTICATION_AUTHORIZATION_SPECIFICATION.md` (the user's own doc,
-      v0.1, 2026-08-06) needs reconciling against the new `/token` mechanism above, since that
-      doc predates it and describes itself as extending TEA auth "without changing normative
-      TEA resource objects" — worth confirming that framing still holds now that auth has its
-      own normative flow baked into `spec/openapi.yaml` itself. Upstream's `auth/readme.md`
-      and `signatures/signature.md` (both exist alongside `spec/`) were not read at all in the
-      initial pass.
+- [x] ~~**Not yet checked, flagged rather than assumed clean**~~ — checked 2026-09-21, all
+      four sub-areas skipped in the initial diff pass:
+      1. `discovery/tea-well-known.schema.json` vs. `pkg/tea.WellKnownDocument` — diffed
+         field-by-field against a fresh fetch. Exact match (`schemaVersion`, `endpoints[].url`/
+         `versions`/`priority`), and `pkg/teaclient`'s consumption already conforms to every
+         behavioral rule the schema states: rejects `schemaVersion != 1`
+         (`wellknown.go:194`), rejects an empty `endpoints` list, defaults absent `priority`
+         to 1, sorts by priority descending, and builds the versioned URL exactly as
+         specified ("append `/v` followed by the exact matched version string"). No changes
+         needed. One incidental finding, not a new issue — `pkg/teaclient/semver.go:20`'s
+         `SupportedVersions = []string{"0.4.0"}` is the same stale version string as the
+         `TEA_VERSIONS` item above; fold it into that bump when it happens, not a separate
+         item.
+      2. The CLE/ECMA-428 schema family (`cle-event-type`, `cle-version-specifier`,
+         `cle-event`, `cle-support-definition`, `cle-definitions`, `cle`) — diffed
+         field-by-field against a fresh fetch. Every field present on `pkg/tea`'s
+         `CLEEvent`/`CLEVersionSpecifier`/`CLESupportDefinition`/`CLEDefinitions`/`CLE`, all
+         nine `cle-event-type` enum values match `enums.go` exactly. Behavioral rules also
+         hold: `events` ordered by `id` descending (`internal/repo/cle.go`'s `getCLETx`,
+         `ORDER BY id DESC`); ids are never renumbered (no delete/reassign code path exists
+         at all — `CreateCLEEvent` only ever assigns `MAX(id)+1`); the withdrawn-event
+         consistency rule ("include a withdrawn event if, and only if, they include the event
+         it withdraws") holds trivially, since opentea never selectively omits events from
+         the response in the first place (the optional per-release version-scoping filter the
+         spec allows, but doesn't require, isn't implemented either — legal, a `MAY`). No
+         changes needed.
+      3. Whether `spec/TEA_AUTHENTICATION_AUTHORIZATION_SPECIFICATION.md` needs reconciling
+         against `/token` — it doesn't, by the doc's own design: §2.1 explicitly lists "how a
+         bearer token is initially acquired" as **out of scope**, which is exactly what
+         `/token` defines. The two documents already have a clean boundary (this one governs
+         what happens *after* a token is presented — normalization, capabilities,
+         entitlements, policy evaluation; `/token` governs how that token is obtained) rather
+         than overlapping or conflicting. No reconciliation needed.
+      4. Upstream's `auth/readme.md` and `signatures/signature.md` — both read in full (were
+         previously not read at all). `auth/readme.md` turned out to be substantially more
+         detailed and load-bearing than `spec/openapi.yaml`'s `/token` operation text alone
+         suggested, including one rule opentea's *current* behavior already runs against —
+         folded into the **`POST /token`** entry above rather than duplicated here.
+         `signatures/signature.md` is explicitly non-normative and mostly an empty outline;
+         nothing actionable, see the `/token` entry above for the one relevant detail (its
+         proposed, not-yet-real `/trust-anchors/` endpoint).
 - [x] ~~`spec/publisher/` (the write-API draft `design/publisher-service.md` explicitly
       designed independently of, calling it superseded)~~ — checked, still stale upstream
       (last touched 2026-01-16, cosmetic terminology commits only). No reconciliation needed;

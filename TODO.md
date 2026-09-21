@@ -35,10 +35,24 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       this server," which is now inaccurate: upstream gives it a dedicated download endpoint
       (see above) and a distinct `SIGNATURE_NOT_FOUND` error code. Comment + handling need
       revisiting together with the download-endpoint item.
-- [ ] **Discovery must support `?purl=` alongside `?tei=`** — upstream: "Exactly one of the
-      `tei` and `purl` query parameters shall be provided... Discovery by PURL requires an
-      already-known API base URL and resolves within that server's inventory."
-      `internal/api/discovery.go:20` reads only `tei`; no `purl` parameter exists at all.
+- [x] ~~**Discovery must support `?purl=` alongside `?tei=`**~~ — fixed 2026-09-21:
+      `discoveryByTEI` renamed `discovery` (`internal/api/discovery.go`), now reads either
+      `tei` or `purl` (400 if neither or both are supplied, per upstream: "Exactly one of the
+      tei and purl query parameters shall be provided"), resolving purl the same way tei
+      already did — new `Repo.FindProductReleaseUUIDByPURL` (`internal/repo/discovery.go`,
+      same shape as `FindProductReleaseUUIDByTEI`, just `id_type = 'PURL'`), same
+      404+OBJECT_UNKNOWN no-match/denied-match handling. Client gained a `DiscoverByPURL`
+      method (`pkg/teaclient/discovery.go`) — no `BootstrapDiscover`-style counterpart exists
+      for it, since there's no `.well-known` bootstrap flow for a bare PURL (caller must
+      already know which server to ask); `cmd/teaclient discover` gained a `-purl=` flag
+      (requires `-server`). Verified: updated/new tests in
+      `cmd/opentea/integration_test.go`/`authz_tea_test.go` (match, no-match, denied-match,
+      neither/both params → 400) and `pkg/teaclient/client_test.go`
+      (`TestDiscoverByPURL`/`TestDiscoverByPURLNoMatchIsNotFound`), plus a manual end-to-end
+      run against the real built binaries (`teaclient discover -purl=... -server=...`
+      resolving correctly, encoding round-tripped through `url.Values`/`r.URL.Query()`
+      automatically — confirmed, not assumed). `go test ./... -race`/`golangci-lint` clean
+      on every file touched.
 - [x] ~~**Discovery no-match must return `404`, not `200` with an empty array**~~ — fixed
       2026-09-21: `discoveryByTEI` (`internal/api/discovery.go`) now returns `httpx.NotFound`
       (404 + `OBJECT_UNKNOWN`) for both a genuine no-match and an authz-denied match, aligning
@@ -79,10 +93,12 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       `pkg/tea/types.go:171-181` also has a locally-invented `OBJECT_NOT_SHAREABLE` error type
       that never existed upstream — confirmed dead code (declared, never emitted), safe to
       remove once the real enum is wired in rather than carried forward as noise.
-- [ ] **`checksum-type` dropped `MD5`** — upstream now lists `SHA-1, SHA-256, SHA-384,
-      SHA-512, SHA3-256/384/512, BLAKE2b-256/384/512, BLAKE3`. opentea's `pkg/tea/enums.go:33-45`
-      still has `ChecksumTypeMD5`. Not yet checked whether anything server-side actually
-      accepts/validates an MD5 checksum on write — check before deleting the constant.
+- [ ] ~~**`checksum-type` dropped `MD5`**~~ **on hold (2026-09-21), per explicit user
+      decision** — upstream now lists `SHA-1, SHA-256, SHA-384, SHA-512, SHA3-256/384/512,
+      BLAKE2b-256/384/512, BLAKE3`; opentea's `pkg/tea/enums.go:33-45` still has
+      `ChecksumTypeMD5`. Not removing it: MD5's presence in `checksum-type` is itself under
+      discussion upstream and may come back in a later spec revision — wait for that to
+      settle rather than churn the enum twice.
 - [ ] **New `compliance-document-type` enum, entirely absent locally** — ~20 values
       (`SOC_2_TYPE_I`, `ISO_27001`, `HIPAA`, `GDPR`, `FEDRAMP`, `PCI_DSS`, `CMMC`,
       `NIST_800_53`/`171`, etc.), used as valid `idValue`s when `identifier-type` is the

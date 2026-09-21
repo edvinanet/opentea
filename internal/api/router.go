@@ -37,5 +37,5 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET "+base+"/artifact/{uuid}/latest", s.getLatestArtifact)
 	mux.HandleFunc("GET "+base+"/artifact/{uuid}/{artifactVersion}", s.getArtifactByVersion)
 
-	mux.HandleFunc("GET "+base+"/discovery", s.discoveryByTEI)
+	mux.HandleFunc("GET "+base+"/discovery", s.discovery)
 }

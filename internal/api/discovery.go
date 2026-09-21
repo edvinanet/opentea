@@ -13,21 +13,38 @@ import (
 	"github.com/oej/opentea/pkg/tea"
 )
 
-// discoveryByTEI is a self-authoritative lookup (no federation in Phase 1):
-// it resolves tei to a productReleaseUuid if this server hosts it, and
-// always describes itself as the (only) server for that release.
-func (s *Server) discoveryByTEI(w http.ResponseWriter, r *http.Request) {
+// discovery is a self-authoritative lookup (no federation in Phase 1): it
+// resolves a TEI or a PURL to a productReleaseUuid if this server hosts
+// it, and always describes itself as the (only) server for that release.
+// Upstream TEA 1.0 (spec/openapi.yaml, /discovery) added purl alongside
+// the original tei -- "Exactly one of the tei and purl query parameters
+// shall be provided. A request with neither, or with both, is rejected
+// with 400" -- purl resolves "within this TEA server's inventory" to the
+// same target type (a product release) tei does, so both share every
+// step here past the initial parameter resolution.
+func (s *Server) discovery(w http.ResponseWriter, r *http.Request) {
 	tei := r.URL.Query().Get("tei")
-	if tei == "" {
-		httpx.BadRequest(w, "tei query parameter is required")
+	purl := r.URL.Query().Get("purl")
+	switch {
+	case tei == "" && purl == "":
+		httpx.BadRequest(w, "exactly one of the tei or purl query parameters is required")
+		return
+	case tei != "" && purl != "":
+		httpx.BadRequest(w, "tei and purl query parameters are mutually exclusive")
 		return
 	}
 
-	productReleaseUUID, err := s.repo.FindProductReleaseUUIDByTEI(r.Context(), tei)
+	var productReleaseUUID string
+	var err error
+	if tei != "" {
+		productReleaseUUID, err = s.repo.FindProductReleaseUUIDByTEI(r.Context(), tei)
+	} else {
+		productReleaseUUID, err = s.repo.FindProductReleaseUUIDByPURL(r.Context(), purl)
+	}
 	if errors.Is(err, repo.ErrNotFound) {
-		// Upstream TEA 1.0 (spec/openapi.yaml, /discovery): "If the server
-		// does not resolve the identifier, it responds with 404 and
-		// error: OBJECT_UNKNOWN" -- no longer 200 with an empty array.
+		// Upstream TEA 1.0: "If the server does not resolve the identifier,
+		// it responds with 404 and error: OBJECT_UNKNOWN" -- no longer 200
+		// with an empty array.
 		httpx.NotFound(w)
 		return
 	}

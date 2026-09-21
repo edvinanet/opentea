@@ -173,7 +173,10 @@ func TestTeaV1AuthzDiscoveryDeniedMatchesNoMatch(t *testing.T) {
 	status, raw = jsonRequest(t, srv, http.MethodPost, "/admin/v1/products/"+product.UUID+"/releases", map[string]any{
 		"version":     "1.0",
 		"createdDate": "2026-01-01T00:00:00Z",
-		"identifiers": []tea.Identifier{{IDType: "TEI", IDValue: "urn:tei:uuid:acme.example.com:hidden-1.0.0"}},
+		"identifiers": []tea.Identifier{
+			{IDType: "TEI", IDValue: "urn:tei:uuid:acme.example.com:hidden-1.0.0"},
+			{IDType: "PURL", IDValue: "pkg:generic/hidden@1.0.0"},
+		},
 	})
 	if status != http.StatusCreated {
 		t.Fatalf("POST .../releases: status=%d body=%s", status, raw)
@@ -196,6 +199,18 @@ func TestTeaV1AuthzDiscoveryDeniedMatchesNoMatch(t *testing.T) {
 	decodeInto(t, raw, &errResp)
 	if errResp.Error != tea.ErrorObjectUnknown {
 		t.Fatalf("discovery error for denied match = %q, want OBJECT_UNKNOWN", errResp.Error)
+	}
+
+	// Same existence-hiding rule applies when the match is found via purl
+	// instead of tei -- the denial doesn't care which identifier resolved
+	// the release.
+	status, _, raw = teaRequest(t, srv, http.MethodGet, "/tea/v1/discovery?purl=pkg%3Ageneric%2Fhidden%401.0.0", "")
+	if status != http.StatusNotFound {
+		t.Fatalf("GET /discovery (denied purl match): status=%d body=%s, want 404", status, raw)
+	}
+	decodeInto(t, raw, &errResp)
+	if errResp.Error != tea.ErrorObjectUnknown {
+		t.Fatalf("discovery error for denied purl match = %q, want OBJECT_UNKNOWN", errResp.Error)
 	}
 }
 

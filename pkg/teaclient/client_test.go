@@ -295,3 +295,43 @@ func TestDiscoverNoMatchIsNotFound(t *testing.T) {
 		t.Fatalf("results = %+v, want nil", results)
 	}
 }
+
+// TestDiscoverByPURL confirms the purl query parameter is sent correctly
+// and a match decodes the same as Discover's -- added alongside tei in
+// upstream TEA 1.0 (spec/openapi.yaml).
+func TestDiscoverByPURL(t *testing.T) {
+	client, _ := newFakeServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("purl"); got != "pkg:generic/acme-widget@1.0.0" {
+			t.Errorf("purl = %q", got)
+		}
+		if r.URL.Query().Get("tei") != "" {
+			t.Errorf("tei query parameter should not be set for a purl request")
+		}
+		_ = json.NewEncoder(w).Encode([]tea.DiscoveryInfo{{ProductReleaseUUID: "pr-1"}})
+	})
+
+	results, err := client.DiscoverByPURL(context.Background(), "pkg:generic/acme-widget@1.0.0")
+	if err != nil {
+		t.Fatalf("DiscoverByPURL: %v", err)
+	}
+	if len(results) != 1 || results[0].ProductReleaseUUID != "pr-1" {
+		t.Fatalf("results = %+v", results)
+	}
+}
+
+// TestDiscoverByPURLNoMatchIsNotFound mirrors
+// TestDiscoverNoMatchIsNotFound for the purl path.
+func TestDiscoverByPURLNoMatchIsNotFound(t *testing.T) {
+	client, _ := newFakeServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(tea.ErrorResponse{Error: tea.ErrorObjectUnknown})
+	})
+
+	results, err := client.DiscoverByPURL(context.Background(), "pkg:generic/unknown")
+	if !IsNotFound(err) {
+		t.Fatalf("err = %v, want IsNotFound", err)
+	}
+	if results != nil {
+		t.Fatalf("results = %+v, want nil", results)
+	}
+}

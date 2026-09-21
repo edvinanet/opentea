@@ -202,7 +202,10 @@ func TestWorkedExample(t *testing.T) {
 		"version":     "1.0.0",
 		"createdDate": "2026-07-01T00:00:00Z",
 		"releaseDate": "2026-07-01T00:00:00Z",
-		"identifiers": []tea.Identifier{{IDType: "TEI", IDValue: "urn:tei:uuid:acme.example.com:widget-1.0.0"}},
+		"identifiers": []tea.Identifier{
+			{IDType: "TEI", IDValue: "urn:tei:uuid:acme.example.com:widget-1.0.0"},
+			{IDType: "PURL", IDValue: "pkg:generic/acme-widget@1.0.0"},
+		},
 	})
 	if status != http.StatusCreated {
 		t.Fatalf("create product release: status=%d body=%s", status, raw)
@@ -403,6 +406,37 @@ func TestWorkedExample(t *testing.T) {
 	decodeInto(t, raw, &discoveryErr)
 	if discoveryErr.Error != tea.ErrorObjectUnknown {
 		t.Fatalf("discovery error for unknown tei = %q, want OBJECT_UNKNOWN", discoveryErr.Error)
+	}
+
+	// Discovery by PURL, added alongside tei in upstream TEA 1.0.
+	purlEscaped := url.QueryEscape("pkg:generic/acme-widget@1.0.0")
+	status, raw = jsonRequest(t, srv, http.MethodGet, "/tea/v1/discovery?purl="+purlEscaped, nil)
+	if status != http.StatusOK {
+		t.Fatalf("GET /discovery?purl=...: status=%d body=%s", status, raw)
+	}
+	var purlDiscovery []tea.DiscoveryInfo
+	decodeInto(t, raw, &purlDiscovery)
+	if len(purlDiscovery) != 1 || purlDiscovery[0].ProductReleaseUUID != productRelease.UUID {
+		t.Fatalf("purl discovery = %+v, want resolved to %s", purlDiscovery, productRelease.UUID)
+	}
+
+	status, raw = jsonRequest(t, srv, http.MethodGet, "/tea/v1/discovery?purl=pkg%3Ageneric%2Funknown", nil)
+	if status != http.StatusNotFound {
+		t.Fatalf("GET /discovery (unknown purl): status=%d, want 404", status)
+	}
+	decodeInto(t, raw, &discoveryErr)
+	if discoveryErr.Error != tea.ErrorObjectUnknown {
+		t.Fatalf("discovery error for unknown purl = %q, want OBJECT_UNKNOWN", discoveryErr.Error)
+	}
+
+	// Upstream TEA 1.0: "Exactly one of the tei and purl query parameters
+	// shall be provided. A request with neither, or with both, is rejected
+	// with 400."
+	if status, _ := jsonRequest(t, srv, http.MethodGet, "/tea/v1/discovery", nil); status != http.StatusBadRequest {
+		t.Fatalf("GET /discovery (neither param): status=%d, want 400", status)
+	}
+	if status, _ := jsonRequest(t, srv, http.MethodGet, "/tea/v1/discovery?tei="+teiEscaped+"&purl="+purlEscaped, nil); status != http.StatusBadRequest {
+		t.Fatalf("GET /discovery (both params): status=%d, want 400", status)
 	}
 }
 

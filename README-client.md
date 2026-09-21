@@ -51,10 +51,13 @@ Every read endpoint in the spec has a corresponding method: `GetProduct`/`QueryP
 `GetLatestArtifact`/`GetArtifactByVersion`, the four `GetCLEBy*` owner-type getters, and
 `Discover`.
 
-`Discover` queries a single, already-known server's own `/discovery` endpoint. For the full
-TEI-authority bootstrap flow — extract authority from the TEI, fetch its `.well-known/tea`
-document, try each listed server in priority order — use `BootstrapDiscover` instead, which
-needs no server URL at all, just a TEI:
+`Discover` queries a single, already-known server's own `/discovery` endpoint by TEI.
+`DiscoverByPURL` is its Package URL sibling (TEA 1.0, `spec/openapi.yaml`) — same endpoint,
+`?purl=` instead of `?tei=`, same success/no-match contract, but no `.well-known` bootstrap
+flow exists for a bare PURL, so there's no `BootstrapDiscover`-style counterpart for it: the
+caller must already know which server to ask. For the full TEI-authority bootstrap flow —
+extract authority from the TEI, fetch its `.well-known/tea` document, try each listed server in
+priority order — use `BootstrapDiscover` instead, which needs no server URL at all, just a TEI:
 
 ```go
 result, err := teaclient.BootstrapDiscover(ctx, "tei://products.example.com/uuid/d4d9f54a-...",
@@ -72,7 +75,8 @@ also does a best-effort HTTPS/SVCB (RFC 9460) DNS lookup for the `.well-known/te
 falling back silently to the authority's own host on port 443 if none is found.
 
 `cmd/teaclient discover <tei>` uses this automatically when `-server` is omitted; give `-server`
-to keep the older, single-server-only behavior.
+to keep the older, single-server-only behavior. `teaclient discover -purl=<purl> -server=<url>`
+uses `DiscoverByPURL` instead — `-server` is required there, not optional.
 
 Built against the TEI URL syntax (`tei://<domain>/<type>/<id>`) from
 `CycloneDX/transparency-exchange-api` PR #261, **unmerged** at the time this was written — the

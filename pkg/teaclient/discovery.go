@@ -27,3 +27,20 @@ func (c *Client) Discover(ctx context.Context, tei string) ([]tea.DiscoveryInfo,
 	err := c.do(ctx, "GET", "/discovery", url.Values{"tei": {tei}}, &out)
 	return out, err
 }
+
+// DiscoverByPURL resolves a Package URL (PURL) via this server's GET
+// /discovery endpoint -- added alongside tei in upstream TEA 1.0
+// (spec/openapi.yaml): "Discovery by PURL requires an already-known API
+// base URL and resolves within that server's inventory," unlike tei
+// discovery there's no ".well-known"-based authority to bootstrap from
+// for a bare PURL, so this has no BootstrapDiscover-style counterpart --
+// callers must already know which server to ask. Named DiscoverByPURL
+// rather than renaming Discover to DiscoverByTEI to avoid breaking every
+// existing Discover/BootstrapDiscover call site for a purely cosmetic
+// symmetry; same success/no-match contract as Discover (see its own doc
+// comment).
+func (c *Client) DiscoverByPURL(ctx context.Context, purl string) ([]tea.DiscoveryInfo, error) {
+	var out []tea.DiscoveryInfo
+	err := c.do(ctx, "GET", "/discovery", url.Values{"purl": {purl}}, &out)
+	return out, err
+}

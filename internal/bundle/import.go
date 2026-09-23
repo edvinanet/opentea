@@ -273,7 +273,7 @@ func importCollections(ctx context.Context, r *repo.Repo, m Manifest, sha256ToUR
 		created, err := r.ImportCollection(ctx, repo.ImportCollectionInput{
 			UUID:         col.UUID,
 			Version:      col.Version,
-			Date:         col.Date,
+			CreatedDate:  col.CreatedDate,
 			BelongsTo:    col.BelongsTo,
 			UpdateReason: col.UpdateReason,
 			Artifacts:    artifactRefs,

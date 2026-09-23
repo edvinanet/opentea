@@ -432,7 +432,7 @@ func buildWouldBeCollectionTx(ctx context.Context, q dbtx, ownerType, ownerUUID 
 		updateReason = &tea.UpdateReason{Type: row.updateReasonType.String, Comment: row.updateReasonComment.String}
 	}
 
-	// The would-be collection's Date must stay fixed across every
+	// The would-be collection's CreatedDate must stay fixed across every
 	// recomputation while a lock is held -- PrepareCollectionCommit's
 	// caller signs a digest computed over this exact value, and
 	// commitCollectionDraft must re-derive the identical digest moments
@@ -453,7 +453,7 @@ func buildWouldBeCollectionTx(ctx context.Context, q dbtx, ownerType, ownerUUID 
 	} else {
 		// Round-tripped through formatTime/parseTime immediately (rather
 		// than the raw, nanosecond-precision time.Now()) so this call's
-		// returned Date already exactly equals what a later requireLock
+		// returned CreatedDate already exactly equals what a later requireLock
 		// call will reconstruct from the second-precision lock_date column
 		// -- the digest computed over this value must match bit-for-bit.
 		date, err = parseTime(formatTime(time.Now()))
@@ -465,7 +465,7 @@ func buildWouldBeCollectionTx(ctx context.Context, q dbtx, ownerType, ownerUUID 
 	return tea.Collection{
 		UUID:         ownerUUID,
 		Version:      nextVersion,
-		Date:         date,
+		CreatedDate:  date,
 		BelongsTo:    ownerType,
 		Artifacts:    artifacts,
 		UpdateReason: updateReason,
@@ -488,7 +488,7 @@ func (r *Repo) PrepareCollectionCommit(ctx context.Context, ownerType, ownerUUID
 		}
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE collection_draft SET lock_expires_at = ?, lock_date = ? WHERE owner_type = ? AND owner_uuid = ?`,
-			formatTime(time.Now().Add(lockTTL)), formatTime(wouldBe.Date), ownerType, ownerUUID,
+			formatTime(time.Now().Add(lockTTL)), formatTime(wouldBe.CreatedDate), ownerType, ownerUUID,
 		); err != nil {
 			return tea.Collection{}, err
 		}

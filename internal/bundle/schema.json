@@ -107,11 +107,11 @@
     "collection": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["uuid", "version", "date", "belongsTo", "artifacts"],
+      "required": ["uuid", "version", "createdDate", "belongsTo", "artifacts"],
       "properties": {
         "uuid": { "$ref": "#/$defs/uuid" },
         "version": { "type": "integer", "minimum": 1 },
-        "date": { "type": "string", "format": "date-time" },
+        "createdDate": { "type": "string", "format": "date-time" },
         "belongsTo": { "type": "string", "enum": ["COMPONENT_RELEASE", "PRODUCT_RELEASE"] },
         "updateReason": { "$ref": "#/$defs/updateReason" },
         "artifacts": { "type": "array", "items": { "$ref": "#/$defs/artifact" } }

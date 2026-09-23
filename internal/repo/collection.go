@@ -127,7 +127,7 @@ func (r *Repo) createCollection(ctx context.Context, ownerUUID, belongsTo string
 type ImportCollectionInput struct {
 	UUID         string
 	Version      int
-	Date         time.Time
+	CreatedDate  time.Time
 	BelongsTo    string
 	UpdateReason *tea.UpdateReason
 	Artifacts    []ArtifactRef
@@ -162,7 +162,7 @@ func (r *Repo) ImportCollection(ctx context.Context, in ImportCollectionInput) (
 
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO collection (uuid, version, date, belongs_to, update_reason_type, update_reason_comment) VALUES (?, ?, ?, ?, ?, ?)`,
-			in.UUID, in.Version, formatTime(in.Date), in.BelongsTo, reasonType, reasonComment,
+			in.UUID, in.Version, formatTime(in.CreatedDate), in.BelongsTo, reasonType, reasonComment,
 		); err != nil {
 			return false, err
 		}
@@ -195,7 +195,7 @@ func collectionConflicts(existing tea.Collection, in ImportCollectionInput) bool
 	if existing.BelongsTo != in.BelongsTo {
 		return true
 	}
-	if !existing.Date.Equal(in.Date) {
+	if !existing.CreatedDate.Equal(in.CreatedDate) {
 		return true
 	}
 	if !ptrEqual(existing.UpdateReason, in.UpdateReason) {
@@ -322,11 +322,11 @@ func getCollectionByVersionTx(ctx context.Context, q dbtx, ownerUUID string, ver
 	}
 
 	c := tea.Collection{
-		UUID:      ownerUUID,
-		Version:   version,
-		Date:      d,
-		BelongsTo: gotBelongsTo,
-		Artifacts: artifacts,
+		UUID:        ownerUUID,
+		Version:     version,
+		CreatedDate: d,
+		BelongsTo:   gotBelongsTo,
+		Artifacts:   artifacts,
 	}
 	if reasonType.Valid {
 		c.UpdateReason = &tea.UpdateReason{Type: reasonType.String, Comment: reasonCmt.String}
@@ -373,11 +373,11 @@ func getCollectionByVersionUnfilteredTx(ctx context.Context, q dbtx, ownerUUID s
 	}
 
 	c := tea.Collection{
-		UUID:      ownerUUID,
-		Version:   version,
-		Date:      d,
-		BelongsTo: belongsTo,
-		Artifacts: artifacts,
+		UUID:        ownerUUID,
+		Version:     version,
+		CreatedDate: d,
+		BelongsTo:   belongsTo,
+		Artifacts:   artifacts,
 	}
 	if reasonType.Valid {
 		c.UpdateReason = &tea.UpdateReason{Type: reasonType.String, Comment: reasonCmt.String}

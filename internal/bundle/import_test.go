@@ -835,7 +835,7 @@ func TestImportConflictDetection(t *testing.T) {
 			name: "collection",
 			mutate: func(doc map[string]any) {
 				collections := doc["collections"].([]any)
-				collections[0].(map[string]any)["date"] = "2020-01-01T00:00:00Z"
+				collections[0].(map[string]any)["createdDate"] = "2020-01-01T00:00:00Z"
 			},
 			verify: func(t *testing.T, ctx context.Context, dstRepo *repo.Repo, productUUID string) {
 				releases, err := dstRepo.ListProductReleasesByProduct(ctx, productUUID, "", "asc", nil, 10)
@@ -847,8 +847,8 @@ func TestImportConflictDetection(t *testing.T) {
 				if err != nil || len(collections) != 1 {
 					t.Fatalf("ListCollections: collections=%+v err=%v", collections, err)
 				}
-				if collections[0].Date.Year() == 2020 {
-					t.Fatalf("Date = %v, want original unchanged (not the mutated 2020 date)", collections[0].Date)
+				if collections[0].CreatedDate.Year() == 2020 {
+					t.Fatalf("CreatedDate = %v, want original unchanged (not the mutated 2020 date)", collections[0].CreatedDate)
 				}
 			},
 		},

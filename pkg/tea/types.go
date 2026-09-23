@@ -115,7 +115,7 @@ type UpdateReason struct {
 type Collection struct {
 	UUID         string        `json:"uuid"`
 	Version      int           `json:"version"`
-	Date         time.Time     `json:"date"`
+	CreatedDate  time.Time     `json:"createdDate"`
 	BelongsTo    string        `json:"belongsTo"`
 	UpdateReason *UpdateReason `json:"updateReason,omitempty"`
 	Artifacts    []Artifact    `json:"artifacts"`

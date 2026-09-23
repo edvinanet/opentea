@@ -1203,6 +1203,65 @@ func TestCollectionRoutesRespectParentType(t *testing.T) {
 	})
 }
 
+// TestCollectionWireFieldIsCreatedDate is the regression test for a
+// conformance bug found 2026-09-23, diffing a fresh upstream checkout:
+// TEA 1.0 (spec/openapi.yaml) renamed the collection schema's creation-
+// timestamp field from "date" to "createdDate" at some point before v1.0
+// -- opentea's own wire shape still emitted "date" (pkg/tea.Collection's
+// original json tag), a mismatch that predated and was missed by this
+// session's whole TEA 1.0 conformance pass, since that work never diffed
+// the core product/collection/artifact schemas field-by-field. Asserts
+// against the raw JSON body directly, not just a decoded Go struct, since
+// a decode-based assertion wouldn't have caught the original bug either
+// (json.Unmarshal silently ignores an unknown "date" key when the struct
+// tag says "createdDate", and vice versa -- only the raw bytes prove
+// which key is actually on the wire).
+func TestCollectionWireFieldIsCreatedDate(t *testing.T) {
+	srv := newTestServer(t)
+
+	status, raw := jsonRequest(t, srv, http.MethodPost, "/admin/v1/products", map[string]any{"name": "Widget"})
+	if status != http.StatusCreated {
+		t.Fatalf("create product: status=%d body=%s", status, raw)
+	}
+	var product tea.Product
+	decodeInto(t, raw, &product)
+
+	status, raw = jsonRequest(t, srv, http.MethodPost, "/admin/v1/products/"+product.UUID+"/releases", map[string]any{
+		"version": "1.0.0", "createdDate": "2026-07-01T00:00:00Z",
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("create product release: status=%d body=%s", status, raw)
+	}
+	var release tea.ProductRelease
+	decodeInto(t, raw, &release)
+
+	status, raw = jsonRequest(t, srv, http.MethodPost, "/admin/v1/productReleases/"+release.UUID+"/collections", map[string]any{})
+	if status != http.StatusCreated {
+		t.Fatalf("create collection: status=%d body=%s", status, raw)
+	}
+
+	resp, err := http.Get(srv.URL + "/tea/v1/productRelease/" + release.UUID + "/collection/latest") //nolint:gosec // srv.URL is this test's own httptest.Server
+	if err != nil {
+		t.Fatalf("GET collection/latest: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read response body: %v", err)
+	}
+
+	var raw2 map[string]any
+	if err := json.Unmarshal(body, &raw2); err != nil {
+		t.Fatalf("decode raw body: %v (body: %s)", err, body)
+	}
+	if _, ok := raw2["createdDate"]; !ok {
+		t.Fatalf("response body has no \"createdDate\" key: %s", body)
+	}
+	if _, ok := raw2["date"]; ok {
+		t.Fatalf("response body still has a \"date\" key (stale field name): %s", body)
+	}
+}
+
 // getWithETag issues a GET against path, optionally sending ifNoneMatch as
 // the If-None-Match header (skipped entirely if empty), and returns the
 // status code, the response's own ETag header, and the body.

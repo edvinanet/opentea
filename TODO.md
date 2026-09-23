@@ -448,6 +448,75 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       designed independently of, calling it superseded)~~ — checked, still stale upstream
       (last touched 2026-01-16, cosmetic terminology commits only). No reconciliation needed;
       the decision to treat it as superseded remains sound.
+- [ ] **Product Release / Component Release UUIDs must be disjoint within an authoritative
+      domain** — found 2026-09-23, diffing a newer local upstream checkout
+      (`~/transparency-exchange-api`, `f5817aa`, 2026-09-22) against the `8635688` snapshot
+      this session's earlier conformance work was based on. New normative rule (#329,
+      `doc/tea-uuid-scope.md`): "within an authoritative domain, a UUID MUST NOT be used as
+      both a Product Release UUID and a Component Release UUID" — because a Collection
+      inherits its parent release's UUID, a collision there would mean two distinct
+      Collections sharing one identity. (The rest of that local checkout's diff against
+      `8635688` — dozens of `operationId` renames, path/tag reordering, typo/formatting
+      fixes, `#313`/`#312` — is pure OpenAPI metadata with no wire-protocol effect,
+      confirmed not actionable for this Go implementation; `auth/readme.md` is unaffected,
+      the one upstream-merged "oej/auth" PR in that range is itself just the spelling-fix
+      commit already read this session, confirmed byte-identical.)
+
+      Checked against opentea: **already satisfied by construction** on the normal
+      create path — `internal/repo/productrelease.go` and `componentrelease.go` both mint
+      their UUID via the same random `idgen.New()` (UUIDv4), so the collision probability
+      between the two tables is the standard, negligible UUIDv4 birthday bound, exactly
+      what the upstream doc's own text expects ("generators that produce globally unique
+      UUIDs... satisfies the rule in ordinary practice"). **One real, narrow gap**: bundle
+      import (`Repo.ImportProductRelease`/`ImportComponentRelease`) takes an explicit,
+      externally-supplied UUID with no check against the *other* release type's table —
+      a crafted (or accidentally colliding) bundle could violate this rule today. Low
+      practical severity (import is already admin-gated, and this needs either malice or a
+      genuine UUIDv4 collision to trigger), but a real gap, not just a theoretical one.
+      Not fixed yet — flagged for a future pass, possibly bundled with other import-
+      validation hardening.
+- [x] ~~**`Collection`'s wire field is `createdDate`, not `date`**~~ — fixed 2026-09-23,
+      found during a thorough audit of the import/export bundle format (user request) that
+      diffed the core Product/Collection/Artifact schemas field-by-field against the fresh
+      local upstream checkout for the first time this session — every earlier conformance
+      pass had focused on well-known/CLE/auth/discovery/artifact-download instead. Upstream
+      had already renamed this before the `8635688` snapshot this whole effort started from,
+      so the bug predates this session's TEA 1.0 work entirely and was simply never caught.
+      `pkg/tea.Collection.Date` (`json:"date"`) renamed to `CreatedDate`
+      (`json:"createdDate"`) to match; the DB column itself stays named `date`
+      (`internal/db/migrations/0001_init.sql`) since that's an internal detail with no wire
+      exposure, no migration needed. Updated every call site
+      (`internal/repo/collection.go`, `collectiondraft.go`, `internal/bundle/import.go`,
+      `internal/webadmin/evidence.go`, plus tests) and `internal/bundle/schema.json`'s
+      `collection` `$def` (property name and `required` list both said `date`). Verified:
+      `cmd/opentea/integration_test.go`'s new `TestCollectionWireFieldIsCreatedDate` asserts
+      against the *raw* JSON body (a decode-based assertion wouldn't have caught the
+      original bug either — `json.Unmarshal` silently drops an unrecognized key regardless
+      of which side is wrong), plus a manual smoke test against the real built binary
+      (fetched a live collection, confirmed `createdDate` present and `date` absent;
+      exported a product, confirmed the bundle's `manifest.json` carries `createdDate` and
+      passes `bundlecheck`; imported that bundle into a second fresh server, confirmed a
+      clean round-trip). `go test ./... -race`/`golangci-lint`/`go vet`/`gofmt` clean.
+
+      **Other findings from the same bundle-format audit, still open** (not part of this
+      fix, recorded here so they aren't lost): (1) `artifact.createdDate` is now
+      spec-required but `/admin/v1/artifacts` allows creating one without it (the publisher
+      path always sets it via `&now`, the admin path doesn't default it); (2)
+      `product-release.product` (parent UUID) is spec-required but
+      `internal/repo/productrelease.go` has a nullable-DB-column code path that can omit it
+      from the wire response — worth checking whether that's ever actually reachable or just
+      defensive coding for a column that's always populated in practice; (3)
+      `docs/bundle-format.md`'s "File URLs" section is stale — it claims import always
+      rewrites content URLs to `<dest>/files/<sha256>`, true only for distributions now;
+      artifact-format content instead leaves `url` empty (self-hosted, retrieved via the
+      download endpoint) since this session's earlier artifact-download work; (4)
+      `internal/bundle/schema.json`'s `checksum.algValue` doesn't enforce the hex
+      pattern/length upstream's `checksum` schema now specifies; (5) the bundle schema
+      doesn't carry `evidenceBundle`/`evidenceBundleRef` on `collection`/`artifactFormat` --
+      **not** an official-spec gap (those fields are oej's own tea-trust-architecture
+      extension, not in the upstream standard at all), but a latent self-consistency gap
+      that's harmless only because evidence isn't wired into the normal Get path yet (Phase
+      1 scope boundary, `internal/trust`).
 
 ## Project rename: OpenTEA → OpenTeapot
 - [ ] **Rename the project** (decided 2026-08-28) — "OpenTEA" turned out to already be in use

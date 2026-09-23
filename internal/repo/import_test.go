@@ -253,10 +253,10 @@ func TestImportCollectionIdempotent(t *testing.T) {
 	}
 
 	in := ImportCollectionInput{
-		UUID:      releaseUUID,
-		Version:   1,
-		Date:      time.Now().UTC().Truncate(time.Second),
-		BelongsTo: "PRODUCT_RELEASE",
+		UUID:        releaseUUID,
+		Version:     1,
+		CreatedDate: time.Now().UTC().Truncate(time.Second),
+		BelongsTo:   "PRODUCT_RELEASE",
 	}
 	created, err := r.ImportCollection(ctx, in)
 	if err != nil || !created {

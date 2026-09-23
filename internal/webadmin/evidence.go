@@ -82,7 +82,7 @@ func (s *Server) buildCollectionViews(ctx context.Context, collections []tea.Col
 			})
 		}
 		out = append(out, collectionView{
-			UUID: c.UUID, Version: c.Version, Date: c.Date, UpdateReason: c.UpdateReason,
+			UUID: c.UUID, Version: c.Version, Date: c.CreatedDate, UpdateReason: c.UpdateReason,
 			Artifacts: artifacts,
 			Evidence:  s.evidenceBadgeFor(ctx, "COLLECTION", c.UUID, c.Version),
 		})

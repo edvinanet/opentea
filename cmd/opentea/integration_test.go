@@ -653,8 +653,9 @@ func TestUploadToInvalidTargetDoesNotOrphanBlob(t *testing.T) {
 	// A real artifact, to exercise "wrong version" and "formatIndex out of
 	// range" against a target that otherwise genuinely exists.
 	status, raw := jsonRequest(t, srv, http.MethodPost, "/admin/v1/artifacts", map[string]any{
-		"type":    "BOM",
-		"formats": []map[string]any{{"mediaType": "application/json"}},
+		"type":        "BOM",
+		"createdDate": "2026-07-01T00:00:00Z",
+		"formats":     []map[string]any{{"mediaType": "application/json"}},
 	})
 	if status != http.StatusCreated {
 		t.Fatalf("create artifact: status=%d body=%s", status, raw)
@@ -1322,7 +1323,7 @@ func TestETagConditionalRequests(t *testing.T) {
 	decodeInto(t, raw, &component)
 
 	status, raw = jsonRequest(t, srv, http.MethodPost, "/admin/v1/artifacts", map[string]any{
-		"type": "BOM", "formats": []map[string]any{{"mediaType": "application/json"}},
+		"type": "BOM", "createdDate": "2026-07-01T00:00:00Z", "formats": []map[string]any{{"mediaType": "application/json"}},
 	})
 	if status != http.StatusCreated {
 		t.Fatalf("create artifact: status=%d body=%s", status, raw)

@@ -116,8 +116,9 @@ func TestBundleExportImportRoundTrip(t *testing.T) {
 	}
 
 	status, raw = jsonRequest(t, src, http.MethodPost, "/admin/v1/artifacts", map[string]any{
-		"type":    "BOM",
-		"formats": []map[string]any{{"mediaType": "application/vnd.cyclonedx+json"}},
+		"type":        "BOM",
+		"createdDate": "2026-07-01T00:00:00Z",
+		"formats":     []map[string]any{{"mediaType": "application/vnd.cyclonedx+json"}},
 	})
 	if status != http.StatusCreated {
 		t.Fatalf("create artifact: status=%d body=%s", status, raw)

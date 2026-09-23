@@ -497,21 +497,45 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       exported a product, confirmed the bundle's `manifest.json` carries `createdDate` and
       passes `bundlecheck`; imported that bundle into a second fresh server, confirmed a
       clean round-trip). `go test ./... -race`/`golangci-lint`/`go vet`/`gofmt` clean.
+- [x] ~~**`artifact.createdDate` is spec-required but `/admin/v1/artifacts` allowed omitting
+      it**~~ — fixed 2026-09-23, the second finding from the same bundle-format audit.
+      `internal/publisher`'s `createArtifact` already always set `createdDate` (server-
+      assigned, `&now`, matching `design/publisher-openapi.yaml`'s artifact-create schema),
+      but `/admin/v1/artifacts` treated it as optional and passed a possibly-nil value
+      straight through, so an admin-created artifact could end up with no `createdDate` in
+      its wire response at all. Fixed by mirroring the already-established
+      `releaseCreateRequest`/`createProductRelease` convention exactly (`internal/admin/
+      product.go`) rather than inventing a new pattern: `createArtifactRequest.CreatedDate`
+      is now a required, non-pointer `time.Time` (`json:"createdDate"`, no `omitempty`),
+      rejected with `400` `"createdDate is required"` when zero-valued, same as
+      `ProductRelease`/`ComponentRelease` creation already does. Deliberately did **not**
+      change `pkg/tea.Artifact.CreatedDate`'s own type (`*time.Time`, still `omitempty`) or
+      add a `NOT NULL` constraint to the `artifact.created_date` column
+      (`internal/db/migrations/0001_init.sql`, nullable, unlike `product_release`/
+      `component_release`'s own `created_date NOT NULL`) — this fixes the write path for
+      every *new* artifact going forward without forcing a migration/backfill decision for
+      any pre-existing row that might already be missing one, matching the same scoping
+      philosophy as the `Collection.date` fix above (fix the wire-level gap precisely,
+      don't reach into unrelated schema questions). Updated 7 test call sites across
+      `cmd/opentea/artifactdownload_test.go`, `bundle_integration_test.go`,
+      `trust_evidencebundle_test.go`, and `integration_test.go` that were creating artifacts
+      via `/admin/v1` without a `createdDate` and would otherwise now get `400`; the
+      `testdata/fixtures/*.json` replay files already included it. Verified: manual smoke
+      test against the real built binary (omitted `createdDate` → `400`; supplied one → `201`
+      with it echoed back). `go test ./... -race`/`golangci-lint`/`go vet`/`gofmt` clean.
 
       **Other findings from the same bundle-format audit, still open** (not part of this
-      fix, recorded here so they aren't lost): (1) `artifact.createdDate` is now
-      spec-required but `/admin/v1/artifacts` allows creating one without it (the publisher
-      path always sets it via `&now`, the admin path doesn't default it); (2)
+      fix, recorded here so they aren't lost): (1)
       `product-release.product` (parent UUID) is spec-required but
       `internal/repo/productrelease.go` has a nullable-DB-column code path that can omit it
       from the wire response — worth checking whether that's ever actually reachable or just
-      defensive coding for a column that's always populated in practice; (3)
+      defensive coding for a column that's always populated in practice; (2)
       `docs/bundle-format.md`'s "File URLs" section is stale — it claims import always
       rewrites content URLs to `<dest>/files/<sha256>`, true only for distributions now;
       artifact-format content instead leaves `url` empty (self-hosted, retrieved via the
-      download endpoint) since this session's earlier artifact-download work; (4)
+      download endpoint) since this session's earlier artifact-download work; (3)
       `internal/bundle/schema.json`'s `checksum.algValue` doesn't enforce the hex
-      pattern/length upstream's `checksum` schema now specifies; (5) the bundle schema
+      pattern/length upstream's `checksum` schema now specifies; (4) the bundle schema
       doesn't carry `evidenceBundle`/`evidenceBundleRef` on `collection`/`artifactFormat` --
       **not** an official-spec gap (those fields are oej's own tea-trust-architecture
       extension, not in the upstream standard at all), but a latent self-consistency gap

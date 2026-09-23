@@ -19,7 +19,7 @@ type createArtifactFormatRequest struct {
 type createArtifactRequest struct {
 	Name            string                        `json:"name,omitempty"`
 	Type            string                        `json:"type"`
-	CreatedDate     *time.Time                    `json:"createdDate,omitempty"`
+	CreatedDate     time.Time                     `json:"createdDate"`
 	DistributionIDs []string                      `json:"distributionIds,omitempty"`
 	Formats         []createArtifactFormatRequest `json:"formats"`
 }
@@ -40,6 +40,10 @@ func (s *Server) createArtifact(w http.ResponseWriter, r *http.Request) {
 		httpx.BadRequest(w, "type must be a valid artifact-type enum value")
 		return
 	}
+	if req.CreatedDate.IsZero() {
+		httpx.BadRequest(w, "createdDate is required")
+		return
+	}
 	if len(req.Formats) == 0 {
 		httpx.BadRequest(w, "at least one format is required")
 		return
@@ -57,7 +61,7 @@ func (s *Server) createArtifact(w http.ResponseWriter, r *http.Request) {
 	a, err := s.repo.CreateArtifact(r.Context(), repo.ArtifactInput{
 		Name:            req.Name,
 		Type:            req.Type,
-		CreatedDate:     req.CreatedDate,
+		CreatedDate:     &req.CreatedDate,
 		DistributionIDs: req.DistributionIDs,
 		Formats:         formats,
 	})

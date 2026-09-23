@@ -1081,3 +1081,100 @@ func TestImportIsAtomicOnFailure(t *testing.T) {
 		}
 	}
 }
+
+// TestImportRejectsCrossTypeUUIDReuse is the end-to-end regression test for
+// TEA 1.0's product-release/component-release UUID disjointness rule (see
+// repo.ErrCrossTypeUUIDReuse's doc comment): a bundle whose component
+// release reuses its product release's own UUID must be rejected atomically
+// through the real Import entry point, mirroring
+// TestImportIsAtomicOnFailure's own atomicity checks -- not just at the
+// repo-method level (internal/repo/import_test.go covers that directly).
+func TestImportRejectsCrossTypeUUIDReuse(t *testing.T) {
+	ctx := context.Background()
+	srcRepo := newTestRepo(t)
+	srcStore := newTestStore(t)
+
+	product, err := srcRepo.CreateProduct(ctx, "Cross-Type Test Product", nil)
+	if err != nil {
+		t.Fatalf("CreateProduct: %v", err)
+	}
+	release, err := srcRepo.CreateProductRelease(ctx, product.UUID, repo.ProductReleaseInput{Version: "1.0.0", CreatedDate: fixedTime()})
+	if err != nil {
+		t.Fatalf("CreateProductRelease: %v", err)
+	}
+	component, err := srcRepo.CreateComponent(ctx, "libfoo", nil)
+	if err != nil {
+		t.Fatalf("CreateComponent: %v", err)
+	}
+	componentRelease, err := srcRepo.CreateComponentRelease(ctx, component.UUID, repo.ComponentReleaseInput{Version: "9.9.9", CreatedDate: fixedTime()})
+	if err != nil {
+		t.Fatalf("CreateComponentRelease: %v", err)
+	}
+	releaseUUID := componentRelease.UUID
+	if _, err := srcRepo.LinkComponent(ctx, release.UUID, componentRef(component.UUID, &releaseUUID)); err != nil {
+		t.Fatalf("LinkComponent: %v", err)
+	}
+
+	var buf bytes.Buffer
+	if err := Export(ctx, srcRepo, srcStore, product.UUID, &buf); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	// Reassign the component release's uuid to collide with the product
+	// release's own uuid -- the exact violation the disjointness rule
+	// forbids -- and fix up the component ref that pins it, so this is a
+	// pure UUID-collision test, not also an unrelated dangling-reference one.
+	mutated := mutateManifestJSON(t, buf.Bytes(), func(doc map[string]any) {
+		componentReleases, ok := doc["componentReleases"].([]any)
+		if !ok || len(componentReleases) == 0 {
+			t.Fatal("test bug: manifest has no componentReleases")
+		}
+		cr, ok := componentReleases[0].(map[string]any)
+		if !ok {
+			t.Fatal("test bug: componentReleases[0] not an object")
+		}
+		cr["uuid"] = release.UUID
+
+		productReleases, ok := doc["productReleases"].([]any)
+		if !ok || len(productReleases) == 0 {
+			t.Fatal("test bug: manifest has no productReleases")
+		}
+		pr, ok := productReleases[0].(map[string]any)
+		if !ok {
+			t.Fatal("test bug: productReleases[0] not an object")
+		}
+		comps, ok := pr["components"].([]any)
+		if !ok || len(comps) == 0 {
+			t.Fatal("test bug: productReleases[0] has no components")
+		}
+		comp, ok := comps[0].(map[string]any)
+		if !ok {
+			t.Fatal("test bug: components[0] not an object")
+		}
+		comp["release"] = release.UUID
+	})
+
+	zr, err := zip.NewReader(bytes.NewReader(mutated), int64(len(mutated)))
+	if err != nil {
+		t.Fatalf("zip.NewReader: %v", err)
+	}
+
+	dstRepo := newTestRepo(t)
+	dstStore := newTestStore(t)
+	_, err = Import(ctx, dstRepo, dstStore, "http://dest.example", zr)
+	if !errors.Is(err, repo.ErrCrossTypeUUIDReuse) {
+		t.Fatalf("Import: err = %v, want an error wrapping ErrCrossTypeUUIDReuse", err)
+	}
+
+	// The whole import must have rolled back as a unit -- the product
+	// release (imported first, before the collision is even reached) must
+	// not be left behind either.
+	if _, err := dstRepo.GetProduct(ctx, product.UUID); !errors.Is(err, repo.ErrNotFound) {
+		t.Errorf("GetProduct after failed import: err = %v, want ErrNotFound", err)
+	}
+	if _, err := dstRepo.GetProductRelease(ctx, release.UUID); !errors.Is(err, repo.ErrNotFound) {
+		t.Errorf("GetProductRelease after failed import: err = %v, want ErrNotFound", err)
+	}
+	if _, err := dstRepo.GetComponent(ctx, component.UUID); !errors.Is(err, repo.ErrNotFound) {
+		t.Errorf("GetComponent after failed import: err = %v, want ErrNotFound", err)
+	}
+}

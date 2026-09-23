@@ -27,6 +27,20 @@ import (
 // this one included.
 var ErrImportIdentityConflict = errors.New("repo: imported identity conflicts with existing content")
 
+// ErrCrossTypeUUIDReuse is returned by ImportProductRelease/
+// ImportComponentRelease when the caller-supplied UUID already identifies
+// a release of the *other* type. TEA 1.0 (doc/tea-uuid-scope.md, upstream
+// PR #329): within an authoritative domain, a UUID must not identify both
+// a Product Release and a Component Release, since a Collection inherits
+// its parent release's UUID -- a collision there would mean two distinct
+// Collections sharing one identity. On the normal create path this can't
+// happen (both tables mint their UUID via the same random idgen.New(),
+// so collision probability is the standard, negligible UUIDv4 birthday
+// bound); it's reachable only via import, which takes an explicit,
+// externally-supplied UUID from the bundle -- a crafted or accidentally
+// colliding bundle is the only way to trigger this.
+var ErrCrossTypeUUIDReuse = errors.New("repo: uuid already identifies a release of the other type (product release vs component release must be disjoint)")
+
 // isForeignKeyConstraintError reports whether err came from a SQLite
 // FOREIGN KEY constraint violation -- used to translate a rejected delete
 // (e.g. a template still referenced by an entitlement, via

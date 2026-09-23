@@ -478,8 +478,8 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       designed independently of, calling it superseded)~~ — checked, still stale upstream
       (last touched 2026-01-16, cosmetic terminology commits only). No reconciliation needed;
       the decision to treat it as superseded remains sound.
-- [ ] **Product Release / Component Release UUIDs must be disjoint within an authoritative
-      domain** — found 2026-09-23, diffing a newer local upstream checkout
+- [x] ~~**Product Release / Component Release UUIDs must be disjoint within an authoritative
+      domain**~~ — fixed 2026-09-24. Found 2026-09-23, diffing a newer local upstream checkout
       (`~/transparency-exchange-api`, `f5817aa`, 2026-09-22) against the `8635688` snapshot
       this session's earlier conformance work was based on. New normative rule (#329,
       `doc/tea-uuid-scope.md`): "within an authoritative domain, a UUID MUST NOT be used as
@@ -503,8 +503,34 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       a crafted (or accidentally colliding) bundle could violate this rule today. Low
       practical severity (import is already admin-gated, and this needs either malice or a
       genuine UUIDv4 collision to trigger), but a real gap, not just a theoretical one.
-      Not fixed yet — flagged for a future pass, possibly bundled with other import-
-      validation hardening.
+
+      **Fixed**: new `ErrCrossTypeUUIDReuse` sentinel (`internal/repo/identity.go`, alongside
+      `ErrImportIdentityConflict` but deliberately distinct from it -- this is "claimed by a
+      different object type entirely," not "same real-world entity, conflicting content").
+      `ImportProductRelease`/`ImportComponentRelease` each gained a cheap existence check
+      against the *other* table (new `existsComponentReleaseTx`/`existsProductReleaseTx`,
+      mirroring `requireReleaseOwnerExistsTx`'s own reasoning for being a dedicated tiny
+      query rather than reusing the full `get*Tx` fetch) run after the same-type idempotency
+      check but before the `INSERT`, so a colliding import is rejected before it can write
+      anything. `internal/bundle/import.go` needed no changes at all -- it already runs the
+      whole import inside one atomic transaction and maps any error to a rejected `400`, so
+      both directions of the collision (a product release importing after a colliding
+      component release already exists, and vice versa -- product releases import first
+      within one bundle, so both orderings are reachable in practice) are caught for free
+      once the repo layer enforces it. Confirmed `bundlecheck`/schema validation correctly
+      does **not** catch this on its own -- it's a cross-entity business rule, not a
+      JSON-Schema-expressible constraint, same as the existing `COMPLIANCE_DOCUMENT`
+      scoping rule; enforcement belongs at import time, not schema-validation time, and
+      stays there. Verified: two new repo-level tests (both collision directions,
+      `internal/repo/import_test.go`), one new end-to-end test exporting a real product,
+      crafting a colliding bundle via the existing `mutateManifestJSON` helper, and
+      confirming atomic rollback through the real `Import` entry point
+      (`internal/bundle/import_test.go`, mirrors `TestImportIsAtomicOnFailure`'s own
+      checks), plus a manual smoke test against the real built binaries: exported a real
+      product, hand-crafted a colliding bundle with `zipfile`, confirmed `bundlecheck`
+      correctly passes it (schema-level, as expected) while a real import against a live
+      second server correctly rejects it with a clear `400` and leaves nothing behind.
+      `go test ./... -race`/`golangci-lint`/`go vet`/`gofmt` clean.
 - [x] ~~**`Collection`'s wire field is `createdDate`, not `date`**~~ — fixed 2026-09-23,
       found during a thorough audit of the import/export bundle format (user request) that
       diffed the core Product/Collection/Artifact schemas field-by-field against the fresh

@@ -155,6 +155,72 @@ func TestImportComponentReleaseIdempotent(t *testing.T) {
 	}
 }
 
+// TestImportProductReleaseRejectsUUIDAlreadyUsedByComponentRelease and
+// TestImportComponentReleaseRejectsUUIDAlreadyUsedByProductRelease cover
+// TEA 1.0's product-release/component-release UUID disjointness rule
+// (doc/tea-uuid-scope.md, upstream PR #329 -- see ErrCrossTypeUUIDReuse's
+// doc comment): a bundle that assigns the same UUID to both release types
+// must be rejected, in either order, since a Collection inherits its
+// parent release's UUID and a collision there would mean two distinct
+// Collections sharing one identity.
+func TestImportProductReleaseRejectsUUIDAlreadyUsedByComponentRelease(t *testing.T) {
+	ctx := context.Background()
+	r := newTestRepo(t)
+
+	componentUUID := idgen.New()
+	if _, err := r.ImportComponent(ctx, componentUUID, "libfoo", nil); err != nil {
+		t.Fatalf("ImportComponent: %v", err)
+	}
+	sharedUUID := idgen.New()
+	if _, err := r.ImportComponentRelease(ctx, ImportComponentReleaseInput{
+		UUID: sharedUUID, ComponentUUID: componentUUID, ComponentName: "libfoo",
+		Version: "1.0.0", CreatedDate: time.Now().UTC().Truncate(time.Second),
+	}); err != nil {
+		t.Fatalf("ImportComponentRelease: %v", err)
+	}
+
+	productUUID := idgen.New()
+	if _, err := r.ImportProduct(ctx, productUUID, "Widget", nil); err != nil {
+		t.Fatalf("ImportProduct: %v", err)
+	}
+	_, err := r.ImportProductRelease(ctx, ImportProductReleaseInput{
+		UUID: sharedUUID, ProductUUID: productUUID, ProductName: "Widget",
+		Version: "1.0.0", CreatedDate: time.Now().UTC().Truncate(time.Second),
+	})
+	if !errors.Is(err, ErrCrossTypeUUIDReuse) {
+		t.Fatalf("ImportProductRelease with a UUID already used by a component release: err = %v, want ErrCrossTypeUUIDReuse", err)
+	}
+}
+
+func TestImportComponentReleaseRejectsUUIDAlreadyUsedByProductRelease(t *testing.T) {
+	ctx := context.Background()
+	r := newTestRepo(t)
+
+	productUUID := idgen.New()
+	if _, err := r.ImportProduct(ctx, productUUID, "Widget", nil); err != nil {
+		t.Fatalf("ImportProduct: %v", err)
+	}
+	sharedUUID := idgen.New()
+	if _, err := r.ImportProductRelease(ctx, ImportProductReleaseInput{
+		UUID: sharedUUID, ProductUUID: productUUID, ProductName: "Widget",
+		Version: "1.0.0", CreatedDate: time.Now().UTC().Truncate(time.Second),
+	}); err != nil {
+		t.Fatalf("ImportProductRelease: %v", err)
+	}
+
+	componentUUID := idgen.New()
+	if _, err := r.ImportComponent(ctx, componentUUID, "libfoo", nil); err != nil {
+		t.Fatalf("ImportComponent: %v", err)
+	}
+	_, err := r.ImportComponentRelease(ctx, ImportComponentReleaseInput{
+		UUID: sharedUUID, ComponentUUID: componentUUID, ComponentName: "libfoo",
+		Version: "1.0.0", CreatedDate: time.Now().UTC().Truncate(time.Second),
+	})
+	if !errors.Is(err, ErrCrossTypeUUIDReuse) {
+		t.Fatalf("ImportComponentRelease with a UUID already used by a product release: err = %v, want ErrCrossTypeUUIDReuse", err)
+	}
+}
+
 func TestImportDistributionIdempotent(t *testing.T) {
 	ctx := context.Background()
 	r := newTestRepo(t)

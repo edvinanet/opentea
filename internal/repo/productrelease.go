@@ -95,6 +95,14 @@ func (r *Repo) ImportProductRelease(ctx context.Context, in ImportProductRelease
 			return false, err
 		}
 
+		usedByComponentRelease, err := existsComponentReleaseTx(ctx, tx, in.UUID)
+		if err != nil {
+			return false, err
+		}
+		if usedByComponentRelease {
+			return false, fmt.Errorf("%w: product release %s", ErrCrossTypeUUIDReuse, in.UUID)
+		}
+
 		_, err = tx.ExecContext(ctx,
 			`INSERT INTO product_release (uuid, product_uuid, product_name, version, created_date, release_date, pre_release) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 			in.UUID, in.ProductUUID, in.ProductName, in.Version, formatTime(in.CreatedDate), formatTimePtr(in.ReleaseDate), boolToInt(in.PreRelease),
@@ -110,6 +118,25 @@ func (r *Repo) ImportProductRelease(ctx context.Context, in ImportProductRelease
 		}
 		return true, nil
 	})
+}
+
+// existsProductReleaseTx reports whether uuid already identifies a product
+// release -- used by ImportComponentRelease (componentrelease.go) to
+// enforce the TEA 1.0 product-release/component-release UUID disjointness
+// rule (see ErrCrossTypeUUIDReuse's doc comment). A cheap existence check,
+// not a full fetch -- mirrors requireReleaseOwnerExistsTx's own reasoning
+// (collectiondraft.go) for why this is its own tiny query rather than
+// reusing getProductReleaseTx's much larger one.
+func existsProductReleaseTx(ctx context.Context, q dbtx, uuid string) (bool, error) {
+	var exists int
+	err := q.QueryRowContext(ctx, `SELECT 1 FROM product_release WHERE uuid = ?`, uuid).Scan(&exists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // productReleaseConflicts reports whether existing (already stored) differs

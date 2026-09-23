@@ -92,6 +92,14 @@ func (r *Repo) ImportComponentRelease(ctx context.Context, in ImportComponentRel
 			return false, err
 		}
 
+		usedByProductRelease, err := existsProductReleaseTx(ctx, tx, in.UUID)
+		if err != nil {
+			return false, err
+		}
+		if usedByProductRelease {
+			return false, fmt.Errorf("%w: component release %s", ErrCrossTypeUUIDReuse, in.UUID)
+		}
+
 		_, err = tx.ExecContext(ctx,
 			`INSERT INTO component_release (uuid, component_uuid, component_name, version, created_date, release_date, pre_release) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 			in.UUID, in.ComponentUUID, in.ComponentName, in.Version, formatTime(in.CreatedDate), formatTimePtr(in.ReleaseDate), boolToInt(in.PreRelease),
@@ -107,6 +115,22 @@ func (r *Repo) ImportComponentRelease(ctx context.Context, in ImportComponentRel
 		}
 		return true, nil
 	})
+}
+
+// existsComponentReleaseTx reports whether uuid already identifies a
+// component release -- used by ImportProductRelease (productrelease.go) to
+// enforce the TEA 1.0 product-release/component-release UUID disjointness
+// rule (see ErrCrossTypeUUIDReuse's doc comment).
+func existsComponentReleaseTx(ctx context.Context, q dbtx, uuid string) (bool, error) {
+	var exists int
+	err := q.QueryRowContext(ctx, `SELECT 1 FROM component_release WHERE uuid = ?`, uuid).Scan(&exists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // componentReleaseConflicts mirrors productReleaseConflicts -- see there for

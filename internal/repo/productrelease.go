@@ -124,7 +124,7 @@ func (r *Repo) ImportProductRelease(ctx context.Context, in ImportProductRelease
 // here would conflate two different conflict sources under one confusing
 // error.
 func productReleaseConflicts(existing tea.ProductRelease, in ImportProductReleaseInput) bool {
-	if existing.Product == nil || *existing.Product != in.ProductUUID {
+	if existing.Product != in.ProductUUID {
 		return true
 	}
 	if existing.Version != in.Version {
@@ -172,9 +172,12 @@ func getProductReleaseRevisionTx(ctx context.Context, q dbtx, uuid string) (int6
 
 // getProductReleaseTx is GetProductRelease's logic parameterized over a
 // dbtx -- see product.go's getProductTx doc comment for why this exists.
+// productUUID is scanned as a plain string, not sql.NullString: the column
+// is NOT NULL (0001_init.sql), so tea.ProductRelease.Product (TEA 1.0:
+// required) is always populated, never the zero value.
 func getProductReleaseTx(ctx context.Context, q dbtx, uuid string) (tea.ProductRelease, error) {
 	var (
-		productUUID sql.NullString
+		productUUID string
 		productName sql.NullString
 		version     string
 		createdDate string
@@ -212,15 +215,13 @@ func getProductReleaseTx(ctx context.Context, q dbtx, uuid string) (tea.ProductR
 	pre := preRelease != 0
 	pr := tea.ProductRelease{
 		UUID:        uuid,
+		Product:     productUUID,
 		Version:     version,
 		CreatedDate: created,
 		ReleaseDate: released,
 		PreRelease:  &pre,
 		Identifiers: ids,
 		Components:  components,
-	}
-	if productUUID.Valid {
-		pr.Product = &productUUID.String
 	}
 	if productName.Valid {
 		pr.ProductName = productName.String

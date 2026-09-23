@@ -36,7 +36,7 @@ type ComponentRef struct {
 // components it's built from (see Components).
 type ProductRelease struct {
 	UUID        string         `json:"uuid"`
-	Product     *string        `json:"product,omitempty"`
+	Product     string         `json:"product"`
 	ProductName string         `json:"productName,omitempty"`
 	Version     string         `json:"version"`
 	CreatedDate time.Time      `json:"createdDate"`
@@ -83,7 +83,7 @@ type ReleaseDistribution struct {
 // ComponentRelease corresponds to the spec's "release" schema (a TEA Component Release).
 type ComponentRelease struct {
 	UUID          string                `json:"uuid"`
-	Component     string                `json:"component,omitempty"`
+	Component     string                `json:"component"`
 	ComponentName string                `json:"componentName,omitempty"`
 	Version       string                `json:"version"`
 	CreatedDate   time.Time             `json:"createdDate"`

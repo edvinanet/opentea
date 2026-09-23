@@ -188,7 +188,7 @@
     "productReleaseEntry": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["uuid", "version", "createdDate", "components"],
+      "required": ["uuid", "product", "version", "createdDate", "components"],
       "properties": {
         "uuid": { "$ref": "#/$defs/uuid" },
         "product": { "$ref": "#/$defs/uuid" },
@@ -216,7 +216,7 @@
     "componentReleaseEntry": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["uuid", "version", "createdDate"],
+      "required": ["uuid", "component", "version", "createdDate"],
       "properties": {
         "uuid": { "$ref": "#/$defs/uuid" },
         "component": { "$ref": "#/$defs/uuid" },

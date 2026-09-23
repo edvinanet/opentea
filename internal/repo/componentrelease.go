@@ -161,9 +161,12 @@ func getComponentReleaseRevisionTx(ctx context.Context, q dbtx, uuid string) (in
 
 // getComponentReleaseTx is GetComponentRelease's logic parameterized over a
 // dbtx -- see product.go's getProductTx doc comment for why this exists.
+// componentUUID is scanned as a plain string, not sql.NullString: the
+// column is NOT NULL (0001_init.sql), so tea.ComponentRelease.Component
+// (TEA 1.0: required) is always populated, never the zero value.
 func getComponentReleaseTx(ctx context.Context, q dbtx, uuid string) (tea.ComponentRelease, error) {
 	var (
-		componentUUID sql.NullString
+		componentUUID string
 		componentName sql.NullString
 		version       string
 		createdDate   string
@@ -201,6 +204,7 @@ func getComponentReleaseTx(ctx context.Context, q dbtx, uuid string) (tea.Compon
 	pre := preRelease != 0
 	cr := tea.ComponentRelease{
 		UUID:          uuid,
+		Component:     componentUUID,
 		ComponentName: componentName.String,
 		Version:       version,
 		CreatedDate:   created,
@@ -208,9 +212,6 @@ func getComponentReleaseTx(ctx context.Context, q dbtx, uuid string) (tea.Compon
 		PreRelease:    &pre,
 		Identifiers:   ids,
 		Distributions: distributions,
-	}
-	if componentUUID.Valid {
-		cr.Component = componentUUID.String
 	}
 	return cr, nil
 }

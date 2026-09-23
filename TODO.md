@@ -523,19 +523,47 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       `testdata/fixtures/*.json` replay files already included it. Verified: manual smoke
       test against the real built binary (omitted `createdDate` → `400`; supplied one → `201`
       with it echoed back). `go test ./... -race`/`golangci-lint`/`go vet`/`gofmt` clean.
+- [x] ~~**`product-release.product`/`component-release.component` (parent UUIDs) are
+      spec-required but opentea's own wire types allowed omitting them**~~ — fixed
+      2026-09-23, the third finding from the same bundle-format audit. Investigation found
+      the DB columns (`product_release.product_uuid`, `component_release.component_uuid`,
+      `internal/db/migrations/0001_init.sql`) are both already `NOT NULL` — so this was
+      never a *live* data bug (unlike the `Collection.date`/`artifact.createdDate` fixes
+      above), just a Go/wire type looser than the guarantee actually held: `getProductReleaseTx`/
+      `getComponentReleaseTx` (`internal/repo/productrelease.go`/`componentrelease.go`)
+      scanned the column into a `sql.NullString` and only conditionally set the field,
+      despite the column never actually being null. `pkg/tea.ProductRelease.Product` changed
+      from `*string, omitempty` to a required `string`; `pkg/tea.ComponentRelease.Component`
+      already was a non-pointer `string` but still carried a stray `omitempty` — dropped.
+      Both read paths now scan directly into a plain `string` (no more `sql.NullString`
+      indirection for a column that can't be null), with a comment explaining why. Found and
+      fixed a second, real instance of the identical gap while making this change:
+      `internal/bundle/schema.json`'s `productReleaseEntry`/`componentReleaseEntry` `$def`s
+      didn't list `product`/`component` as required either (matching upstream's own
+      omission being copied, not independently decided) — worse, `internal/bundle/import.go`
+      resolves a component release's parent from `cr.Component` (the *entry's own* field,
+      not a single manifest-wide value the way `m.Product.UUID` works for product releases,
+      since one bundle's `componentReleases` can span many different components) — so a
+      bundle that had genuinely omitted `component` would previously have imported a
+      component release linked to no component at all, a real data-integrity gap the schema
+      fix now closes at validation time instead. Also updated `internal/bundle/schema_test.go`'s
+      hand-built "valid manifest" fixture, which had never set `product` either (only caught
+      once the schema started requiring it) and updated
+      `internal/repo/productrelease_test.go`'s assertion for the now-non-pointer type.
+      Verified: manual smoke test against the real built binary (created a product release
+      and a component release, confirmed `product`/`component` present on both the create
+      response and a subsequent `GET`; exported, confirmed the bundle's `manifest.json`
+      carries `product`, passed `bundlecheck`). `go test ./... -race`/`golangci-lint`/
+      `go vet`/`gofmt` clean.
 
       **Other findings from the same bundle-format audit, still open** (not part of this
       fix, recorded here so they aren't lost): (1)
-      `product-release.product` (parent UUID) is spec-required but
-      `internal/repo/productrelease.go` has a nullable-DB-column code path that can omit it
-      from the wire response — worth checking whether that's ever actually reachable or just
-      defensive coding for a column that's always populated in practice; (2)
       `docs/bundle-format.md`'s "File URLs" section is stale — it claims import always
       rewrites content URLs to `<dest>/files/<sha256>`, true only for distributions now;
       artifact-format content instead leaves `url` empty (self-hosted, retrieved via the
-      download endpoint) since this session's earlier artifact-download work; (3)
+      download endpoint) since this session's earlier artifact-download work; (2)
       `internal/bundle/schema.json`'s `checksum.algValue` doesn't enforce the hex
-      pattern/length upstream's `checksum` schema now specifies; (4) the bundle schema
+      pattern/length upstream's `checksum` schema now specifies; (3) the bundle schema
       doesn't carry `evidenceBundle`/`evidenceBundleRef` on `collection`/`artifactFormat` --
       **not** an official-spec gap (those fields are oej's own tea-trust-architecture
       extension, not in the upstream standard at all), but a latent self-consistency gap

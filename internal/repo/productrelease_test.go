@@ -39,7 +39,7 @@ func TestProductReleaseCreateGetLinkComponent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateProductRelease: %v", err)
 	}
-	if pr.Product == nil || *pr.Product != product.UUID {
+	if pr.Product != product.UUID {
 		t.Fatalf("Product = %v, want %s", pr.Product, product.UUID)
 	}
 	if pr.ProductName != "Acme Widget" {

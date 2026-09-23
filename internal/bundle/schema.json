@@ -38,7 +38,13 @@
           "type": "string",
           "enum": ["MD5", "SHA-1", "SHA-256", "SHA-384", "SHA-512", "SHA3-256", "SHA3-384", "SHA3-512", "BLAKE2b-256", "BLAKE2b-384", "BLAKE2b-512", "BLAKE3"]
         },
-        "algValue": { "type": "string" }
+        "algValue": {
+          "type": "string",
+          "description": "Lowercase hexadecimal digest. minLength 32 covers this schema's own MD5 addition (kept on hold, see TODO.md) alongside upstream's own checksum schema, which specifies minLength 40 (SHA-1, its own shortest algorithm) -- upstream never lists MD5 at all.",
+          "pattern": "^[0-9a-f]+$",
+          "minLength": 32,
+          "maxLength": 128
+        }
       }
     },
     "componentRef": {
@@ -48,6 +54,99 @@
       "properties": {
         "uuid": { "$ref": "#/$defs/uuid" },
         "release": { "$ref": "#/$defs/uuid" }
+      }
+    },
+    "evidenceDigest": {
+      "description": "oej's TEA Trust Architecture overlay (internal/trust, pkg/tea/trust.go) -- not part of the official TEA standard.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "value"],
+      "properties": {
+        "algorithm": { "type": "string" },
+        "value": { "type": "string" }
+      }
+    },
+    "evidenceObjectRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["objectType", "digest"],
+      "properties": {
+        "objectType": { "type": "string" },
+        "mediaType": { "type": "string" },
+        "location": { "type": "string" },
+        "digest": { "$ref": "#/$defs/evidenceDigest" }
+      }
+    },
+    "evidenceSignature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["format", "value"],
+      "properties": {
+        "format": { "type": "string" },
+        "value": { "type": "string" },
+        "signatureDigest": { "$ref": "#/$defs/evidenceDigest" }
+      }
+    },
+    "evidenceCertificate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["format", "certificate"],
+      "properties": {
+        "format": { "type": "string" },
+        "certificate": { "type": "string" },
+        "chain": { "type": "array", "items": { "type": "string" } },
+        "fingerprint": { "$ref": "#/$defs/evidenceDigest" }
+      }
+    },
+    "evidenceTimestamp": {
+      "description": "Populated starting trust-architecture Phase 2 (RFC 3161) -- the shape exists in pkg/tea/trust.go from Phase 1 onward so the wire format doesn't change later.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["format", "token"],
+      "properties": {
+        "format": { "type": "string" },
+        "tsaSubjectDn": { "type": "string" },
+        "tsaPubkeyFingerprint": { "type": "string" },
+        "tsaUri": { "type": "string" },
+        "token": { "type": "string" },
+        "messageImprintValue": { "type": "string" }
+      }
+    },
+    "evidenceTransparency": {
+      "description": "Populated starting trust-architecture Phase 3 (transparency-log entries: Rekor, Sigsum, SCITT). verification is system-specific raw JSON, deliberately unconstrained here -- see pkg/tea/trust.go's EvidenceTransparency doc comment.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["system", "evidenceType", "bindingType", "bindingDigestValue", "verification"],
+      "properties": {
+        "system": { "type": "string" },
+        "evidenceType": { "type": "string" },
+        "bindingType": { "type": "string" },
+        "bindingDigestValue": { "type": "string" },
+        "verification": {}
+      }
+    },
+    "evidenceBundle": {
+      "description": "oej's TEA Trust Architecture overlay -- not part of the official TEA standard. Not yet actually populated by any export this codebase performs (evidence isn't wired into the normal Collection/Artifact read path yet, a deliberate Phase 1 scope boundary), so this $def exists ahead of that: exporting a product with attached evidence must not silently fail schema validation the day that changes.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bundleVersion", "object", "signature", "certificate"],
+      "properties": {
+        "bundleVersion": { "type": "string" },
+        "object": { "$ref": "#/$defs/evidenceObjectRef" },
+        "signature": { "$ref": "#/$defs/evidenceSignature" },
+        "certificate": { "$ref": "#/$defs/evidenceCertificate" },
+        "timestamps": { "type": "array", "items": { "$ref": "#/$defs/evidenceTimestamp" } },
+        "transparency": { "type": "array", "items": { "$ref": "#/$defs/evidenceTransparency" } }
+      }
+    },
+    "evidenceBundleRef": {
+      "description": "The external-reference form of an evidence bundle (tea-trust-architecture 08-evidence-bundle.md Sec 10) -- mutually exclusive with evidenceBundle on the same owner, not separately enforced here (this schema doesn't enforce cross-field business rules elsewhere either).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["uri", "digest"],
+      "properties": {
+        "uri": { "type": "string" },
+        "digest": { "$ref": "#/$defs/evidenceDigest" }
       }
     },
     "updateReason": {
@@ -84,7 +183,9 @@
         "description": { "type": "string" },
         "url": { "type": "string" },
         "signatureUrl": { "type": "string" },
-        "checksums": { "type": "array", "items": { "$ref": "#/$defs/checksum" } }
+        "checksums": { "type": "array", "items": { "$ref": "#/$defs/checksum" } },
+        "evidenceBundle": { "$ref": "#/$defs/evidenceBundle" },
+        "evidenceBundleRef": { "$ref": "#/$defs/evidenceBundleRef" }
       }
     },
     "artifact": {
@@ -114,7 +215,9 @@
         "createdDate": { "type": "string", "format": "date-time" },
         "belongsTo": { "type": "string", "enum": ["COMPONENT_RELEASE", "PRODUCT_RELEASE"] },
         "updateReason": { "$ref": "#/$defs/updateReason" },
-        "artifacts": { "type": "array", "items": { "$ref": "#/$defs/artifact" } }
+        "artifacts": { "type": "array", "items": { "$ref": "#/$defs/artifact" } },
+        "evidenceBundle": { "$ref": "#/$defs/evidenceBundle" },
+        "evidenceBundleRef": { "$ref": "#/$defs/evidenceBundleRef" }
       }
     },
     "cleVersionSpecifier": {

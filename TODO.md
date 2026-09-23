@@ -555,20 +555,78 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       response and a subsequent `GET`; exported, confirmed the bundle's `manifest.json`
       carries `product`, passed `bundlecheck`). `go test ./... -race`/`golangci-lint`/
       `go vet`/`gofmt` clean.
+- [x] ~~**`docs/bundle-format.md`'s "File URLs" section was stale**~~ — fixed 2026-09-23, the
+      fourth finding from the same bundle-format audit. It claimed import always rewrites
+      content URLs to `<dest>/files/<sha256>`; true only for distributions
+      (`release-distribution.url`, no TEA-hosted download endpoint of their own, so they
+      genuinely need a resolvable URL even for embedded content) since this session's
+      earlier artifact-download work — artifact-format content instead leaves `url` empty
+      for embedded content (self-hosted, retrieved via `GET .../artifact/{uuid}/
+      {artifactVersion}/download`). Rewrote the section to describe both cases explicitly,
+      by object type, rather than the one blanket claim that stopped being true for half of
+      it. While verifying the doc's `signatureUrl` claim (always passed through unchanged
+      on import), found and documented a **new, real, separate gap**: a self-hosted
+      signature (`artifact_format.signature_sha256`, this session's own local-signature-
+      hosting addition) has no representation in the bundle manifest schema at all and
+      isn't included in `files/`, so exporting a product with one silently drops it — only
+      an externally-hosted `signatureUrl` survives a round-trip today. Documented as a known
+      limitation in the doc itself, not fixed here (would need manifest schema changes plus
+      export/import code, out of scope for a doc-accuracy pass) — see the new entry below.
+- [ ] **Self-hosted artifact signatures aren't carried by the import/export bundle format at
+      all** — found 2026-09-23, documenting the `docs/bundle-format.md` fix above.
+      `artifact_format.signature_sha256` (local signature hosting, added earlier this
+      session alongside the artifact download endpoints) has no manifest field and no
+      `files/` entry — `internal/bundle/export.go`/`import.go` are entirely unaware of it,
+      unlike content (which the `checksum` table already links to a blob, exported/imported
+      via the existing `files/` mechanism). A product exported today loses any self-hosted
+      signature silently — no error, no warning, just absent on the other side. An
+      externally-hosted `signatureUrl` is unaffected (passed through as plain string data,
+      same as always). Fixing this properly needs: a manifest field (`signatureSha256` or
+      similar, distinct from `checksums[]` since a signature isn't a multi-algorithm set --
+      matching the DB column's own reasoning, `internal/db/migrations/0008_artifact_download.sql`),
+      inclusion in the exported `files/` directory alongside content blobs, schema.json
+      updates, and import-side wiring through `SetArtifactFormatSignatureFile` or an
+      import-specific equivalent. Not started.
+- [x] ~~**`internal/bundle/schema.json`'s `checksum.algValue` didn't enforce hex pattern/
+      length; no `evidenceBundle`/`evidenceBundleRef` `$def`s existed at all**~~ — fixed
+      2026-09-23, the fifth and final finding from the bundle-format audit. `checksum.algValue`
+      gained `pattern: "^[0-9a-f]+$"`, `minLength: 32`, `maxLength: 128` — deliberately
+      `minLength: 32`, not upstream's own `40` (SHA-1, upstream's shortest algorithm):
+      upstream never lists `MD5` at all, but this schema still does (kept on hold, per the
+      earlier, separate `checksum-type` TODO item), and MD5's 128-bit digest is only 32 hex
+      characters — copying `40` verbatim would have made the schema reject a checksum type
+      it still deliberately accepts. Added eight new `$def`s
+      (`evidenceDigest`/`evidenceObjectRef`/`evidenceSignature`/`evidenceCertificate`/
+      `evidenceTimestamp`/`evidenceTransparency`/`evidenceBundle`/`evidenceBundleRef`,
+      matching `pkg/tea/trust.go`'s exact shape field-for-field) and wired
+      `evidenceBundle`/`evidenceBundleRef` into `collection`/`artifactFormat` as optional
+      properties — **not** an official-spec gap (this is oej's own tea-trust-architecture
+      overlay, not in the upstream TEA standard at all), but closes the same latent
+      self-consistency risk the `Collection.date`-style fixes above were about: `internal/
+      bundle/manifest.go` embeds `pkg/tea.Collection`/`ArtifactFormat` directly (no separate
+      wire schema to duplicate), so the Go types already carry these fields --
+      `additionalProperties: false` would have silently broken schema validation the day
+      evidence gets wired into the normal Get path (still a deliberate Phase 1 scope
+      boundary today, so no export produces one yet). Verified: two new regression tests
+      (`internal/bundle/schema_test.go` — an uppercase-hex checksum is rejected; an
+      `evidenceBundle` missing its required `certificate` is rejected) plus extended the
+      existing "valid manifest" fixture to carry a real checksum and a well-formed
+      `evidenceBundle`, so `TestValidateManifestAccepts` now actually exercises both new
+      `$def`s, not just the ones already covered. Manual smoke test against the real built
+      binary: created and exported a product with a real uploaded artifact, confirmed
+      `bundlecheck` accepts the real server-computed SHA-256 checksum against the tightened
+      pattern. `go test ./... -race`/`golangci-lint`/`go vet`/`gofmt` clean.
 
-      **Other findings from the same bundle-format audit, still open** (not part of this
-      fix, recorded here so they aren't lost): (1)
-      `docs/bundle-format.md`'s "File URLs" section is stale — it claims import always
-      rewrites content URLs to `<dest>/files/<sha256>`, true only for distributions now;
-      artifact-format content instead leaves `url` empty (self-hosted, retrieved via the
-      download endpoint) since this session's earlier artifact-download work; (2)
-      `internal/bundle/schema.json`'s `checksum.algValue` doesn't enforce the hex
-      pattern/length upstream's `checksum` schema now specifies; (3) the bundle schema
-      doesn't carry `evidenceBundle`/`evidenceBundleRef` on `collection`/`artifactFormat` --
-      **not** an official-spec gap (those fields are oej's own tea-trust-architecture
-      extension, not in the upstream standard at all), but a latent self-consistency gap
-      that's harmless only because evidence isn't wired into the normal Get path yet (Phase
-      1 scope boundary, `internal/trust`).
+      **New, separate finding surfaced while touching this file, not fixed here**:
+      `internal/bundle/schema.json`'s `artifact` `$def` still doesn't require `createdDate`,
+      even though the sibling fix a few items above made it required at
+      `/admin/v1/artifacts`' own request validation. Extending that requirement to the
+      *bundle* schema is a distinct, more consequential decision than a doc/schema
+      completeness pass — it would make `bundlecheck`/import reject any **already-exported**
+      bundle containing an artifact from before that fix (no `createdDate` at all), which is
+      exactly the kind of legacy-data consequence that fix deliberately avoided by leaving
+      `pkg/tea.Artifact.CreatedDate` a nullable pointer rather than tightening it end-to-end.
+      Needs the same explicit judgment call, not a silent add-on to this one.
 
 ## Project rename: OpenTEA → OpenTeapot
 - [ ] **Rename the project** (decided 2026-08-28) — "OpenTEA" turned out to already be in use

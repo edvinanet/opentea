@@ -130,9 +130,32 @@ having to parse the human-readable output.
 ## File URLs
 
 A bundle's manifest still carries each distribution/artifact-format's original `url` field (the
-*source* server's URL), but import never reuses it directly — it wouldn't resolve against a
-different destination server. Instead, import rebuilds each URL as
-`<destination-server-root-url>/files/<sha256>` once the file itself has been stored locally.
+*source* server's URL), but import never reuses it directly for embedded (self-hosted) content —
+it wouldn't resolve against a different destination server. What happens next differs by object
+type, since TEA 1.0 (`spec/openapi.yaml`) reserves `url` for genuinely external locations on
+*artifact formats* but has no such rule — and no TEA-hosted download endpoint at all — for
+*distributions*:
+
+- **Distributions** (`release-distribution.url`): import rebuilds the URL as
+  `<destination-server-root-url>/files/<sha256>` once the file itself has been stored locally
+  (`internal/bundle/import.go`'s `rewriteURL`) — a distribution needs *some* resolvable URL even
+  for embedded content, since there's nowhere else for a client to fetch it from.
+- **Artifact formats** (`artifact-format.url`): import leaves `url` empty for embedded content
+  instead of rewriting it (`selfHostedOrURL`) — the destination server's own artifact download
+  endpoints (`GET .../artifact/{uuid}/{artifactVersion}/download`, selecting the format by
+  `mediaType`) are what a client retrieves it from, resolved server-side from the checksum the
+  imported file was stored under.
+
+Either way, a genuinely external `url` (content the bundle only referenced, never embedded in
+`files/`) is preserved as-is on import, not rewritten.
+
+`signatureUrl` (on both distributions and artifact formats) is always carried through completely
+unchanged on import — never rewritten to a bundle-local value. This means a **self-hosted
+signature is currently invisible to the bundle format entirely**: the artifact download
+endpoints' local signature hosting (`artifact_format.signature_sha256`, distinct from
+`signatureUrl`) has no representation in the manifest schema and isn't included in `files/`, so
+exporting a product with a self-hosted signature silently drops it — only an externally-hosted
+`signatureUrl` survives a round-trip today. Tracked in `TODO.md`.
 
 ## Authorization vs. authentication
 

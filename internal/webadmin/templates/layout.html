@@ -40,7 +40,7 @@
   <a href="/admin/ui/products">Products</a>
   <a href="/admin/ui/components">Components</a>
   {{if eq .User.Role "admin"}}<a href="/admin/ui/users">Users</a>{{end}}
-  <a href="/admin/ui/token">API Token</a>
+  <a href="/admin/ui/token">API Key</a>
   {{if .TrustArchitectureEnabled}}<span class="badge badge-mode-on" title="This deployment operates under the TEA Trust Architecture overlay (Ed25519 signing, evidence bundles)">&#128737; Trusted TEA</span>{{else}}<span class="badge badge-mode-off" title="Plain TEA -- no trust-architecture overlay">Default TEA</span>{{end}}
   {{if .OrgName}}<span style="color:#64748b">{{.OrgName}}</span>{{end}}
   <form class="inline" action="/admin/ui/logout" method="post">

@@ -52,4 +52,6 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc(base+"/artifact/{uuid}/{artifactVersion}/signature/download", requireGetOrHead(s.downloadArtifactSignatureByVersion))
 
 	mux.HandleFunc("GET "+base+"/discovery", s.discovery)
+
+	mux.HandleFunc("POST "+base+"/token", s.requestToken)
 }

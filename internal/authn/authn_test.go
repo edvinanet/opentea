@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/oej/opentea/internal/db"
 	"github.com/oej/opentea/internal/model"
@@ -99,9 +100,9 @@ func TestBearerUser(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
-	token, err := store.SetAPIToken(ctx, user.UUID)
+	token, _, err := store.CreateAccessToken(ctx, user.UUID, time.Hour)
 	if err != nil {
-		t.Fatalf("SetAPIToken: %v", err)
+		t.Fatalf("CreateAccessToken: %v", err)
 	}
 
 	// No Authorization header: anonymous, allowed.
@@ -206,9 +207,9 @@ func TestBearerUserLogsUnexpectedError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
-	token, err := store.SetAPIToken(ctx, user.UUID)
+	token, _, err := store.CreateAccessToken(ctx, user.UUID, time.Hour)
 	if err != nil {
-		t.Fatalf("SetAPIToken: %v", err)
+		t.Fatalf("CreateAccessToken: %v", err)
 	}
 
 	logs := captureLogs(t)

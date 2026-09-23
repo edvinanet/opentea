@@ -101,17 +101,26 @@ func SameOrigin(r *http.Request, rootURL string) bool {
 }
 
 // BearerUser resolves a user from an `Authorization: Bearer <token>` header.
+// token must be an access token issued by POST /token (internal/api/token.go)
+// -- TEA 1.0's auth/readme.md: "A server shall not accept an API key
+// directly on the resource endpoints... The API key is exchanged for an
+// access token, and the access token is what the resource endpoints see."
+// A user's own long-lived API key (internal/repo's api_key table) is never
+// itself a valid value here, even though it's also a high-entropy random
+// string -- GetAccessTokenUser looks it up in access_token, a disjoint
+// table, so an API key simply won't be found there.
 //
 // present=false means no such header was sent at all -- the caller should
 // treat the request as anonymous (allowed, per the TEA spec's default
 // unauthenticated-read model).
 //
 // present=true, valid=false means a header was sent but didn't resolve to a
-// real token -- the caller must reject the request. An unknown token is
-// silently treated this way (expected, high-volume, not worth logging); any
-// other repo error (DB unavailable, corrupted row, etc.) still resolves to
-// valid=false -- callers must fail closed either way -- but is logged, so
-// an outage doesn't get silently misdiagnosed as a wave of bad tokens.
+// real token -- the caller must reject the request. An unknown or expired
+// token is silently treated this way (expected, high-volume, not worth
+// logging); any other repo error (DB unavailable, corrupted row, etc.)
+// still resolves to valid=false -- callers must fail closed either way --
+// but is logged, so an outage doesn't get silently misdiagnosed as a wave
+// of bad tokens.
 func BearerUser(ctx context.Context, r *http.Request, store *repo.Repo) (user model.User, present, valid bool) {
 	header := r.Header.Get("Authorization")
 	if header == "" {
@@ -121,7 +130,7 @@ func BearerUser(ctx context.Context, r *http.Request, store *repo.Repo) (user mo
 	if !ok || token == "" {
 		return model.User{}, true, false
 	}
-	u, err := store.GetUserByAPIToken(ctx, token)
+	u, err := store.GetAccessTokenUser(ctx, token)
 	if errors.Is(err, repo.ErrNotFound) {
 		return model.User{}, true, false
 	}

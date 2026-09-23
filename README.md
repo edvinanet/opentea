@@ -82,6 +82,7 @@ config file (default path `/etc/opentea/opentea.conf`, override with `TEA_CONFIG
 | `TEA_API_BASE_PATH` | `/tea/v1` | Path prefix this process serves the consumer read API under. Change to e.g. `/v0.4.0` for a standalone deployment (no fronting proxy) that needs to answer literally at the path TEA's discovery spec has clients construct (`<url>/v<negotiated-version>/...`); leave at the default if a reverse proxy in front of this server handles that path rewrite instead. Replaces the previous path entirely — this server does not serve both at once |
 | `TEA_ORG_NAME` | *(none)* | Organisation name; shown in the admin GUI and `GET /admin/v1/stats` when set |
 | `TEA_TRUST_ARCHITECTURE` | `false` | Declares this deployment's profile as "Trusted TEA" (oej's TEA Trust Architecture overlay) rather than plain TEA. Display-only in the admin GUI nav bar — does not enforce evidence-bundle requirements on any write path |
+| `TEA_ACCESS_TOKEN_TTL` | `1h` | How long a `POST {TEA_API_BASE_PATH}/token`-issued access token stays valid before a client must re-exchange its API key for a new one (TEA does not define a refresh token) — see [README-admin.md](README-admin.md) §5 |
 | `TEA_TLS_CERT_FILE` / `TEA_TLS_KEY_FILE` | *(none)* | If both are set, the server listens with HTTPS instead of plain HTTP. Setting only one is a startup error |
 | `TEA_CONFIG_FILE` | `/etc/opentea/opentea.conf` | Path to the config file itself. A missing *default* path is fine (skipped); an explicitly-set path that's missing/malformed is a startup error |
 

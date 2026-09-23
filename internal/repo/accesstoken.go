@@ -14,12 +14,13 @@ import (
 	"github.com/oej/opentea/internal/model"
 )
 
-// CreateSession creates a new session for userUUID, valid for ttl from now,
-// and returns the opaque token to be stored in the client's cookie -- this
-// is the only time the raw value is ever available; only its hash is
-// stored (see hashToken), matching SetAPIKey so a leaked/read DB file
-// doesn't hand out directly-usable sessions either.
-func (r *Repo) CreateSession(ctx context.Context, userUUID string, ttl time.Duration) (token string, expiresAt time.Time, err error) {
+// CreateAccessToken creates a new TEA access token for userUUID, valid for
+// ttl from now, and returns the opaque bearer value -- the only credential
+// /tea/v1 accepts as Authorization: Bearer (TEA 1.0's /token exchange,
+// internal/api/token.go). This is the only time the raw value is ever
+// available; only its hash is stored (see hashToken), same principle as
+// CreateSession/SetAPIKey.
+func (r *Repo) CreateAccessToken(ctx context.Context, userUUID string, ttl time.Duration) (token string, expiresAt time.Time, err error) {
 	var raw [32]byte
 	if _, err := rand.Read(raw[:]); err != nil {
 		return "", time.Time{}, err
@@ -28,7 +29,7 @@ func (r *Repo) CreateSession(ctx context.Context, userUUID string, ttl time.Dura
 	expiresAt = time.Now().Add(ttl)
 
 	if _, err := r.db.ExecContext(ctx,
-		`INSERT INTO session (token_hash, user_uuid, expires_at) VALUES (?, ?, ?)`,
+		`INSERT INTO access_token (token_hash, user_uuid, expires_at) VALUES (?, ?, ?)`,
 		hashToken(token), userUUID, formatTime(expiresAt),
 	); err != nil {
 		return "", time.Time{}, err
@@ -36,14 +37,17 @@ func (r *Repo) CreateSession(ctx context.Context, userUUID string, ttl time.Dura
 	return token, expiresAt, nil
 }
 
-// GetSessionUser resolves an unexpired session token to its user.
-func (r *Repo) GetSessionUser(ctx context.Context, token string) (model.User, error) {
+// GetAccessTokenUser resolves an unexpired access token to its user --
+// internal/authn.BearerUser calls this for every /tea/v1 request carrying
+// an Authorization: Bearer header. Returns ErrNotFound for an unknown or
+// expired token.
+func (r *Repo) GetAccessTokenUser(ctx context.Context, token string) (model.User, error) {
 	var u model.User
 	var expiresAt, createdAt string
 	err := r.db.QueryRowContext(ctx,
-		`SELECT u.uuid, u.username, u.role, u.created_at, s.expires_at
-		 FROM session s JOIN user u ON u.uuid = s.user_uuid
-		 WHERE s.token_hash = ?`, hashToken(token),
+		`SELECT u.uuid, u.username, u.role, u.created_at, a.expires_at
+		 FROM access_token a JOIN user u ON u.uuid = a.user_uuid
+		 WHERE a.token_hash = ?`, hashToken(token),
 	).Scan(&u.UUID, &u.Username, &u.Role, &createdAt, &expiresAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.User{}, ErrNotFound
@@ -66,10 +70,4 @@ func (r *Repo) GetSessionUser(ctx context.Context, token string) (model.User, er
 	}
 	u.CreatedAt = created
 	return u, nil
-}
-
-// DeleteSession invalidates the session identified by token (used on logout).
-func (r *Repo) DeleteSession(ctx context.Context, token string) error {
-	_, err := r.db.ExecContext(ctx, `DELETE FROM session WHERE token_hash = ?`, hashToken(token))
-	return err
 }

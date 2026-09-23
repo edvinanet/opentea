@@ -76,6 +76,22 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       `SignatureURL` no longer means "no signature" (it may be self-hosted — `404`
       `SIGNATURE_NOT_FOUND` on the download endpoint is the authoritative "no signature at all"
       signal).
+- [ ] **Artifact download responses are missing the `Repr-Digest` header** — found 2026-09-21,
+      while researching `/token` (a fresh re-read of `spec/openapi.yaml`'s `artifact-content`/
+      `artifact-signature-content` response components turned this up; not caught when the
+      download endpoints themselves were built, same day). `artifact-repr-digest` (RFC 9530):
+      "Digest of the content... allowing a client to verify the bytes against the `checksums`
+      published in the artifact metadata." Optional per its own schema (no `required: true`,
+      unlike `ETag`), but not currently set at all by
+      `internal/api/artifactdownload.go`'s `downloadArtifactContent`/`downloadArtifactSignature`.
+      Separately, the same spec text describes the `Cache-Control` header for these responses
+      as `artifact-cache-control-immutable` ("A TEA Artifact revision is immutable... long-lived
+      caching with `immutable` is appropriate") — opentea's implementation deliberately uses
+      `cacheControlRevalidate` instead, a conscious choice (documented in
+      `artifactdownload.go`'s own comments) because opentea's create-then-upload flow means a
+      revision isn't *actually* immutable here; worth a second look at whether that reasoning
+      still holds or whether the create-then-upload flow itself should be tightened instead,
+      but not re-litigated here.
 - [x] ~~**Discovery must support `?purl=` alongside `?tei=`**~~ — fixed 2026-09-21:
       `discoveryByTEI` renamed `discovery` (`internal/api/discovery.go`), now reads either
       `tei` or `purl` (400 if neither or both are supplied, per upstream: "Exactly one of the
@@ -149,9 +165,9 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       side by side (no entitlement narrowing → 200 anonymous; narrowed + anonymous → 401 bare
       challenge; garbage token → 401 `invalid_token` challenge). `go test ./... -race`/
       `golangci-lint` clean.
-- [ ] **`POST /token`: the actual client_credentials token-exchange endpoint** — deliberately
-      deferred as future work (explicit user decision, 2026-09-21), not started. Recorded here
-      in enough detail to pick back up without re-deriving it.
+- [x] ~~**`POST /token`: the actual client_credentials token-exchange endpoint**~~ — fixed
+      2026-09-23. Originally deferred as future work (explicit user decision, 2026-09-21);
+      history below kept for context on what was researched/decided along the way.
 
       **Framing from the user, load-bearing for whatever design this eventually gets**:
       authentication and authorization in TEA are optional end to end -- a server may run
@@ -229,6 +245,53 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       - `RFC 9728` Protected Resource Metadata (external-IdP discovery via
         `WWW-Authenticate`) is an optional extra, not required for the baseline.
 
+      **Fixed 2026-09-23** (explicit user decision, replacing today's `api_token` with a real
+      identifier+secret pair rather than reusing the single opaque string — see the AskUserQuestion
+      recorded in this session): new `internal/db/migrations/0009_token.sql` drops `api_token`,
+      adding `api_key` (`user_uuid`, `key_id`, `secret_hash`, `created_at` — one per user, same
+      replace-on-regenerate semantics as before) and `access_token` (mirrors `session`'s own
+      shape/indices exactly: `token_hash`, `user_uuid`, `expires_at`). New
+      `internal/api/token.go`'s `requestToken` (`POST {APIBasePath}/token`): `r.BasicAuth()` +
+      `url.QueryUnescape` per RFC 6749 §2.3.1 for the key-id/secret, `r.ParseForm()` for the
+      `application/x-www-form-urlencoded` body, `client_credentials`-only (anything else →
+      `400` `unsupported_grant_type`), `Repo.VerifyAPIKey` → `401` `invalid_client` +
+      `WWW-Authenticate: Basic realm="tea"` on failure (RFC 6749 §5.2), success mints via
+      `Repo.CreateAccessToken` (TTL: new `TEA_ACCESS_TOKEN_TTL` config var, default 1h) and
+      responds via new `httpx.TokenIssued` (`Cache-Control: no-store`, TEA 1.0's own
+      `token-response` shape — new `pkg/tea/token.go`). **The actual fix for the found gap**:
+      `internal/authn.BearerUser`'s one lookup switched from the old `GetUserByAPIToken` to
+      `GetAccessTokenUser` — a raw API key secret is no longer ever accepted as a `/tea/v1`
+      bearer credential, only a freshly-exchanged access token is (regression-tested,
+      `cmd/opentea/token_test.go`'s `TestTokenExchangeAPIKeyNeverWorksAsBearer`). One real
+      integration bug found and fixed along the way: `resolvePrincipal`
+      (`internal/api/auth_middleware.go`), which wraps the whole `/tea/v1` mux, would have
+      rejected every `/token` request outright — it treated any non-`Bearer` `Authorization`
+      header (i.e. every legitimate `Basic` credential `/token` itself expects) as a malformed
+      bearer attempt and returned `401` before `requestToken` ever ran; fixed by exempting the
+      `/token` path from that check specifically, since it authenticates callers by an entirely
+      different, self-contained scheme. GUI (`internal/webadmin`): "API Token" renamed "API Key"
+      throughout (nav, page copy, `token.html` now shows both the key ID and secret with a
+      `/token` exchange example, not a bare bearer-ready value); `README.md`/`README-admin.md`
+      updated to the real two-step flow (generate key → exchange at `/token` → use the returned
+      access token, noting re-exchange is required after `TEA_ACCESS_TOKEN_TTL` since TEA
+      defines no refresh token). Deliberately out of scope, not silently dropped: assertion
+      grants/OIDC federation (see the new, separate TODO item below, added per explicit request
+      this same session), multiple API keys per user (pre-existing, separate backlog item), RFC
+      9728 Protected Resource Metadata, and re-verifying the "servers without authentication"
+      ignore-vs-reject nuance noted above (unchanged pre-existing behavior, not part of this
+      fix). Verified: repo-level tests (`internal/repo/apitoken_test.go` — key generate/verify/
+      regenerate-invalidates-old, wrong secret, unknown key id; new `accesstoken` coverage —
+      valid/unknown/expired); HTTP-level tests (`cmd/opentea/token_test.go` — full exchange
+      round-tripped through a real `/tea/v1` resource call, the API-key-never-works-as-bearer
+      regression, wrong secret, missing Basic header, bad `grant_type`); a manual smoke test
+      against the real built binary (generate a key via the live GUI, exchange it via `curl`,
+      use the access token against `/tea/v1/products`, confirm the raw secret is rejected there,
+      confirm `Cache-Control: no-store` on the token response, confirm regenerating a key
+      invalidates the old key/secret pair immediately while an already-issued access token from
+      it keeps working until its own natural expiry). `go build`/`go vet`/`gofmt`/full suite/
+      `go test ./... -race`/`golangci-lint` clean (one pre-existing, unrelated DNS test race in
+      `pkg/teaclient/svcb_test.go`, confirmed unrelated multiple times earlier this session).
+
       `signatures/signature.md` (the other previously-unread upstream doc) was also read in
       full: it's explicitly non-normative ("the framework for digital signatures will not be
       mandatory for API compliance"), mostly an outline with several empty placeholder
@@ -238,6 +301,22 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       not in conflict with, oej's separately-maintained `tea-trust-architecture`/
       `internal/trust` overlay (already a deliberate non-official-spec extension per its own
       design doc) — no action needed now.
+- [ ] **Federated identity via OpenID Connect, once the `client_credentials` baseline exists**
+      (user request, 2026-09-22) — `/token`'s `grant_type` dispatch (see above) should leave
+      room for this without rework, but the actual integration (delegating identity to an
+      external IdP — Keycloak, or something lighter-weight) is separate, larger follow-on
+      work, not part of the baseline `/token` build. `auth/readme.md`'s framing: a server
+      delegating identity still issues its *own* TEA access token from its *own* `/token`
+      endpoint via the `urn:ietf:params:oauth:grant-type:jwt-bearer` assertion grant (RFC
+      7523) — the external provider authenticates the user, the TEA server still decides
+      what that identity may see (today's `authz.Principal{UserUUID}`-scoped entitlement
+      model would need a real mapping from "externally-authenticated identity" to a
+      `UserUUID`, or its own subject shape, which doesn't exist yet). Options to weigh when
+      this is picked up: run/depend on a full IdP like Keycloak (heavier, but standards-
+      compliant and offloads user management entirely) vs. a minimal in-process JWT-bearer
+      verifier against a configured issuer/JWKS (lighter, less deployment overhead, but more
+      code to get right — token validation, audience/issuer checks, key rotation). No
+      decision made yet; picking this up needs its own research pass.
 - [x] ~~**`error-response` schema is now strict**~~ — fixed 2026-09-21, with a real
       correction to the original finding: `additionalProperties: false` still applies, but
       re-reading the actual spec text turned up an important nuance the first pass missed --

@@ -79,6 +79,7 @@ func newTestServerWithAPIBasePath(t *testing.T, apiBasePath string) *testServer 
 		PublisherDraftTTL:    168 * time.Hour,
 		PublisherLockTTL:     time.Hour,
 		PublisherApprovalTTL: 24 * time.Hour,
+		AccessTokenTTL:       time.Hour,
 	}
 	srv := httptest.NewServer(nil) // handler attached below, once we know srv.URL for cfg.RootURL
 	cfg.RootURL = srv.URL
@@ -998,9 +999,9 @@ func TestTeaV1BearerToken(t *testing.T) {
 		t.Fatalf("garbage bearer token: status=%d, want 401", resp.StatusCode)
 	}
 
-	token, err := srv.repo.SetAPIToken(context.Background(), srv.adminUser.UUID)
+	token, _, err := srv.repo.CreateAccessToken(context.Background(), srv.adminUser.UUID, time.Hour)
 	if err != nil {
-		t.Fatalf("SetAPIToken: %v", err)
+		t.Fatalf("CreateAccessToken: %v", err)
 	}
 	req, err = http.NewRequest(http.MethodGet, srv.URL+"/tea/v1/products", nil)
 	if err != nil {

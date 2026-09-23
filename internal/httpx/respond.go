@@ -115,6 +115,29 @@ func Forbidden(w http.ResponseWriter, message string) {
 	WriteJSON(w, http.StatusForbidden, messageBody{Message: message})
 }
 
+// TokenIssued writes a successful POST /token response (TEA 1.0's
+// token-issued response): Cache-Control: no-store, which the spec requires
+// on every token response ("Servers shall set no-store on token
+// responses", RFC 6749 section 5.1), plus the token-response JSON body.
+func TokenIssued(w http.ResponseWriter, resp tea.TokenResponse) {
+	w.Header().Set("Cache-Control", "no-store")
+	WriteJSON(w, http.StatusOK, resp)
+}
+
+// TokenError writes a failed POST /token response (TEA 1.0's
+// token-error-response schema; RFC 6749 section 5.2). When status is 401
+// (client authentication failure, e.g. a missing/invalid API key), it also
+// sets WWW-Authenticate: Basic as the spec's 401-token-error response
+// requires -- distinct from UnauthorizedBearer's Bearer challenge above,
+// since /token authenticates the client itself via HTTP Basic, not a
+// bearer token.
+func TokenError(w http.ResponseWriter, status int, errCode, description string) {
+	if status == http.StatusUnauthorized {
+		w.Header().Set("WWW-Authenticate", `Basic realm="tea"`)
+	}
+	WriteJSON(w, status, tea.TokenErrorResponse{Error: errCode, ErrorDescription: description})
+}
+
 // Conflict writes a 409 response -- used when a request is individually
 // well-formed but rejected because of the resource's current state (e.g. a
 // locked collection draft, a stale approval).

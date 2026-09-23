@@ -37,8 +37,9 @@ type pageData struct {
 
 	Users []model.User
 
-	TokenInfo *time.Time // nil if the user has no API token yet
-	NewToken  string     // set only right after generation; shown once
+	TokenInfo *time.Time // nil if the user has no API key yet
+	NewKeyID  string     // set only right after generation; safe to show/copy indefinitely otherwise, but this page only ever displays the freshly-generated one
+	NewSecret string     // set only right after generation; shown once
 
 	Products        []tea.Product
 	Product         tea.Product

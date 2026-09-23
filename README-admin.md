@@ -2,7 +2,7 @@
 
 This covers everything added on top of the base server (see `README.md` and `SMOKE_TEST.md`
 for the TEA consumer read API itself): user accounts, roles, the browser GUI at `/admin/ui`,
-the full `/admin/v1` JSON API (now authenticated), and API tokens for `/tea/v1`.
+the full `/admin/v1` JSON API (now authenticated), and API keys for `/tea/v1`.
 
 ## 1. Bootstrapping the first admin
 
@@ -23,9 +23,9 @@ Users page or via `POST /admin/v1/users`.
 | Role | Grants |
 |---|---|
 | `admin` | Everything `consumer` can do, plus: create/update/delete data via `/admin/v1` (products, releases, components, collections, artifacts, CLE events, file uploads), manage users. |
-| `consumer` | Read-only: GET endpoints under `/admin/v1`, the dashboard, and the "My API Token" page. Cannot write data, manage users, or view the Users page. |
+| `consumer` | Read-only: GET endpoints under `/admin/v1`, the dashboard, and the "My API Key" page. Cannot write data, manage users, or view the Users page. |
 
-Both roles can log into the GUI and generate their own `/tea/v1` API token — that's identity,
+Both roles can log into the GUI and generate their own `/tea/v1` API key — that's identity,
 not a privilege escalation, since `/tea/v1` is a read-only API regardless of who's calling it.
 
 An admin can't delete the last remaining admin user (`DELETE .../users/{uuid}` returns `400`
@@ -42,8 +42,8 @@ Session-cookie based; a plain HTML login form, no JavaScript.
 | `/admin/ui/` | GET | consumer+ | Dashboard: counts of products, product releases, components, component releases, collections, artifacts |
 | `/admin/ui/users` | GET, POST | admin | List + create users |
 | `/admin/ui/users/{uuid}/delete` | POST | admin | Delete a user |
-| `/admin/ui/token` | GET | consumer+ | Shows whether you have an API token and when it was created (never the value itself) |
-| `/admin/ui/token/generate` | POST | consumer+ | (Re)generates your API token; the raw value is shown **once**, immediately after generation — copy it then, it can't be retrieved again |
+| `/admin/ui/token` | GET | consumer+ | Shows whether you have an API key and when it was created (never the secret itself) |
+| `/admin/ui/token/generate` | POST | consumer+ | (Re)generates your API key (a key ID + secret pair); both are shown **once**, immediately after generation — copy them then, the secret can't be retrieved again |
 
 Session cookies (`opentea_session`) are `HttpOnly`, `SameSite=Lax`, and expire 24h after login
 (fixed, not renewed on activity — log in again after that).
@@ -247,31 +247,48 @@ curl -H "Authorization: Bearer $TOKEN" -X POST $BASE/publisher/v1/artifacts \
   -H 'Content-Type: application/json' -d '{"type":"BOM","formats":[{"mediaType":"application/vnd.cyclonedx+json"}]}'
 ```
 
-## 5. Using an API token against `/tea/v1`
+## 5. Using an API key against `/tea/v1`
 
-`/tea/v1` (the spec-conformant consumer read API) stays fully public — no login, no token,
-required. What's new: if you *do* send an `Authorization: Bearer` header, it now has to be
-valid, or the request is rejected with `401` (the spec's existing but previously-unused
-`401-unauthorized` response). This lets you call the read API as a named identity if you want
+`/tea/v1` (the spec-conformant consumer read API) stays fully public — no login, no key,
+required. What's new: if you *do* send an `Authorization: Bearer` header, it now has to carry
+a valid, unexpired access token (obtained from `POST {TEA_API_BASE_PATH}/token`, below), or the
+request is rejected with `401`. This lets you call the read API as a named identity if you want
 to (e.g. for audit trails, or future per-identity rate limiting/scoping), without requiring it.
 
-1. Log into the GUI, go to "API Token", click Generate. Copy the token shown — it's not
-   retrievable again after that (only its creation date is, for future reference).
-2. Use it:
+TEA 1.0 requires a real token-exchange step (`spec/openapi.yaml`'s `/token`): your long-lived
+API key is never itself accepted as a bearer credential on `/tea/v1` — only a short-lived access
+token obtained by exchanging it is.
+
+1. Log into the GUI, go to "API Key", click Generate. Copy the **key ID** and **secret** shown —
+   the secret is not retrievable again after that (only the key's creation date is, for future
+   reference; the key ID itself is safe to note down too, but isn't re-shown either).
+2. Exchange the key for an access token, using HTTP Basic (key ID as the username, secret as the
+   password) and the `client_credentials` grant:
    ```bash
-   curl -H "Authorization: Bearer <token>" $BASE/tea/v1/products
+   curl -u <keyId>:<secret> -d grant_type=client_credentials $BASE/tea/v1/token
+   # {"access_token":"...","token_type":"Bearer","expires_in":3600}
    ```
-3. Calling `/tea/v1` with no `Authorization` header at all still works exactly as before —
+3. Use the returned `access_token` — not the key itself:
+   ```bash
+   curl -H "Authorization: Bearer <access_token>" $BASE/tea/v1/products
+   ```
+4. Calling `/tea/v1` with no `Authorization` header at all still works exactly as before —
    this is purely additive.
-4. Regenerating a token immediately invalidates the previous one. There's one token per user.
+5. An access token expires after `TEA_ACCESS_TOKEN_TTL` (default 1h; see `README.md`'s config
+   table) — re-exchange your key at step 2 for a new one. TEA defines no refresh token, so
+   there's nothing else to do: a client holding its own key can simply call `/token` again.
+6. Regenerating your key immediately invalidates the previous key/secret pair (any access
+   tokens already issued from it keep working until they expire, since they're a separate
+   credential). There's one key per user.
 
 ## 6. Security posture (Phase 1 of this feature)
 
 - Passwords are hashed with bcrypt (`golang.org/x/crypto/bcrypt`, default cost). Never stored
   or logged in plaintext.
-- API tokens are stored as a SHA-256 hash, not the raw value — a database leak doesn't hand out
-  usable tokens, same principle as the password hashing (though a faster hash is fine here
-  since tokens are high-entropy random values, not user-chosen low-entropy secrets).
+- API key secrets and access tokens are stored as a SHA-256 hash, not the raw value — a database
+  leak doesn't hand out usable credentials, same principle as the password hashing (though a
+  faster hash is fine here since these are high-entropy random values, not user-chosen
+  low-entropy secrets). A key's ID is not confidential and is stored/displayed as plain text.
 - Session cookies are `HttpOnly` (not readable from JS) and `SameSite=Lax` (not sent on
   cross-site POSTs), which is the CSRF mitigation for this phase. A dedicated per-form CSRF
   token is a tracked follow-up (see `TODO.md`), not built yet.

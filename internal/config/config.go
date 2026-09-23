@@ -101,6 +101,13 @@ type Config struct {
 	PublisherDraftTTL    time.Duration
 	PublisherLockTTL     time.Duration
 	PublisherApprovalTTL time.Duration
+
+	// AccessTokenTTL is how long a POST /token-issued access token stays
+	// valid (TEA 1.0's /token exchange, internal/api/token.go) before a
+	// client must re-exchange its API key for a new one -- TEA defines no
+	// refresh token (auth/readme.md). Default matches RFC 6749 section
+	// 5.1's own worked example (expires_in: 3600).
+	AccessTokenTTL time.Duration
 }
 
 // defaultConfigFile is checked automatically if TEA_CONFIG_FILE isn't set.
@@ -134,6 +141,10 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	accessTokenTTL, err := resolveDuration("TEA_ACCESS_TOKEN_TTL", fileValues, time.Hour)
+	if err != nil {
+		return Config{}, err
+	}
 
 	return Config{
 		ListenAddr:               resolve("TEA_LISTEN_ADDR", fileValues, ":8080"),
@@ -151,6 +162,7 @@ func Load() (Config, error) {
 		PublisherDraftTTL:        draftTTL,
 		PublisherLockTTL:         lockTTL,
 		PublisherApprovalTTL:     approvalTTL,
+		AccessTokenTTL:           accessTokenTTL,
 	}, nil
 }
 

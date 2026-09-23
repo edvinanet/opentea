@@ -13,38 +13,42 @@ import (
 	"errors"
 	"time"
 
+	"github.com/oej/opentea/internal/idgen"
 	"github.com/oej/opentea/internal/model"
 )
 
-// SetAPIToken generates a new API token for userUUID, replacing any existing
-// one, and returns the raw token -- this is the only time the raw value is
-// ever available; only its SHA-256 hash is stored (a token has enough
-// entropy that a fast hash is fine here, unlike passwords).
-func (r *Repo) SetAPIToken(ctx context.Context, userUUID string) (string, error) {
+// SetAPIKey generates a new API key (an identifier + secret pair, per TEA
+// 1.0's auth/readme.md) for userUUID, replacing any existing one, and
+// returns the raw keyID/secret -- this is the only time the raw secret is
+// ever available; only its SHA-256 hash is stored. keyID is not
+// confidential (safe to display indefinitely, e.g. for GUI identification)
+// -- only secret is.
+func (r *Repo) SetAPIKey(ctx context.Context, userUUID string) (keyID, secret string, err error) {
 	var raw [32]byte
 	if _, err := rand.Read(raw[:]); err != nil {
-		return "", err
+		return "", "", err
 	}
-	token := base64.RawURLEncoding.EncodeToString(raw[:])
-	hash := hashToken(token)
+	keyID = idgen.New()
+	secret = base64.RawURLEncoding.EncodeToString(raw[:])
+	hash := hashToken(secret)
 
-	_, err := r.db.ExecContext(ctx,
-		`INSERT INTO api_token (user_uuid, token_hash, created_at) VALUES (?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-		 ON CONFLICT (user_uuid) DO UPDATE SET token_hash = excluded.token_hash, created_at = excluded.created_at`,
-		userUUID, hash,
+	_, err = r.db.ExecContext(ctx,
+		`INSERT INTO api_key (user_uuid, key_id, secret_hash, created_at) VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+		 ON CONFLICT (user_uuid) DO UPDATE SET key_id = excluded.key_id, secret_hash = excluded.secret_hash, created_at = excluded.created_at`,
+		userUUID, keyID, hash,
 	)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	return token, nil
+	return keyID, secret, nil
 }
 
-// GetAPITokenCreatedAt reports whether userUUID has an API token and, if so,
-// when it was created -- for GUI display, without ever revealing the token
-// itself. Returns (nil, nil) if no token exists.
-func (r *Repo) GetAPITokenCreatedAt(ctx context.Context, userUUID string) (*time.Time, error) {
+// GetAPIKeyCreatedAt reports whether userUUID has an API key and, if so,
+// when it was created -- for GUI display, without ever revealing the
+// secret. Returns (nil, nil) if no key exists.
+func (r *Repo) GetAPIKeyCreatedAt(ctx context.Context, userUUID string) (*time.Time, error) {
 	var createdAt string
-	err := r.db.QueryRowContext(ctx, `SELECT created_at FROM api_token WHERE user_uuid = ?`, userUUID).Scan(&createdAt)
+	err := r.db.QueryRowContext(ctx, `SELECT created_at FROM api_key WHERE user_uuid = ?`, userUUID).Scan(&createdAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -58,16 +62,20 @@ func (r *Repo) GetAPITokenCreatedAt(ctx context.Context, userUUID string) (*time
 	return &t, nil
 }
 
-// GetUserByAPIToken resolves a raw bearer token to its owning user.
-func (r *Repo) GetUserByAPIToken(ctx context.Context, token string) (model.User, error) {
-	hash := hashToken(token)
+// VerifyAPIKey resolves a (keyID, secret) pair presented to POST /token
+// (internal/api/token.go) to its owning user. Returns ErrNotFound for
+// both an unknown keyID and a keyID whose secret doesn't match --
+// indistinguishable to the caller, same principle
+// GetPublisherCredentialByToken applies to revoked-vs-unknown.
+func (r *Repo) VerifyAPIKey(ctx context.Context, keyID, secret string) (model.User, error) {
+	hash := hashToken(secret)
 
 	var u model.User
 	var createdAt string
 	err := r.db.QueryRowContext(ctx,
 		`SELECT u.uuid, u.username, u.role, u.created_at
-		 FROM api_token t JOIN user u ON u.uuid = t.user_uuid
-		 WHERE t.token_hash = ?`, hash,
+		 FROM api_key k JOIN user u ON u.uuid = k.user_uuid
+		 WHERE k.key_id = ? AND k.secret_hash = ?`, keyID, hash,
 	).Scan(&u.UUID, &u.Username, &u.Role, &createdAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.User{}, ErrNotFound
@@ -83,12 +91,12 @@ func (r *Repo) GetUserByAPIToken(ctx context.Context, token string) (model.User,
 	return u, nil
 }
 
-// hashToken hashes a raw, high-entropy random token (an API token or a
-// session token -- see session.go) for storage/lookup: a fast, unsalted
-// SHA-256 is fine here, unlike for passwords, since a 256-bit random token
-// isn't brute-forceable regardless of hash speed. Used instead of storing
-// the raw value directly so a leaked/read DB file doesn't hand out
-// directly-usable tokens.
+// hashToken hashes a raw, high-entropy random token (an API key secret,
+// access token, or session token -- see session.go/token.go) for
+// storage/lookup: a fast, unsalted SHA-256 is fine here, unlike for
+// passwords, since a 256-bit random token isn't brute-forceable regardless
+// of hash speed. Used instead of storing the raw value directly so a
+// leaked/read DB file doesn't hand out directly-usable credentials.
 func hashToken(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:])

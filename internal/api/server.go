@@ -30,5 +30,5 @@ func NewRouter(r *repo.Repo, s storage.Storage, cfg config.Config) http.Handler 
 	srv := &Server{repo: r, storage: s, cfg: cfg}
 	mux := http.NewServeMux()
 	srv.registerRoutes(mux)
-	return resolvePrincipal(r, mux)
+	return resolvePrincipal(r, cfg.APIBasePath+"/token", mux)
 }

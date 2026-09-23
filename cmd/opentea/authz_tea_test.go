@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/oej/opentea/internal/model"
 	"github.com/oej/opentea/pkg/tea"
@@ -166,9 +167,9 @@ func TestTeaV1AuthzCapabilityIndependence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
-	consumerToken, err := srv.repo.SetAPIToken(ctx, consumer.UUID)
+	consumerToken, _, err := srv.repo.CreateAccessToken(ctx, consumer.UUID, time.Hour)
 	if err != nil {
-		t.Fatalf("SetAPIToken: %v", err)
+		t.Fatalf("CreateAccessToken: %v", err)
 	}
 	status, _, raw = teaRequest(t, srv, http.MethodGet, "/tea/v1/productRelease/"+release.UUID+"/collection/latest", consumerToken)
 	if status != http.StatusNotFound {
@@ -239,9 +240,9 @@ func TestTeaV1AuthzDiscoveryDeniedMatchesNoMatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
-	consumerToken, err := srv.repo.SetAPIToken(ctx, consumer.UUID)
+	consumerToken, _, err := srv.repo.CreateAccessToken(ctx, consumer.UUID, time.Hour)
 	if err != nil {
-		t.Fatalf("SetAPIToken: %v", err)
+		t.Fatalf("CreateAccessToken: %v", err)
 	}
 
 	status, _, raw = teaRequest(t, srv, http.MethodGet, "/tea/v1/discovery?tei=urn%3Atei%3Auuid%3Aacme.example.com%3Ahidden-1.0.0", consumerToken)
@@ -342,17 +343,17 @@ func TestTeaV1AuthzPerPrincipalCaching(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateUser alice: %v", err)
 	}
-	aliceToken, err := srv.repo.SetAPIToken(ctx, alice.UUID)
+	aliceToken, _, err := srv.repo.CreateAccessToken(ctx, alice.UUID, time.Hour)
 	if err != nil {
-		t.Fatalf("SetAPIToken alice: %v", err)
+		t.Fatalf("CreateAccessToken alice: %v", err)
 	}
 	bob, err := srv.repo.CreateUser(ctx, "bob", "password123", model.RoleConsumer)
 	if err != nil {
 		t.Fatalf("CreateUser bob: %v", err)
 	}
-	bobToken, err := srv.repo.SetAPIToken(ctx, bob.UUID)
+	bobToken, _, err := srv.repo.CreateAccessToken(ctx, bob.UUID, time.Hour)
 	if err != nil {
-		t.Fatalf("SetAPIToken bob: %v", err)
+		t.Fatalf("CreateAccessToken bob: %v", err)
 	}
 
 	// Give alice (and only alice) a principal-scoped denial on this

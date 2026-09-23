@@ -1,22 +1,26 @@
 {{define "content"}}
-<h1>My API Token</h1>
-<p>Use this token to call the <code>{{.APIBasePath}}</code> read API as yourself:</p>
-<p><code>curl -H "Authorization: Bearer &lt;token&gt;" {{.RootURL}}{{.APIBasePath}}/products</code></p>
+<h1>My API Key</h1>
+<p>An API key authenticates you to <code>POST {{.APIBasePath}}/token</code>, which exchanges
+it for a short-lived access token -- <em>that</em> access token, not the key itself, is what
+you present to the <code>{{.APIBasePath}}</code> read API:</p>
+<p><code>curl -u &lt;keyId&gt;:&lt;secret&gt; -d grant_type=client_credentials {{.RootURL}}{{.APIBasePath}}/token</code></p>
+<p><code>curl -H "Authorization: Bearer &lt;access_token&gt;" {{.RootURL}}{{.APIBasePath}}/products</code></p>
 
-{{if .NewToken}}
+{{if .NewSecret}}
 <div class="notice">
-  <strong>Copy this now &mdash; it won't be shown again:</strong>
-  <code class="token">{{.NewToken}}</code>
+  <strong>Copy the secret now &mdash; it won't be shown again:</strong>
+  <p>Key ID: <code class="token">{{.NewKeyID}}</code></p>
+  <p>Secret: <code class="token">{{.NewSecret}}</code></p>
 </div>
 {{end}}
 
 {{if .TokenInfo}}
-<p>A token exists, created {{.TokenInfo.Format "2006-01-02 15:04"}}.</p>
+<p>A key exists, created {{.TokenInfo.Format "2006-01-02 15:04"}}.</p>
 {{else}}
-<p>No token generated yet.</p>
+<p>No key generated yet.</p>
 {{end}}
 
-<form method="post" action="/admin/ui/token/generate" onsubmit="return confirm('Generate a new token? Any existing token will stop working immediately.');">
-  <button type="submit">{{if .TokenInfo}}Regenerate{{else}}Generate{{end}} token</button>
+<form method="post" action="/admin/ui/token/generate" onsubmit="return confirm('Generate a new key? Any existing key will stop working immediately.');">
+  <button type="submit">{{if .TokenInfo}}Regenerate{{else}}Generate{{end}} key</button>
 </form>
 {{end}}

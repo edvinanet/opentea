@@ -14,6 +14,8 @@
 package api
 
 import (
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"io"
 	"mime"
@@ -188,6 +190,9 @@ func (s *Server) downloadArtifactContent(w http.ResponseWriter, r *http.Request,
 	contentLocation := s.artifactDownloadLocation(uuid, version, mediaType)
 	w.Header().Set("Content-Location", contentLocation)
 	w.Header().Set("Content-Disposition", contentDispositionFor(a.Name, mediaType))
+	if digest, ok := reprDigestHeader(sha256Hex); ok {
+		w.Header().Set("Repr-Digest", digest)
+	}
 	if s.conditional(w, r, cacheControlBase, "artifact-download", uuid, strconv.Itoa(version), mediaType, strconv.FormatInt(revision, 10)) {
 		return
 	}
@@ -258,6 +263,9 @@ func (s *Server) downloadArtifactSignature(w http.ResponseWriter, r *http.Reques
 	contentLocation := s.artifactSignatureDownloadLocation(uuid, version, mediaType)
 	w.Header().Set("Content-Location", contentLocation)
 	w.Header().Set("Content-Disposition", contentDispositionFor(a.Name+".sig", "application/octet-stream"))
+	if digest, ok := reprDigestHeader(sha256Hex); ok {
+		w.Header().Set("Repr-Digest", digest)
+	}
 	if s.conditional(w, r, cacheControlBase, "artifact-signature-download", uuid, strconv.Itoa(version), mediaType, strconv.FormatInt(revision, 10)) {
 		return
 	}
@@ -294,6 +302,27 @@ func (s *Server) streamBlob(w http.ResponseWriter, r *http.Request, sha256Hex, c
 		// treating a broken mid-stream write as a fresh error response.
 		return
 	}
+}
+
+// reprDigestHeader builds an RFC 9530 Repr-Digest structured-field
+// dictionary value for sha256Hex -- the format/signature content's own
+// SHA-256 hash, the one algorithm this codebase always self-computes (see
+// internal/repo's own reasoning on why only SHA-256 is independently
+// verified for uploaded content). RFC 9530 dictionary members are byte
+// sequences, base64-encoded (`sf-binary`), not hex -- distinct from TEA's
+// own checksum.algValue, which is lowercase hex; the two encodings must
+// not be confused. Only set for self-hosted content (never for a 302
+// redirect to an external url/signatureUrl -- there's no local
+// representation for this server to digest there). ok is false only if
+// sha256Hex somehow isn't valid hex, which should never happen for a value
+// this codebase stored itself; skip the header rather than emit a
+// malformed one.
+func reprDigestHeader(sha256Hex string) (value string, ok bool) {
+	raw, err := hex.DecodeString(sha256Hex)
+	if err != nil {
+		return "", false
+	}
+	return "sha-256=:" + base64.StdEncoding.EncodeToString(raw) + ":", true
 }
 
 func (s *Server) artifactDownloadLocation(uuid string, version int, mediaType string) string {

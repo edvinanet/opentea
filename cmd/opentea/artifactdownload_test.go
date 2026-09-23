@@ -4,6 +4,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
 	"io"
 	"net/http"
 	"net/url"
@@ -66,6 +68,11 @@ func TestArtifactDownloadSelfHostedContent(t *testing.T) {
 	if cc := resp.Header.Get("Cache-Control"); cc == "" {
 		t.Fatal("Cache-Control header missing")
 	}
+	sum := sha256.Sum256(content)
+	wantReprDigest := "sha-256=:" + base64.StdEncoding.EncodeToString(sum[:]) + ":"
+	if rd := resp.Header.Get("Repr-Digest"); rd != wantReprDigest {
+		t.Fatalf("Repr-Digest = %q, want %q (RFC 9530, computed from the real uploaded bytes)", rd, wantReprDigest)
+	}
 
 	// HEAD: same headers, no body.
 	headReq, err := http.NewRequest(http.MethodHead, srv.URL+"/tea/v1/artifact/"+artifact.UUID+"/latest/download"+q, nil)
@@ -101,6 +108,9 @@ func TestArtifactDownloadSelfHostedContent(t *testing.T) {
 	_ = condResp.Body.Close()
 	if condResp.StatusCode != http.StatusNotModified {
 		t.Fatalf("conditional GET status = %d, want 304", condResp.StatusCode)
+	}
+	if rd := condResp.Header.Get("Repr-Digest"); rd != wantReprDigest {
+		t.Fatalf("304 Repr-Digest = %q, want %q (representation metadata headers apply to 304 too)", rd, wantReprDigest)
 	}
 
 	// The versioned endpoint agrees with "latest".
@@ -226,6 +236,9 @@ func TestArtifactDownloadExternalRedirect(t *testing.T) {
 	if loc := dlResp.Header.Get("Location"); loc != "https://example.com/external-sbom.json" {
 		t.Fatalf("Location = %q, want the external url", loc)
 	}
+	if rd := dlResp.Header.Get("Repr-Digest"); rd != "" {
+		t.Fatalf("Repr-Digest = %q, want absent -- this server has no local representation to digest for an external redirect", rd)
+	}
 
 	// The redirect is unconditional: even a (deliberately bogus, since
 	// external content has no server-known ETag to match) If-None-Match
@@ -299,6 +312,11 @@ func TestArtifactSignatureUploadAndDownloadAdmin(t *testing.T) {
 	}
 	if string(sigBody) != string(signature) {
 		t.Fatalf("signature body = %q, want %q", sigBody, signature)
+	}
+	sigSum := sha256.Sum256(signature)
+	wantSigReprDigest := "sha-256=:" + base64.StdEncoding.EncodeToString(sigSum[:]) + ":"
+	if rd := sigResp.Header.Get("Repr-Digest"); rd != wantSigReprDigest {
+		t.Fatalf("signature Repr-Digest = %q, want %q", rd, wantSigReprDigest)
 	}
 
 	// Content is still independently retrievable, unchanged.

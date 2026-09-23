@@ -76,14 +76,28 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       `SignatureURL` no longer means "no signature" (it may be self-hosted — `404`
       `SIGNATURE_NOT_FOUND` on the download endpoint is the authoritative "no signature at all"
       signal).
-- [ ] **Artifact download responses are missing the `Repr-Digest` header** — found 2026-09-21,
-      while researching `/token` (a fresh re-read of `spec/openapi.yaml`'s `artifact-content`/
-      `artifact-signature-content` response components turned this up; not caught when the
-      download endpoints themselves were built, same day). `artifact-repr-digest` (RFC 9530):
-      "Digest of the content... allowing a client to verify the bytes against the `checksums`
-      published in the artifact metadata." Optional per its own schema (no `required: true`,
-      unlike `ETag`), but not currently set at all by
-      `internal/api/artifactdownload.go`'s `downloadArtifactContent`/`downloadArtifactSignature`.
+- [x] ~~**Artifact download responses are missing the `Repr-Digest` header**~~ — fixed
+      2026-09-24. Found 2026-09-21, while researching `/token` (a fresh re-read of
+      `spec/openapi.yaml`'s `artifact-content`/`artifact-signature-content` response
+      components turned this up; not caught when the download endpoints themselves were
+      built, same day). New `reprDigestHeader` (`internal/api/artifactdownload.go`) builds
+      the RFC 9530 structured-field dictionary value (`sha-256=:<base64>:`) from the
+      format's/signature's own SHA-256 hash — the one algorithm this codebase always
+      self-computes — for both `downloadArtifactContent` and `downloadArtifactSignature`,
+      set before the conditional check so it's present on both `200` and `304` responses
+      (representation-metadata headers apply to both, same as `ETag`/`Content-Location`
+      already did). Deliberately **not** set on the `302` external-redirect path — there's
+      no local representation for this server to digest there. RFC 9530's dictionary
+      members are base64-encoded byte sequences, not hex — distinct from TEA's own
+      `checksum.algValue` encoding, flagged explicitly in the code so the two don't get
+      confused later. Verified: extended `cmd/opentea/artifactdownload_test.go`'s existing
+      content/signature-download tests with an exact-value assertion computed independently
+      from the real uploaded bytes (not just "header present"), including on the `304`
+      response and confirming absence on the `302` redirect case; a manual smoke test
+      against the real built binary compared the server's header against a digest computed
+      by a completely separate tool (`python3`/`hashlib`) — exact match. `go test ./...
+      -race`/`golangci-lint`/`go vet`/`gofmt` clean.
+
       Separately, the same spec text describes the `Cache-Control` header for these responses
       as `artifact-cache-control-immutable` ("A TEA Artifact revision is immutable... long-lived
       caching with `immutable` is appropriate") — opentea's implementation deliberately uses
@@ -92,6 +106,22 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       revision isn't *actually* immutable here; worth a second look at whether that reasoning
       still holds or whether the create-then-upload flow itself should be tightened instead,
       but not re-litigated here.
+
+      **New, separate finding surfaced while fixing this**: comparing the local upstream
+      checkout (`~/transparency-exchange-api`) against the snapshot this download-endpoint
+      work was originally built against, the `Vary` header's rule changed substantially and
+      a `Content-Encoding`/`Accept-Encoding` concept was introduced that didn't exist before.
+      Old wording (what `selectFormatMediaType`'s `usedAccept` was built against):
+      `Vary: Accept` only when `Accept` actually drove format selection. Current wording
+      (`artifact-vary`, renamed from `artifact-vary-accept`):
+      "If changing or removing the `Accept` request header **could** change the selected
+      format for the same target URI, the server shall include `Accept` in `Vary`,
+      **including when `Accept` is absent or contains `*/*`**" — meaningfully broader than
+      what's implemented today — plus an entirely new, parallel rule for `Accept-Encoding`/
+      `Content-Encoding` (HTTP content-coding negotiation, e.g. serving a precompressed
+      variant) that this codebase has no concept of at all. Not fixed here — larger scope
+      than a header-value tweak (the `Accept-Encoding` half is a real, unbuilt feature, not
+      just a semantics correction), and deserves its own look rather than a rushed fold-in.
 - [x] ~~**Discovery must support `?purl=` alongside `?tei=`**~~ — fixed 2026-09-21:
       `discoveryByTEI` renamed `discovery` (`internal/api/discovery.go`), now reads either
       `tei` or `purl` (400 if neither or both are supplied, per upstream: "Exactly one of the

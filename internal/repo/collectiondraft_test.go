@@ -46,7 +46,7 @@ func TestPutGetDeleteCollectionDraft(t *testing.T) {
 	prUUID := createTestProductReleaseForDraft(t, ctx, r)
 	artifactUUID, artifactVersion := createTestArtifactForEvidence(t, ctx, r)
 
-	draft, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci-pipeline",
+	draft, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci-pipeline", "",
 		[]ArtifactRef{{UUID: artifactUUID, Version: artifactVersion}}, nil, testDraftTTL)
 	if err != nil {
 		t.Fatalf("PutCollectionDraft: %v", err)
@@ -65,7 +65,7 @@ func TestPutGetDeleteCollectionDraft(t *testing.T) {
 	}
 
 	// Editing bumps revision and leaves approval at none.
-	draft2, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci-pipeline",
+	draft2, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci-pipeline", "",
 		[]ArtifactRef{{UUID: artifactUUID, Version: artifactVersion}}, nil, testDraftTTL)
 	if err != nil {
 		t.Fatalf("PutCollectionDraft (2nd): %v", err)
@@ -95,10 +95,10 @@ func TestPutCollectionDraftUnknownOwnerOrArtifactNotFound(t *testing.T) {
 	r := newTestRepo(t)
 	prUUID := createTestProductReleaseForDraft(t, ctx, r)
 
-	if _, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, "00000000-0000-0000-0000-000000000000", "ci", nil, nil, testDraftTTL); !errors.Is(err, ErrNotFound) {
+	if _, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, "00000000-0000-0000-0000-000000000000", "ci", "", nil, nil, testDraftTTL); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unknown owner: err = %v, want ErrNotFound", err)
 	}
-	if _, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci",
+	if _, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci", "",
 		[]ArtifactRef{{UUID: "00000000-0000-0000-0000-000000000000", Version: 1}}, nil, testDraftTTL); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unknown artifact: err = %v, want ErrNotFound", err)
 	}
@@ -108,12 +108,50 @@ func TestDecideCollectionDraftSelfApprovalRejected(t *testing.T) {
 	ctx := context.Background()
 	r := newTestRepo(t)
 	prUUID := createTestProductReleaseForDraft(t, ctx, r)
-	if _, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci-pipeline", nil, nil, testDraftTTL); err != nil {
+	if _, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci-pipeline", "", nil, nil, testDraftTTL); err != nil {
 		t.Fatalf("PutCollectionDraft: %v", err)
 	}
 
-	if _, err := r.DecideCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci-pipeline", "", true, time.Hour); !errors.Is(err, ErrSelfApproval) {
+	if _, err := r.DecideCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci-pipeline", "", "", true, time.Hour); !errors.Is(err, ErrSelfApproval) {
 		t.Fatalf("err = %v, want ErrSelfApproval", err)
+	}
+}
+
+// TestDecideCollectionDraftSelfApprovalRejectedByCredentialEvenWithDifferentActorNames
+// is the regression test for the finding that maker-checker only compared
+// caller-supplied actor strings, not the authenticated credential that
+// actually made each call -- a holder of one credential could draft as one
+// actor name and approve as a different one and pass the old check
+// (docs/security-review-260923.md finding #4). Uses the SAME
+// credential UUID for both calls but two DIFFERENT actor names ("alice"
+// drafts, "bob" approves) -- the old actor-only check would have let this
+// through; the credential check must still reject it.
+func TestDecideCollectionDraftSelfApprovalRejectedByCredentialEvenWithDifferentActorNames(t *testing.T) {
+	ctx := context.Background()
+	r := newTestRepo(t)
+	prUUID := createTestProductReleaseForDraft(t, ctx, r)
+
+	sameCred, _, err := r.CreatePublisherCredential(ctx, "shared-credential", "full")
+	if err != nil {
+		t.Fatalf("CreatePublisherCredential: %v", err)
+	}
+	otherCred, _, err := r.CreatePublisherCredential(ctx, "other-credential", "full")
+	if err != nil {
+		t.Fatalf("CreatePublisherCredential: %v", err)
+	}
+
+	if _, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "alice", sameCred.UUID, nil, nil, testDraftTTL); err != nil {
+		t.Fatalf("PutCollectionDraft: %v", err)
+	}
+
+	if _, err := r.DecideCollectionDraft(ctx, BelongsToProductRelease, prUUID, "bob", sameCred.UUID, "", true, time.Hour); !errors.Is(err, ErrSelfApproval) {
+		t.Fatalf("err = %v, want ErrSelfApproval (same credential, different actor names)", err)
+	}
+
+	// A genuinely different credential (and a different actor name, so the
+	// pre-existing actor-equality check doesn't also fire) is fine.
+	if _, err := r.DecideCollectionDraft(ctx, BelongsToProductRelease, prUUID, "carol", otherCred.UUID, "", true, time.Hour); err != nil {
+		t.Fatalf("DecideCollectionDraft (different credential): %v", err)
 	}
 }
 
@@ -121,10 +159,10 @@ func TestDecideCollectionDraftThenEditResetsApproval(t *testing.T) {
 	ctx := context.Background()
 	r := newTestRepo(t)
 	prUUID := createTestProductReleaseForDraft(t, ctx, r)
-	if _, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci-pipeline", nil, nil, testDraftTTL); err != nil {
+	if _, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci-pipeline", "", nil, nil, testDraftTTL); err != nil {
 		t.Fatalf("PutCollectionDraft: %v", err)
 	}
-	approved, err := r.DecideCollectionDraft(ctx, BelongsToProductRelease, prUUID, "reviewer", "looks good", true, time.Hour)
+	approved, err := r.DecideCollectionDraft(ctx, BelongsToProductRelease, prUUID, "reviewer", "", "looks good", true, time.Hour)
 	if err != nil {
 		t.Fatalf("DecideCollectionDraft (approve): %v", err)
 	}
@@ -132,7 +170,7 @@ func TestDecideCollectionDraftThenEditResetsApproval(t *testing.T) {
 		t.Fatalf("Approval = %+v", approved.Approval)
 	}
 
-	edited, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci-pipeline", nil, nil, testDraftTTL)
+	edited, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci-pipeline", "", nil, nil, testDraftTTL)
 	if err != nil {
 		t.Fatalf("PutCollectionDraft (edit after approve): %v", err)
 	}
@@ -145,7 +183,7 @@ func TestPrepareCollectionCommitRequiresApproval(t *testing.T) {
 	ctx := context.Background()
 	r := newTestRepo(t)
 	prUUID := createTestProductReleaseForDraft(t, ctx, r)
-	if _, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci-pipeline", nil, nil, testDraftTTL); err != nil {
+	if _, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci-pipeline", "", nil, nil, testDraftTTL); err != nil {
 		t.Fatalf("PutCollectionDraft: %v", err)
 	}
 
@@ -154,7 +192,7 @@ func TestPrepareCollectionCommitRequiresApproval(t *testing.T) {
 	}
 
 	// A rejected decision doesn't satisfy the requirement either.
-	if _, err := r.DecideCollectionDraft(ctx, BelongsToProductRelease, prUUID, "reviewer", "no", false, time.Hour); err != nil {
+	if _, err := r.DecideCollectionDraft(ctx, BelongsToProductRelease, prUUID, "reviewer", "", "no", false, time.Hour); err != nil {
 		t.Fatalf("DecideCollectionDraft (reject): %v", err)
 	}
 	if _, err := r.PrepareCollectionCommit(ctx, BelongsToProductRelease, prUUID, time.Hour); !errors.Is(err, ErrApprovalRequired) {
@@ -162,7 +200,7 @@ func TestPrepareCollectionCommitRequiresApproval(t *testing.T) {
 	}
 
 	// An expired approval doesn't satisfy it either.
-	if _, err := r.DecideCollectionDraft(ctx, BelongsToProductRelease, prUUID, "reviewer", "ok but late", true, -time.Hour); err != nil {
+	if _, err := r.DecideCollectionDraft(ctx, BelongsToProductRelease, prUUID, "reviewer", "", "ok but late", true, -time.Hour); err != nil {
 		t.Fatalf("DecideCollectionDraft (expired approve): %v", err)
 	}
 	if _, err := r.PrepareCollectionCommit(ctx, BelongsToProductRelease, prUUID, time.Hour); !errors.Is(err, ErrApprovalRequired) {
@@ -174,20 +212,20 @@ func TestCollectionDraftLockRejectsPutAndDecide(t *testing.T) {
 	ctx := context.Background()
 	r := newTestRepo(t)
 	prUUID := createTestProductReleaseForDraft(t, ctx, r)
-	if _, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci-pipeline", nil, nil, testDraftTTL); err != nil {
+	if _, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci-pipeline", "", nil, nil, testDraftTTL); err != nil {
 		t.Fatalf("PutCollectionDraft: %v", err)
 	}
-	if _, err := r.DecideCollectionDraft(ctx, BelongsToProductRelease, prUUID, "reviewer", "", true, time.Hour); err != nil {
+	if _, err := r.DecideCollectionDraft(ctx, BelongsToProductRelease, prUUID, "reviewer", "", "", true, time.Hour); err != nil {
 		t.Fatalf("DecideCollectionDraft: %v", err)
 	}
 	if _, err := r.PrepareCollectionCommit(ctx, BelongsToProductRelease, prUUID, time.Hour); err != nil {
 		t.Fatalf("PrepareCollectionCommit: %v", err)
 	}
 
-	if _, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci-pipeline", nil, nil, testDraftTTL); !errors.Is(err, ErrDraftLocked) {
+	if _, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci-pipeline", "", nil, nil, testDraftTTL); !errors.Is(err, ErrDraftLocked) {
 		t.Fatalf("PutCollectionDraft while locked: err = %v, want ErrDraftLocked", err)
 	}
-	if _, err := r.DecideCollectionDraft(ctx, BelongsToProductRelease, prUUID, "reviewer2", "", true, time.Hour); !errors.Is(err, ErrDraftLocked) {
+	if _, err := r.DecideCollectionDraft(ctx, BelongsToProductRelease, prUUID, "reviewer2", "", "", true, time.Hour); !errors.Is(err, ErrDraftLocked) {
 		t.Fatalf("DecideCollectionDraft while locked: err = %v, want ErrDraftLocked", err)
 	}
 
@@ -199,7 +237,7 @@ func TestCollectionDraftLockRejectsPutAndDecide(t *testing.T) {
 	}
 
 	// Lock released -- put now succeeds again.
-	if _, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci-pipeline", nil, nil, testDraftTTL); err != nil {
+	if _, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci-pipeline", "", nil, nil, testDraftTTL); err != nil {
 		t.Fatalf("PutCollectionDraft after cancel: %v", err)
 	}
 }
@@ -208,10 +246,10 @@ func TestCommitCollectionDraftWithoutPrepareRejected(t *testing.T) {
 	ctx := context.Background()
 	r := newTestRepo(t)
 	prUUID := createTestProductReleaseForDraft(t, ctx, r)
-	if _, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci-pipeline", nil, nil, testDraftTTL); err != nil {
+	if _, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci-pipeline", "", nil, nil, testDraftTTL); err != nil {
 		t.Fatalf("PutCollectionDraft: %v", err)
 	}
-	if _, err := r.DecideCollectionDraft(ctx, BelongsToProductRelease, prUUID, "reviewer", "", true, time.Hour); err != nil {
+	if _, err := r.DecideCollectionDraft(ctx, BelongsToProductRelease, prUUID, "reviewer", "", "", true, time.Hour); err != nil {
 		t.Fatalf("DecideCollectionDraft: %v", err)
 	}
 
@@ -226,11 +264,11 @@ func TestCollectionDraftFullHappyPath(t *testing.T) {
 	prUUID := createTestProductReleaseForDraft(t, ctx, r)
 	artifactUUID, artifactVersion := createTestArtifactForEvidence(t, ctx, r)
 
-	if _, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci-pipeline",
+	if _, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci-pipeline", "",
 		[]ArtifactRef{{UUID: artifactUUID, Version: artifactVersion}}, nil, testDraftTTL); err != nil {
 		t.Fatalf("PutCollectionDraft: %v", err)
 	}
-	if _, err := r.DecideCollectionDraft(ctx, BelongsToProductRelease, prUUID, "reviewer", "lgtm", true, time.Hour); err != nil {
+	if _, err := r.DecideCollectionDraft(ctx, BelongsToProductRelease, prUUID, "reviewer", "", "lgtm", true, time.Hour); err != nil {
 		t.Fatalf("DecideCollectionDraft: %v", err)
 	}
 
@@ -299,11 +337,11 @@ func TestCommitCollectionDraftPublishesPreparedDate(t *testing.T) {
 	prUUID := createTestProductReleaseForDraft(t, ctx, r)
 	artifactUUID, artifactVersion := createTestArtifactForEvidence(t, ctx, r)
 
-	if _, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci-pipeline",
+	if _, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci-pipeline", "",
 		[]ArtifactRef{{UUID: artifactUUID, Version: artifactVersion}}, nil, testDraftTTL); err != nil {
 		t.Fatalf("PutCollectionDraft: %v", err)
 	}
-	if _, err := r.DecideCollectionDraft(ctx, BelongsToProductRelease, prUUID, "reviewer", "lgtm", true, time.Hour); err != nil {
+	if _, err := r.DecideCollectionDraft(ctx, BelongsToProductRelease, prUUID, "reviewer", "", "lgtm", true, time.Hour); err != nil {
 		t.Fatalf("DecideCollectionDraft: %v", err)
 	}
 

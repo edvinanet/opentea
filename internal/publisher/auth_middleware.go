@@ -4,6 +4,7 @@
 package publisher
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -12,6 +13,33 @@ import (
 	"github.com/oej/opentea/internal/model"
 	"github.com/oej/opentea/internal/repo"
 )
+
+// credentialContextKey is an unexported type so this package's context key
+// can't collide with any key set by another package -- mirrors
+// internal/api/principal.go's withPrincipal/principalFromContext pattern.
+type credentialContextKey struct{}
+
+// withCredential returns a context carrying cred, resolved once by
+// requireScope and read by handlers that need to know which credential
+// actually authenticated the request -- not just what scope it holds.
+// Collection-draft maker-checker enforcement is the one place this
+// matters today (docs/security-review-260923.md finding #4): a
+// caller-supplied JSON "actor" string alone never established two
+// independent credentials, only two arbitrary strings the same caller
+// typed.
+func withCredential(ctx context.Context, cred model.PublisherCredential) context.Context {
+	return context.WithValue(ctx, credentialContextKey{}, cred)
+}
+
+// credentialFromContext returns the resolved credential, or the zero value
+// if none was set (shouldn't happen for a request that passed through
+// requireScope, but the zero value's empty UUID is safe: it can never
+// equal a real drafted-by-credential UUID, so it can't accidentally
+// satisfy or defeat a self-approval check).
+func credentialFromContext(ctx context.Context) model.PublisherCredential {
+	cred, _ := ctx.Value(credentialContextKey{}).(model.PublisherCredential)
+	return cred
+}
 
 // scopeSatisfies reports whether a credential issued with credScope may
 // call an operation that requires minScope. "full" satisfies both scopes;
@@ -52,7 +80,7 @@ func (s *Server) requireScope(minScope string, next http.HandlerFunc) http.Handl
 			httpx.Forbidden(w, "credential scope does not permit this operation")
 			return
 		}
-		next(w, r)
+		next(w, r.WithContext(withCredential(r.Context(), cred)))
 	}
 }
 

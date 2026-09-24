@@ -40,7 +40,8 @@ func (s *Server) putCollectionDraftForOwner(ownerType string) http.HandlerFunc {
 			refs[i] = repo.ArtifactRef{UUID: a.UUID, Version: a.Version}
 		}
 
-		draft, err := s.repo.PutCollectionDraft(r.Context(), ownerType, ownerUUID, req.Actor, refs, req.UpdateReason, s.cfg.PublisherDraftTTL)
+		cred := credentialFromContext(r.Context())
+		draft, err := s.repo.PutCollectionDraft(r.Context(), ownerType, ownerUUID, req.Actor, cred.UUID, refs, req.UpdateReason, s.cfg.PublisherDraftTTL)
 		writeCollectionDraftResult(w, r, draft, err)
 	}
 }
@@ -84,11 +85,15 @@ func (s *Server) deleteCollectionDraftForOwner(ownerType string) http.HandlerFun
 // decideCollectionDraftForOwner backs approveCollectionDraft/
 // rejectCollectionDraft: record a decision against the draft's current
 // content (design/publisher-service.md §7.9). actor must be a human, per
-// design/publisher-service.md §14.3 -- not enforced here (no capability
+// design/publisher-service.md §14.3 -- still not enforced (no capability
 // vocabulary exists yet to distinguish a human-operated "full" credential
 // from an automated one, design/publisher-service.md §11 open question
 // #10); this operation is "full"-scope only (excluded from "cicd"), which
 // is this implementation's structural approximation of that requirement.
+// Separately, self-approval is now also checked against the authenticated
+// credential that drafted, not only the caller-supplied actor string
+// (docs/security-review-260923.md finding #4) -- see
+// repo.DecideCollectionDraft's own doc comment.
 func (s *Server) decideCollectionDraftForOwner(ownerType string, approve bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ownerUUID, err := httpx.PathUUID(r, "uuid")
@@ -106,9 +111,10 @@ func (s *Server) decideCollectionDraftForOwner(ownerType string, approve bool) h
 			return
 		}
 
-		draft, err := s.repo.DecideCollectionDraft(r.Context(), ownerType, ownerUUID, req.Actor, req.Comment, approve, s.cfg.PublisherApprovalTTL)
+		cred := credentialFromContext(r.Context())
+		draft, err := s.repo.DecideCollectionDraft(r.Context(), ownerType, ownerUUID, req.Actor, cred.UUID, req.Comment, approve, s.cfg.PublisherApprovalTTL)
 		if errors.Is(err, repo.ErrSelfApproval) {
-			httpx.Forbidden(w, "actor equals the draft's own draftedBy -- self-approval is rejected")
+			httpx.Forbidden(w, "actor equals the draft's own draftedBy, or the same credential drafted and is deciding this draft -- self-approval is rejected")
 			return
 		}
 		writeCollectionDraftResult(w, r, draft, err)

@@ -284,6 +284,51 @@ func TestPublisherFullWorkflow(t *testing.T) {
 	}
 }
 
+// TestPublisherSelfApprovalRejectedAcrossDifferentActorNames is the
+// regression test for the finding that maker-checker self-approval
+// prevention only compared caller-supplied "actor" JSON strings, never the
+// authenticated credential that made each request -- a holder of one
+// full-scope credential could draft as one actor name and approve as a
+// different one and the old check would let it through
+// (docs/security-review-260923.md finding #4). Uses the SAME publisher
+// credential for both the draft and the approval, with two different actor
+// names ("alice" drafts, "bob" approves) -- must still be rejected as
+// self-approval.
+func TestPublisherSelfApprovalRejectedAcrossDifferentActorNames(t *testing.T) {
+	srv := newTestServer(t)
+	full := createPublisherCredential(t, srv, "full-cred", model.PublisherScopeFull)
+
+	status, raw := publisherRequest(t, srv, http.MethodPost, "/publisher/v1/products", full, map[string]any{"name": "Acme Widget"})
+	if status != http.StatusCreated {
+		t.Fatalf("createProduct: status=%d body=%s", status, raw)
+	}
+	var product tea.Product
+	decodeInto(t, raw, &product)
+
+	status, raw = publisherRequest(t, srv, http.MethodPost, "/publisher/v1/products/"+product.UUID+"/releases", full, map[string]any{
+		"version": "1.0.0", "createdDate": "2026-07-01T00:00:00Z",
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("createProductRelease: status=%d body=%s", status, raw)
+	}
+	var release tea.ProductRelease
+	decodeInto(t, raw, &release)
+
+	draftPath := "/publisher/v1/productReleases/" + release.UUID + "/collectionDraft"
+	status, raw = publisherRequest(t, srv, http.MethodPut, draftPath, full, map[string]any{
+		"actor":     "alice",
+		"artifacts": []map[string]any{},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("putCollectionDraft: status=%d body=%s", status, raw)
+	}
+
+	status, raw = publisherRequest(t, srv, http.MethodPost, draftPath+"/approve", full, map[string]any{"actor": "bob"})
+	if status != http.StatusForbidden {
+		t.Fatalf("approve with the same credential, different actor name: status=%d body=%s, want 403", status, raw)
+	}
+}
+
 // TestPublisherUploadArtifactFileByMediaType covers security-review fix 14
 // (docs/security-review-publisher-design-260828.md): uploadArtifactFile
 // addresses a format by mediaType, not a positional index. Also confirms

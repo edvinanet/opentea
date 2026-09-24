@@ -827,6 +827,39 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       `cmd/opentea/publisher_test.go`'s `TestPublisherFullWorkflow` (real HTTP + Ed25519
       signing through `/publisher/v1`) is unaffected and still passes, so the fix doesn't
       change the real signing path's behavior, only makes the committed timestamp honest.
+- [x] ~~**[docs/security-review-260923.md finding 4] Publisher self-approval prevention
+      trusted caller-supplied names** — both `putCollectionDraft` and `approve`/
+      `rejectCollectionDraft` accept `actor` from JSON, and the maker-checker check
+      (`repo.DecideCollectionDraft`) only compared that string against the draft's recorded
+      `drafted_by`. `requireScope` (`internal/publisher/auth_middleware.go`) resolved the
+      authenticated `publisher_credential` for every request but discarded it after the scope
+      check -- nothing downstream ever saw which credential actually made the call. A holder
+      of one full-scope credential could draft as one actor name and approve as another and
+      pass the check, since it never established two independent credentials, only two
+      arbitrary strings the same caller typed.~~ **Fixed 2026-09-24**: `requireScope` now
+      stashes the resolved credential in request context (new `withCredential`/
+      `credentialFromContext`, mirroring `internal/api/principal.go`'s pattern).
+      `collection_draft` gained `drafted_by_credential_uuid`/
+      `approval_decided_by_credential_uuid` columns (`internal/db/migrations/0010_publisher_draft_credential_binding.sql`,
+      nullable -- a draft already open when this migration runs has no recorded drafting
+      credential and falls back to the actor-string check alone until re-drafted).
+      `DecideCollectionDraft` now rejects self-approval if EITHER the actor strings match
+      (unchanged, existing check) OR the deciding credential's UUID matches the drafting
+      credential's UUID (new) -- strictly additive, nothing that passed before can now fail
+      except the actual bypass. Doesn't resolve `design/publisher-service.md` §11 open
+      question #10 (distinguishing a human-operated credential from an automated one) --
+      that's a different, still-open question; this fix is specifically about binding the
+      check to *which credential* authenticated the request, not about verifying a human is
+      behind it. Verified: new regression tests at both the repo level
+      (`TestDecideCollectionDraftSelfApprovalRejectedByCredentialEvenWithDifferentActorNames`)
+      and the real HTTP layer (`cmd/opentea/publisher_test.go`'s
+      `TestPublisherSelfApprovalRejectedAcrossDifferentActorNames`, one credential drafts as
+      "alice" and tries to approve as "bob") -- both confirmed to pass against the real fix
+      and fail when the new check is disabled. `TestPublisherFullWorkflow` (two genuinely
+      different credentials) is unaffected and still passes. Full suite, `-race`,
+      `golangci-lint`, `go vet`, `gofmt` clean, plus a manual smoke test against a live built
+      binary reproducing the exact scenario end to end (draft as alice, approve as bob with
+      the same credential, confirmed 403).
 - [ ] **[security review finding 4] Publisher API: create a new version of an existing
       artifact** — `createArtifact` always mints a fresh UUID at version 1
       (`internal/repo/artifact.go`'s `CreateArtifact`); there's no `/publisher/v1` operation

@@ -46,6 +46,7 @@ var (
 type collectionDraftRow struct {
 	revision                  int
 	draftedBy                 string
+	draftedByCredentialUUID   sql.NullString
 	updateReasonType          sql.NullString
 	updateReasonComment       sql.NullString
 	createdAt                 string
@@ -63,11 +64,11 @@ type collectionDraftRow struct {
 func fetchCollectionDraftRowTx(ctx context.Context, q dbtx, ownerType, ownerUUID string) (collectionDraftRow, error) {
 	var row collectionDraftRow
 	err := q.QueryRowContext(ctx,
-		`SELECT revision, drafted_by, update_reason_type, update_reason_comment, created_at, expires_at, lock_expires_at, lock_date,
+		`SELECT revision, drafted_by, drafted_by_credential_uuid, update_reason_type, update_reason_comment, created_at, expires_at, lock_expires_at, lock_date,
 		        approval_status, approval_decided_by, approval_decided_at, approval_decided_at_revision, approval_expires_at, approval_comment
 		 FROM collection_draft WHERE owner_type = ? AND owner_uuid = ?`,
 		ownerType, ownerUUID,
-	).Scan(&row.revision, &row.draftedBy, &row.updateReasonType, &row.updateReasonComment, &row.createdAt, &row.expiresAt, &row.lockExpiresAt, &row.lockDate,
+	).Scan(&row.revision, &row.draftedBy, &row.draftedByCredentialUUID, &row.updateReasonType, &row.updateReasonComment, &row.createdAt, &row.expiresAt, &row.lockExpiresAt, &row.lockDate,
 		&row.approvalStatus, &row.approvalDecidedBy, &row.approvalDecidedAt, &row.approvalDecidedAtRevision, &row.approvalExpiresAt, &row.approvalComment)
 	if errors.Is(err, sql.ErrNoRows) {
 		return collectionDraftRow{}, ErrNotFound
@@ -138,8 +139,13 @@ func requireReleaseOwnerExistsTx(ctx context.Context, q dbtx, ownerType, ownerUU
 // Bumps revision and resets approval to "none" -- editing invalidates
 // whatever approval was on record for the previous content. ttl sets the
 // refreshed expiresAt (design/publisher-service.md §9.6,
-// config.PublisherDraftTTL).
-func (r *Repo) PutCollectionDraft(ctx context.Context, ownerType, ownerUUID, actor string, artifacts []ArtifactRef, updateReason *tea.UpdateReason, ttl time.Duration) (teapublisher.CollectionDraft, error) {
+// config.PublisherDraftTTL). draftedByCredentialUUID is the authenticated
+// publisher_credential that made this call (empty if unknown, e.g. a
+// caller outside the normal /publisher/v1 HTTP path) -- recorded alongside
+// actor so DecideCollectionDraft can enforce self-approval against the
+// actual credential that drafted, not only the caller-supplied actor
+// string (docs/security-review-260923.md finding #4).
+func (r *Repo) PutCollectionDraft(ctx context.Context, ownerType, ownerUUID, actor, draftedByCredentialUUID string, artifacts []ArtifactRef, updateReason *tea.UpdateReason, ttl time.Duration) (teapublisher.CollectionDraft, error) {
 	return runInTx(ctx, r, func(tx dbtx) (teapublisher.CollectionDraft, error) {
 		if err := requireReleaseOwnerExistsTx(ctx, tx, ownerType, ownerUUID); err != nil {
 			return teapublisher.CollectionDraft{}, err
@@ -179,15 +185,16 @@ func (r *Repo) PutCollectionDraft(ctx context.Context, ownerType, ownerUUID, act
 		expiresAt := formatTime(time.Now().Add(ttl))
 
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO collection_draft (owner_type, owner_uuid, revision, drafted_by, update_reason_type, update_reason_comment, expires_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?)
+			`INSERT INTO collection_draft (owner_type, owner_uuid, revision, drafted_by, drafted_by_credential_uuid, update_reason_type, update_reason_comment, expires_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 			 ON CONFLICT (owner_type, owner_uuid) DO UPDATE SET
-			   revision = excluded.revision, drafted_by = excluded.drafted_by,
+			   revision = excluded.revision, drafted_by = excluded.drafted_by, drafted_by_credential_uuid = excluded.drafted_by_credential_uuid,
 			   update_reason_type = excluded.update_reason_type, update_reason_comment = excluded.update_reason_comment,
 			   expires_at = excluded.expires_at, lock_expires_at = NULL, lock_date = NULL,
 			   approval_status = 'none', approval_decided_by = NULL, approval_decided_at = NULL,
-			   approval_decided_at_revision = NULL, approval_expires_at = NULL, approval_comment = NULL`,
-			ownerType, ownerUUID, revision, actor, reasonType, reasonComment, expiresAt,
+			   approval_decided_at_revision = NULL, approval_expires_at = NULL, approval_comment = NULL,
+			   approval_decided_by_credential_uuid = NULL`,
+			ownerType, ownerUUID, revision, actor, nullIfEmpty(draftedByCredentialUUID), reasonType, reasonComment, expiresAt,
 		); err != nil {
 			return teapublisher.CollectionDraft{}, err
 		}
@@ -334,10 +341,19 @@ func (r *Repo) DeleteCollectionDraft(ctx context.Context, ownerType, ownerUUID s
 // draft's *current* revision (design/publisher-service.md §7.9). Returns
 // ErrNotFound if no draft exists, ErrDraftLocked if a
 // prepareCollectionCommit lock is held, ErrSelfApproval if actor equals
-// the draft's own draftedBy (maker-checker, checked for both approve and
-// reject). approvalTTL sets ExpiresAt on approval only (config.PublisherApprovalTTL);
-// a rejection has no expiry.
-func (r *Repo) DecideCollectionDraft(ctx context.Context, ownerType, ownerUUID, actor, comment string, approve bool, approvalTTL time.Duration) (teapublisher.CollectionDraft, error) {
+// the draft's own draftedBy, OR if decidingCredentialUUID equals the
+// draft's own recorded drafted_by_credential_uuid (maker-checker, checked
+// for both approve and reject). The credential check is the actual
+// security boundary -- actor is caller-supplied JSON with no binding to
+// who authenticated the request, so a holder of one credential could
+// previously draft as one actor name and approve as another and still
+// pass the actor-only check (docs/security-review-260923.md finding #4).
+// decidingCredentialUUID empty (unknown) never trips this check on its
+// own, matching a draft recorded before this check existed
+// (drafted_by_credential_uuid NULL) -- both checks apply independently;
+// either one firing is enough to reject. approvalTTL sets ExpiresAt on
+// approval only (config.PublisherApprovalTTL); a rejection has no expiry.
+func (r *Repo) DecideCollectionDraft(ctx context.Context, ownerType, ownerUUID, actor, decidingCredentialUUID, comment string, approve bool, approvalTTL time.Duration) (teapublisher.CollectionDraft, error) {
 	return runInTx(ctx, r, func(tx dbtx) (teapublisher.CollectionDraft, error) {
 		row, err := fetchCollectionDraftRowTx(ctx, tx, ownerType, ownerUUID)
 		if err != nil {
@@ -349,6 +365,9 @@ func (r *Repo) DecideCollectionDraft(ctx context.Context, ownerType, ownerUUID, 
 		if actor == row.draftedBy {
 			return teapublisher.CollectionDraft{}, ErrSelfApproval
 		}
+		if decidingCredentialUUID != "" && row.draftedByCredentialUUID.Valid && decidingCredentialUUID == row.draftedByCredentialUUID.String {
+			return teapublisher.CollectionDraft{}, ErrSelfApproval
+		}
 
 		status := "rejected"
 		var expiresAt any
@@ -358,10 +377,10 @@ func (r *Repo) DecideCollectionDraft(ctx context.Context, ownerType, ownerUUID, 
 		}
 
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE collection_draft SET approval_status = ?, approval_decided_by = ?, approval_decided_at = ?,
+			`UPDATE collection_draft SET approval_status = ?, approval_decided_by = ?, approval_decided_by_credential_uuid = ?, approval_decided_at = ?,
 			   approval_decided_at_revision = ?, approval_expires_at = ?, approval_comment = ?
 			 WHERE owner_type = ? AND owner_uuid = ?`,
-			status, actor, formatTime(time.Now()), row.revision, expiresAt, nullIfEmpty(comment),
+			status, actor, nullIfEmpty(decidingCredentialUUID), formatTime(time.Now()), row.revision, expiresAt, nullIfEmpty(comment),
 			ownerType, ownerUUID,
 		); err != nil {
 			return teapublisher.CollectionDraft{}, err

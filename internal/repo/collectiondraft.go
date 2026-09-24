@@ -568,7 +568,16 @@ func (r *Repo) CommitCollectionDraft(ctx context.Context, ownerType, ownerUUID s
 		for i, a := range wouldBe.Artifacts {
 			refs[i] = ArtifactRef{UUID: a.UUID, Version: a.Version}
 		}
-		collection, err := createFn(ctx, ownerUUID, CollectionInput{UpdateReason: wouldBe.UpdateReason, Artifacts: refs})
+		collection, err := createFn(ctx, ownerUUID, CollectionInput{
+			UpdateReason: wouldBe.UpdateReason,
+			Artifacts:    refs,
+			// Must be the exact value PeekCollectionDraftCommit's caller
+			// just verified a signature against, not a fresh time.Now() --
+			// otherwise the collection this transaction publishes wouldn't
+			// match the one that was actually signed (finding #3,
+			// docs/security-review-260923.md).
+			CreatedDate: &wouldBe.CreatedDate,
+		})
 		if err != nil {
 			return err
 		}
@@ -578,6 +587,15 @@ func (r *Repo) CommitCollectionDraft(ctx context.Context, ownerType, ownerUUID s
 			// which nothing in this codebase does -- a defensive check,
 			// not an expected path.
 			return fmt.Errorf("repo: collection draft commit race: expected version %d, got %d", wouldBe.Version, collection.Version)
+		}
+		if !collection.CreatedDate.Equal(wouldBe.CreatedDate) {
+			// Can only happen if createCollection stops honoring
+			// CollectionInput.CreatedDate in some future change -- a
+			// defensive check, not an expected path, but the one that
+			// matters most here: silently publishing a different date than
+			// what was signed is exactly the bug this pass fixes.
+			return fmt.Errorf("repo: collection draft commit date mismatch: expected %s, got %s",
+				formatTime(wouldBe.CreatedDate), formatTime(collection.CreatedDate))
 		}
 
 		if _, err := tx.CreateEvidenceBundle(ctx, EvidenceBundleInput{

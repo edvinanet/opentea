@@ -282,3 +282,53 @@ func TestCollectionDraftFullHappyPath(t *testing.T) {
 		t.Fatalf("bundle.Object.Digest.Value = %q", bundle.Object.Digest.Value)
 	}
 }
+
+// TestCommitCollectionDraftPublishesPreparedDate is the regression test
+// for the finding that CommitCollectionDraft published a fresh
+// time.Now() instead of the exact CreatedDate PrepareCollectionCommit
+// returned and a caller's signature covers (docs/security-review-260923.md
+// finding #3) -- the review reproduced this by waiting between prepare and
+// commit and observing the persisted collection's date drift from what was
+// signed. Sleeps a full second (formatTime's own precision) between
+// prepare and commit so a real, unfixed time.Now() call would provably
+// differ, then asserts the persisted collection matches wouldBe's date
+// exactly, not merely "close to it".
+func TestCommitCollectionDraftPublishesPreparedDate(t *testing.T) {
+	ctx := context.Background()
+	r := newTestRepo(t)
+	prUUID := createTestProductReleaseForDraft(t, ctx, r)
+	artifactUUID, artifactVersion := createTestArtifactForEvidence(t, ctx, r)
+
+	if _, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci-pipeline",
+		[]ArtifactRef{{UUID: artifactUUID, Version: artifactVersion}}, nil, testDraftTTL); err != nil {
+		t.Fatalf("PutCollectionDraft: %v", err)
+	}
+	if _, err := r.DecideCollectionDraft(ctx, BelongsToProductRelease, prUUID, "reviewer", "lgtm", true, time.Hour); err != nil {
+		t.Fatalf("DecideCollectionDraft: %v", err)
+	}
+
+	wouldBe, err := r.PrepareCollectionCommit(ctx, BelongsToProductRelease, prUUID, time.Hour)
+	if err != nil {
+		t.Fatalf("PrepareCollectionCommit: %v", err)
+	}
+
+	time.Sleep(1100 * time.Millisecond)
+
+	collection, err := r.CommitCollectionDraft(ctx, BelongsToProductRelease, prUUID, testCommitEvidence("deadbeef"))
+	if err != nil {
+		t.Fatalf("CommitCollectionDraft: %v", err)
+	}
+	if !collection.CreatedDate.Equal(wouldBe.CreatedDate) {
+		t.Fatalf("CommitCollectionDraft's returned CreatedDate = %s, want exactly wouldBe's %s",
+			collection.CreatedDate, wouldBe.CreatedDate)
+	}
+
+	stored, err := r.GetCollectionByVersion(ctx, prUUID, 1, BelongsToProductRelease)
+	if err != nil {
+		t.Fatalf("GetCollectionByVersion: %v", err)
+	}
+	if !stored.CreatedDate.Equal(wouldBe.CreatedDate) {
+		t.Fatalf("persisted CreatedDate = %s, want exactly the prepared/signed %s (the bug: it drifted to a fresh time.Now())",
+			stored.CreatedDate, wouldBe.CreatedDate)
+	}
+}

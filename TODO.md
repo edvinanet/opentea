@@ -805,6 +805,28 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       before calling the protocol stable: add a real `prepareId` to
       `prepare-commit-response`, require it in `commit`, document the binding explicitly
       instead of leaving it implicit in the reference implementation's own choices.
+- [x] ~~**[docs/security-review-260923.md finding 3] Collection commit published different
+      content from the signed preparation** — `PrepareCollectionCommit` fixes the would-be
+      collection's `CreatedDate` (`buildWouldBeCollectionTx`'s `lock_date` column) so a
+      caller's signature covers one exact value, but `CommitCollectionDraft` called
+      `CreateCollectionForProductRelease`/`ComponentRelease` with a bare `CollectionInput`
+      that carried no date field at all -- `createCollection` always stamped its own
+      `time.Now()`, so the collection actually published a moment later could carry a
+      different `date` (and therefore a different digest) than what was signed. The review
+      reproduced this by waiting 1.1 seconds between prepare and commit.~~ **Fixed
+      2026-09-24**: `CollectionInput` gained a `CreatedDate *time.Time` field (nil for the
+      ordinary `internal/admin/collection.go` create-collection flow, where a fresh
+      `time.Now()` is exactly correct); `CommitCollectionDraft` now passes
+      `&wouldBe.CreatedDate` through explicitly, and asserts the persisted collection's date
+      matches it exactly (defense in depth, same shape as the existing version-mismatch
+      check just above it in `internal/repo/collectiondraft.go`). New regression test
+      (`internal/repo/collectiondraft_test.go`'s `TestCommitCollectionDraftPublishesPreparedDate`)
+      sleeps 1.1s between prepare and commit -- confirmed it fails against the pre-fix code
+      with exactly the review's own reproduction (dates one second apart), passes after.
+      Full suite, `-race`, `golangci-lint`, `go vet`, `gofmt` clean; the existing
+      `cmd/opentea/publisher_test.go`'s `TestPublisherFullWorkflow` (real HTTP + Ed25519
+      signing through `/publisher/v1`) is unaffected and still passes, so the fix doesn't
+      change the real signing path's behavior, only makes the committed timestamp honest.
 - [ ] **[security review finding 4] Publisher API: create a new version of an existing
       artifact** — `createArtifact` always mints a fresh UUID at version 1
       (`internal/repo/artifact.go`'s `CreateArtifact`); there's no `/publisher/v1` operation

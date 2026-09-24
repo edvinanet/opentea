@@ -36,6 +36,15 @@ const (
 type CollectionInput struct {
 	UpdateReason *tea.UpdateReason
 	Artifacts    []ArtifactRef
+	// CreatedDate fixes the new collection's date to an exact, caller-chosen
+	// value instead of createCollection's own time.Now() -- nil for the
+	// ordinary admin create-collection flow (internal/admin/collection.go),
+	// where "now" is exactly what should be recorded. CommitCollectionDraft
+	// sets it to the same value PrepareCollectionCommit returned and a
+	// caller signed a digest over (design/publisher-service.md §7.8/§7.10):
+	// committing must publish bit-for-bit the same content that was signed,
+	// not a fresh timestamp minted moments later.
+	CreatedDate *time.Time
 }
 
 // CreateCollectionForComponentRelease publishes a new collection version
@@ -90,6 +99,9 @@ func (r *Repo) createCollection(ctx context.Context, ownerUUID, belongsTo string
 		}
 
 		now := time.Now()
+		if in.CreatedDate != nil {
+			now = *in.CreatedDate
+		}
 		var reasonType, reasonComment any
 		if in.UpdateReason != nil {
 			reasonType = in.UpdateReason.Type

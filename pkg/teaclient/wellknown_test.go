@@ -319,6 +319,47 @@ func TestBootstrapDiscoverEndpointWithNoMutualVersionSkipped(t *testing.T) {
 	}
 }
 
+// TestBootstrapDiscoverRejectsNonHTTPSEndpoint is the regression test for
+// the finding that bootstrap discovery accepted a plain-http endpoint URL
+// straight from the untrusted .well-known/tea document and would send a
+// caller's bearer token to it in plaintext (docs/security-review-260923.md
+// finding #2) -- the discovery spec requires every advertised endpoint to
+// be https (discovery/readme.md: "Conforming deployments shall advertise
+// only lowercase https base URLs"). httpSrv is a plain httptest.Server
+// (naturally an http:// URL) standing in for a malicious or misconfigured
+// endpoint; it must never be queried at all, with or without a bearer
+// token, even though it's listed at higher priority than the compliant
+// httpsSrv.
+func TestBootstrapDiscoverRejectsNonHTTPSEndpoint(t *testing.T) {
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("a non-https endpoint must never actually be queried")
+	}))
+	t.Cleanup(httpSrv.Close)
+	httpsSrv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode([]tea.DiscoveryInfo{{ProductReleaseUUID: "from-https-endpoint"}})
+	}))
+	t.Cleanup(httpsSrv.Close)
+
+	authority, wkSrv := newFakeWellKnownAuthority(t, wellKnownHandler(t, []tea.WellKnownEndpoint{
+		{URL: httpSrv.URL, Versions: []string{"0.4.0"}, Priority: priorityPtr(1.0)},
+		{URL: httpsSrv.URL, Versions: []string{"0.4.0"}, Priority: priorityPtr(0.5)},
+	}))
+
+	oldSupported := SupportedVersions
+	SupportedVersions = []string{"0.4.0"}
+	t.Cleanup(func() { SupportedVersions = oldSupported })
+
+	tei := "tei://" + authority + "/uuid/d4d9f54a-abcf-11ee-ac79-1a52914d44b1"
+	result, err := bootstrapDiscoverWithAuthority(context.Background(), authority, tei,
+		trustingOption(wkSrv), trustingOption(httpsSrv), WithBearerToken("secret-token"))
+	if err != nil {
+		t.Fatalf("BootstrapDiscover: %v", err)
+	}
+	if len(result.Info) != 1 || result.Info[0].ProductReleaseUUID != "from-https-endpoint" {
+		t.Fatalf("Info = %+v, want it to fail over to the compliant https endpoint", result.Info)
+	}
+}
+
 // TestBootstrapDiscoverTLSFailureNoRetry confirms an untrusted certificate
 // on the .well-known fetch fails fast (not treated as a generically
 // retryable transient error) with a clear error.

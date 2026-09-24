@@ -77,6 +77,38 @@ func TestBearerTokenAttached(t *testing.T) {
 	}
 }
 
+// TestBearerTokenNotForwardedAcrossOriginRedirect is the regression test
+// for the finding that net/http's default redirect policy forwards
+// Authorization across a same-host, different-port redirect --
+// httptest.Server instances are exactly that shape (both bound to
+// 127.0.0.1, different ports), which is how this was originally found and
+// reproduced (docs/security-review-260923.md finding #2): confirmed
+// empirically, before this fix, that the default policy strips
+// Authorization on a hostname change but not a port-only one. redirectSrv
+// answers every request with a 302 to targetSrv; targetSrv records whatever
+// Authorization header it actually received.
+func TestBearerTokenNotForwardedAcrossOriginRedirect(t *testing.T) {
+	var gotAtTarget string
+	targetSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAtTarget = r.Header.Get("Authorization")
+		_ = json.NewEncoder(w).Encode(tea.Product{UUID: "abc-123", Identifiers: []tea.Identifier{}})
+	}))
+	t.Cleanup(targetSrv.Close)
+
+	redirectSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, targetSrv.URL+r.URL.Path, http.StatusFound)
+	}))
+	t.Cleanup(redirectSrv.Close)
+
+	client := NewClient(redirectSrv.URL, WithBearerToken("secret-token"))
+	if _, err := client.GetProduct(context.Background(), "abc-123"); err != nil {
+		t.Fatalf("GetProduct: %v", err)
+	}
+	if gotAtTarget != "" {
+		t.Fatalf("Authorization header forwarded to redirect target on a different origin = %q, want empty", gotAtTarget)
+	}
+}
+
 func TestQueryProductsPagination(t *testing.T) {
 	client, _ := newFakeServer(t, func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()

@@ -10,6 +10,7 @@ package teaclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -65,7 +66,37 @@ func NewClient(baseURL string, opts ...Option) *Client {
 	for _, opt := range opts {
 		opt(c)
 	}
+	// Installed after opts so a WithHTTPClient caller's own CheckRedirect
+	// (none exist in this codebase today) can't accidentally disable this --
+	// the credential-leak protection below is meant to hold unconditionally,
+	// not be opt-out. See crossOriginCheckRedirect's own doc comment for why.
+	c.httpClient.CheckRedirect = crossOriginCheckRedirect
 	return c
+}
+
+// crossOriginCheckRedirect is every Client's http.Client.CheckRedirect: it
+// strips the Authorization header before following any redirect whose
+// target has a different origin (scheme+host, host including port) than
+// the original request. net/http's own default redirect policy already
+// does this when the hostname changes, but not when only the port or
+// scheme differs on the same host -- confirmed empirically (a same-host,
+// different-port redirect still received the bearer token under the
+// default policy) during the investigation that led to this fix
+// (docs/security-review-260923.md finding #2). TEA's own auth text is
+// explicit that a TEA access token is sent only to the TEA server's own
+// API base URL, so any origin change on a redirect is exactly the boundary
+// that must not carry it further. Replicates net/http's own 10-redirect
+// cap, since installing a CheckRedirect at all replaces that default
+// entirely, not just the credential-stripping.
+func crossOriginCheckRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return errors.New("teaclient: stopped after 10 redirects")
+	}
+	orig := via[0].URL
+	if !strings.EqualFold(orig.Scheme, req.URL.Scheme) || !strings.EqualFold(orig.Host, req.URL.Host) {
+		req.Header.Del("Authorization")
+	}
+	return nil
 }
 
 // do issues a request against path (relative to baseURL), decodes a 2xx

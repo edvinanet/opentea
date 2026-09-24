@@ -1415,11 +1415,41 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       explicitly and tells a caller who can't assume mutual trust across candidates to call
       `Discover` directly per server instead of relying on this. Revisit if a real caller needs
       per-endpoint credential scoping badly enough to justify a signature change.
+      **Partially tightened 2026-09-24** (`docs/security-review-260923.md` finding #2): the reused
+      token was, until now, still sent to whatever candidate `endpoint.url` said, even a plain
+      `http://` one -- `bootstrapDiscoverWithAuthority` now refuses any candidate endpoint whose
+      URL isn't `https` before building a client for it or sending anything to it (the discovery
+      spec requires "Conforming deployments shall advertise only lowercase https base URLs"); a
+      non-https candidate is skipped like any other per-candidate failure, not a fatal error for
+      the whole call. The credential-*reuse-across-trusted-candidates* tradeoff described just
+      above is unchanged and still deliberate -- this only closes the plaintext-transmission-to-an-
+      unencrypted-endpoint half of the finding.
       Remaining findings in the review (caching/freshness tests, full OpenAPI response-body
       validation, SVCB edge cases, TEI encoding edge cases, additional candidate transport-failure
       cases, a missing 401 companion to TEST-09) are plausible test-coverage gaps for a rig
       "meant to become real infrastructure" but weren't independently re-verified one by one, and
       aren't addressed here -- revisit as a batch if/when this rig is actually stood up.
+- [x] ~~**[docs/security-review-260923.md finding 2] Client bearer tokens forwarded across a
+      same-host redirect to a different port/scheme** — `pkg/teaclient`'s `Client.do` and
+      `DownloadAndVerifyTo` attach `Authorization: Bearer` and call `c.httpClient.Do(req)` with
+      Go's default redirect policy, which strips `Authorization` when the redirect target's
+      *hostname* changes but not when only the port or scheme changes on the same host --
+      confirmed empirically with a throwaway program before fixing. TEA's own auth text is
+      explicit that an access token is sent only to the TEA server's own API base URL, so any
+      origin change on a redirect should never carry it further.~~ **Fixed 2026-09-24**: every
+      `Client`'s underlying `http.Client` now installs `crossOriginCheckRedirect`
+      (`pkg/teaclient/client.go`), which strips `Authorization` before following any redirect
+      whose target has a different origin (scheme+host+port) than the original request --
+      correcting/tightening net/http's own hostname-only check, not replacing a working
+      mechanism with a new one. Replicates net/http's default 10-redirect cap, since installing
+      any `CheckRedirect` at all replaces that default entirely. New regression test
+      (`pkg/teaclient/client_test.go`'s `TestBearerTokenNotForwardedAcrossOriginRedirect`, two
+      `httptest.Server`s on different ports, one redirecting to the other) confirmed to fail
+      against the pre-fix code exactly as the review reproduced it, passes after. Verified: full
+      suite, `-race`, `golangci-lint`, `go vet`, `gofmt` clean, plus a manual smoke test against
+      the real built `teaclient` binary (two real Python HTTP servers, one 302-redirecting to
+      the other on a different port) confirming the target received no `Authorization` header at
+      all.
 - [ ] BLAKE3 checksum verification isn't implemented in `pkg/teaclient` (no stdlib or
       `golang.org/x/crypto` implementation without adding a new dependency) — reported as an
       explicit "unsupported algorithm" error rather than silently skipped.

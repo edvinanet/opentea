@@ -261,6 +261,21 @@ func bootstrapDiscoverWithAuthority(ctx context.Context, authority, tei string, 
 
 	var errs []error
 	for _, ep := range sortEndpointsByPriority(doc.Endpoints) {
+		// The discovery spec requires every advertised endpoint to be https
+		// ("Conforming deployments shall advertise only lowercase https base
+		// URLs", discovery/readme.md) -- ep.URL comes straight from the
+		// .well-known/tea document, untrusted input from whatever authority
+		// the caller asked about, so a non-https (or unparseable) endpoint
+		// is refused before this function ever builds a client for it or
+		// sends anything to it, including a caller's bearer token (opts
+		// applies uniformly to every candidate, see this function's own doc
+		// comment above) -- otherwise it would go out as plaintext
+		// (docs/security-review-260923.md finding #2, reproduced exactly
+		// this way).
+		if u, err := url.Parse(ep.URL); err != nil || !strings.EqualFold(u.Scheme, "https") {
+			errs = append(errs, fmt.Errorf("%s: endpoint URL is not https, refusing to use it", ep.URL))
+			continue
+		}
 		version, ok := highestMutualVersion(SupportedVersions, ep.Versions)
 		if !ok {
 			errs = append(errs, fmt.Errorf("%s: no version supported by both this client (%v) and the endpoint (%v)", ep.URL, SupportedVersions, ep.Versions))

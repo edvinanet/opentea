@@ -1243,15 +1243,35 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       product side: no component-group/component-release-group tables, just all_products plus a
       direct component/component_release grant.
 
-      **Known gap, not addressed this pass**: `GET /files/{sha256}` (`internal/files`) -- the raw
+      ~~**Known gap, not addressed this pass**: `GET /files/{sha256}` (`internal/files`) -- the raw
       blob download endpoint referenced by artifact/collection URLs -- has no authorization check
-      at all, matching its pre-existing behavior. Even where `/tea/v1` now denies
-      `artifact.metadata.read`/`artifact.discover` for a given artifact, its underlying blob
-      remains fetchable directly if the caller already knows (or brute-forces) its sha256. Low
-      practical severity (256-bit hash preimage space) but a real gap between "the API says no"
-      and "the bytes are actually inaccessible" -- worth wiring `authz.Decide` into
-      `internal/files` in a follow-up, or issuing short-lived signed download URLs instead of
-      bare content-addressed ones.
+      at all, matching its pre-existing behavior.~~ **Fixed 2026-09-24**: an external security
+      review (`docs/security-review-260923.md` finding #1) reproduced this as a real bypass --
+      `/files/{sha256}` served a checksum-addressed blob to anyone who knew (or found through an
+      already-authorized metadata response) its hash, even when the versioned download endpoint
+      for the same content correctly denied it. Fixed by having `internal/files.Handler.serve`
+      resolve the blob's owning artifact(s) (new `repo.FindBlobArtifactOwners`, matching content
+      or detached-signature checksums across every version) and enforce the same
+      `artifact.download` capability the versioned endpoints check
+      (`internal/api/artifactdownload.go`), for any one of them -- mirrors the "shared artifact
+      reachability via any one authorized relationship" principle spec Sec 17.2 already applies to
+      collections. Principal resolution (bearer present/valid, 401-vs-404 split) duplicates
+      `internal/api`'s `resolvePrincipal`/`writeAuthzDenial` logic rather than sharing it, since
+      `/files/` is a separate top-level route outside the `cfg.APIBasePath`-scoped `/tea/v1`
+      router that middleware wraps. A blob with no owning artifact at all -- for example a release
+      distribution's file, since distributions aren't Artifacts in TEA's model and have no
+      download capability defined for them -- is now denied by default rather than served; no
+      test exercised that path with a live fetch before, so this is a disclosed, deliberate
+      behavior change, not a silent regression. Verified: new unit tests
+      (`internal/files/handler_test.go`: orphaned blob denied, owned blob still served with
+      protective headers intact) and a new integration test
+      (`cmd/opentea/files_authz_test.go`: real upload through `/admin/v1`, anonymous 200 before an
+      `artifact.download: deny` entitlement is added, 401 anonymous / 404 authenticated-but-
+      unauthorized after, matching the versioned endpoint's own 401-vs-404 split exactly), plus a
+      manual smoke test against a live built binary (create artifact, upload, confirm anonymous
+      200, add a deny entitlement, confirm 401 with the correct `WWW-Authenticate` challenge,
+      confirm an unrelated unknown blob still 404s). Full suite, `-race`, `golangci-lint`, `go
+      vet`, `gofmt` all clean.
 
       **Not yet done**: bundle export/import doesn't carry entitlements/templates yet (the
       schema doesn't preclude it -- a future `manifest.entitlements[]` section would follow the

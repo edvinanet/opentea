@@ -266,12 +266,20 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
         get a fresh token and retry **once** (RFC 6750 §3.1) — not a general retry policy.
       - Formal behavior for **"servers without authentication"**: need not implement
         `/token`; **shall not** answer any resource request with `401`; **shall ignore**
-        (not reject) a stray `Authorization: Bearer` header a client presents anyway. Worth
+        (not reject) a stray `Authorization: Bearer` header a client presents anyway. ~~Worth
         re-checking opentea's current default (unrestricted) mode against this specifically
         when `/token` is designed, since today's `BearerUser` already treats an unrecognized
         token as simply "not present" (falls through to anonymous), which is closer to
         "ignore" than "reject" — plausibly already correct, but not yet explicitly verified
-        against this exact rule.
+        against this exact rule.~~ **This speculation was wrong** -- re-reading
+        `resolvePrincipal`'s actual code later in this session showed it unconditionally
+        rejected with `401` on any invalid/expired token, regardless of the target resource,
+        exactly the opposite of "ignore." Confirmed as a real bug by an external security
+        review (`docs/security-review-260923.md` finding #15) and **fixed 2026-09-24** --
+        see that finding's own entry further down for the actual fix (an invalid token is
+        now ignored, not rejected, when the resource being requested doesn't itself require
+        authentication -- which subsumes "servers without authentication" mode, since there
+        every resource is effectively unprotected).
       - `RFC 9728` Protected Resource Metadata (external-IdP discovery via
         `WWW-Authenticate`) is an optional extra, not required for the baseline.
 
@@ -860,6 +868,38 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       `golangci-lint`, `go vet`, `gofmt` clean, plus a manual smoke test against a live built
       binary reproducing the exact scenario end to end (draft as alice, approve as bob with
       the same credential, confirmed 403).
+- [x] ~~**[docs/security-review-260923.md finding 15] Invalid bearer tokens broke otherwise
+      public access** — `resolvePrincipal` (`internal/api/auth_middleware.go`) rejected with
+      401 unconditionally on any invalid/expired bearer token, before any handler ever
+      evaluated whether the requested resource actually needed authentication. A publicly
+      accessible product returned 401 when sent an expired token -- the updated auth text
+      requires public endpoints to ignore a presented token, valid or not; this also
+      corrected a wrong speculative note written earlier this session (see the `/token`
+      entry above) that had guessed this already worked correctly.~~ **Fixed 2026-09-24**:
+      `resolvePrincipal` now resolves an invalid/expired token to the anonymous principal
+      instead of rejecting outright -- whether that should actually block the request isn't
+      knowable at the middleware layer, only once a specific handler's `authz.Decide` call
+      resolves the resource. A new `withInvalidBearer`/`invalidBearerFromContext` context
+      value (`internal/api/principal.go`) records that an invalid token *was* presented, so
+      `writeAuthzDenial` (`internal/api/authz.go`) can still surface the specific
+      `error="invalid_token"` challenge (rather than the generic "authentication required"
+      one) if the resource does turn out to require authentication -- retaining strict
+      authentication for protected resources exactly as the review asked. Three existing
+      tests encoded the old, buggy behavior (asserting 401 for an invalid token against a
+      resource that happened to be public only because nothing had ever separated "invalid
+      token" from "this resource needs auth"); updated each to test the property it actually
+      cared about instead: `TestTeaV1BearerToken` (general bearer plumbing) now expects 200
+      for a garbage token against a public list; `TestTokenExchangeAPIKeyNeverWorksAsBearer`
+      now checks against a genuinely protected resource (an API key secret must still never
+      authenticate there); `TestInvalidBearerTokenChallenge` now explicitly restricts its
+      target product first, so the 401+`invalid_token` assertion is still meaningful post-fix
+      rather than accidentally passing because every resource used to require a token. New
+      regression test `TestInvalidBearerTokenIgnoredForPublicResource` confirmed to fail
+      against the pre-fix code (401) and pass after (200). Full suite, `-race`,
+      `golangci-lint`, `go vet`, `gofmt` clean, plus a manual smoke test against a live built
+      binary confirming both cases end to end: invalid token on a public product listing now
+      200s, while the same invalid token against a product explicitly restricted via an
+      entitlement still correctly 401s with the `invalid_token` challenge.
 - [ ] **[security review finding 4] Publisher API: create a new version of an existing
       artifact** — `createArtifact` always mints a fresh UUID at version 1
       (`internal/repo/artifact.go`'s `CreateArtifact`); there's no `/publisher/v1` operation

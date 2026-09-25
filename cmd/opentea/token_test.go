@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/oej/opentea/internal/model"
+	"github.com/oej/opentea/pkg/tea"
 )
 
 // tokenRequest POSTs application/x-www-form-urlencoded form values to
@@ -108,6 +109,17 @@ func TestTokenExchangeFullFlow(t *testing.T) {
 // directly as Authorization: Bearer on /tea/v1 must be rejected, even
 // though it's a real credential belonging to a real user -- only a token
 // obtained through the /token exchange is accepted there.
+// TestTokenExchangeAPIKeyNeverWorksAsBearer confirms a raw API key secret
+// never authenticates a /tea/v1 request -- checked against a resource that
+// actually requires authentication (an "everyone: deny" entitlement, same
+// pattern TestTeaV1AuthzCapabilityIndependence uses), not a public one:
+// since an invalid/expired token is ignored entirely for a public resource
+// (docs/security-review-260923.md finding #15,
+// TestInvalidBearerTokenIgnoredForPublicResource), asserting 401 against a
+// public endpoint would no longer distinguish "this API key secret didn't
+// authenticate me" from "no token would have mattered here anyway." A
+// resource that genuinely requires a valid token is the only way to prove
+// the API key secret specifically fails to grant it.
 func TestTokenExchangeAPIKeyNeverWorksAsBearer(t *testing.T) {
 	srv := newTestServer(t)
 	ctx := t.Context()
@@ -121,14 +133,28 @@ func TestTokenExchangeAPIKeyNeverWorksAsBearer(t *testing.T) {
 		t.Fatalf("SetAPIKey: %v", err)
 	}
 
-	req, err := http.NewRequest(http.MethodGet, srv.URL+"/tea/v1/products", nil)
+	status, raw := jsonRequest(t, srv, http.MethodPost, "/admin/v1/products", map[string]any{"name": "Widget"})
+	if status != http.StatusCreated {
+		t.Fatalf("POST /admin/v1/products: status=%d body=%s", status, raw)
+	}
+	var product tea.Product
+	decodeInto(t, raw, &product)
+	createTemplateAndEntitlement(t, srv,
+		[]map[string]any{
+			{"capability": "product.discover", "decision": "deny"},
+			{"capability": "product.read", "decision": "deny"},
+		},
+		"everyone", "", "product", product.UUID,
+	)
+
+	req, err := http.NewRequest(http.MethodGet, srv.URL+"/tea/v1/product/"+product.UUID, nil)
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+secret)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Fatalf("GET /tea/v1/products with a raw API key secret: %v", err)
+		t.Fatalf("GET /tea/v1/product/%s with a raw API key secret: %v", product.UUID, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusUnauthorized {

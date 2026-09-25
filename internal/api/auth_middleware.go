@@ -8,18 +8,27 @@ import (
 
 	"github.com/oej/opentea/internal/authn"
 	"github.com/oej/opentea/internal/authz"
-	"github.com/oej/opentea/internal/httpx"
 	"github.com/oej/opentea/internal/repo"
 )
 
 // resolvePrincipal implements the spec's default "unauthenticated read
-// access" model with one addition: if a request supplies an Authorization
-// header, it must resolve to a valid access token or the request is
-// rejected. Absence of the header is always fine (anonymous, per spec).
-// Unlike the optionalBearerAuth this replaces, the resolved user is no
-// longer discarded -- it's stashed in request context as an
-// authz.Principal via withPrincipal, for every handler's authz.Decide call
-// to read back via principalFromContext.
+// access" model: an absent Authorization header is always fine (anonymous,
+// per spec), and -- per the updated auth text, "a public endpoint ignores
+// a presented token, valid or not" -- so is a present-but-invalid/expired
+// one; it resolves to the anonymous principal rather than rejecting the
+// request outright, since whether an invalid token should actually block
+// access depends on whether the specific resource being requested turns
+// out to require authentication at all, which isn't known yet at this
+// middleware layer (docs/security-review-260923.md finding #15: this
+// previously rejected with 401 unconditionally, breaking access to a
+// resource that would have been public to an anonymous caller with no
+// token at all). withInvalidBearer records that an invalid token was
+// presented so writeAuthzDenial can still surface that specifically
+// (rather than a generic "authentication required") if the resource does
+// turn out to require authentication -- see its own doc comment. The
+// resolved user is stashed in request context as an authz.Principal via
+// withPrincipal, for every handler's authz.Decide call to read back via
+// principalFromContext.
 //
 // tokenPath (cfg.APIBasePath+"/token") is exempted entirely: that
 // operation authenticates its caller via HTTP Basic (a client's API key),
@@ -35,14 +44,14 @@ func resolvePrincipal(r *repo.Repo, tokenPath string, next http.Handler) http.Ha
 			return
 		}
 		user, present, valid := authn.BearerUser(req.Context(), req, r)
-		if present && !valid {
-			httpx.UnauthorizedBearer(w, "invalid_token", "invalid or expired bearer token")
-			return
-		}
+		ctx := req.Context()
 		principal := authz.Principal{}
-		if present && valid {
+		switch {
+		case present && valid:
 			principal = authz.Principal{UserUUID: user.UUID}
+		case present && !valid:
+			ctx = withInvalidBearer(ctx)
 		}
-		next.ServeHTTP(w, req.WithContext(withPrincipal(req.Context(), principal)))
+		next.ServeHTTP(w, req.WithContext(withPrincipal(ctx, principal)))
 	})
 }

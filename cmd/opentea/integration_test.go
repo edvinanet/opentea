@@ -453,17 +453,57 @@ func TestWorkedExample(t *testing.T) {
 // TestTeaV1AuthzCapabilityIndependence/TestTeaV1AuthzDiscoveryDeniedMatchesNoMatch
 // don't cover: a token that WAS presented but doesn't resolve at all
 // (unlike "no token presented," this gets the RFC 6750 §3
-// error="invalid_token" challenge parameter).
+// error="invalid_token" challenge parameter) -- checked here against a
+// product whose product.discover/product.read capabilities are explicitly
+// restricted (an "everyone: deny" entitlement, same pattern
+// TestTeaV1AuthzCapabilityIndependence uses), so this genuinely exercises
+// "invalid token against a resource that requires authentication," not
+// just "the default permissive bootstrap entitlement happens to require a
+// token" -- since TestInvalidBearerTokenIgnoredForPublicResource below
+// proves that's no longer true for a resource that doesn't require one.
 func TestInvalidBearerTokenChallenge(t *testing.T) {
 	srv := newTestServer(t)
 
-	status, headers, _ := teaRequest(t, srv, http.MethodGet, "/tea/v1/products", "not-a-real-token")
+	status, raw := jsonRequest(t, srv, http.MethodPost, "/admin/v1/products", map[string]any{"name": "Widget"})
+	if status != http.StatusCreated {
+		t.Fatalf("POST /admin/v1/products: status=%d body=%s", status, raw)
+	}
+	var product tea.Product
+	decodeInto(t, raw, &product)
+
+	createTemplateAndEntitlement(t, srv,
+		[]map[string]any{
+			{"capability": "product.discover", "decision": "deny"},
+			{"capability": "product.read", "decision": "deny"},
+		},
+		"everyone", "", "product", product.UUID,
+	)
+
+	status, headers, _ := teaRequest(t, srv, http.MethodGet, "/tea/v1/product/"+product.UUID, "not-a-real-token")
 	if status != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", status)
 	}
 	got := headers.Get("WWW-Authenticate")
 	if !strings.Contains(got, `Bearer realm="tea"`) || !strings.Contains(got, `error="invalid_token"`) {
 		t.Fatalf("WWW-Authenticate = %q, want a Bearer challenge with error=\"invalid_token\"", got)
+	}
+}
+
+// TestInvalidBearerTokenIgnoredForPublicResource is the regression test
+// for the finding that an invalid/expired bearer token unconditionally
+// rejected a request with 401, even when the requested resource was
+// otherwise public to an anonymous caller with no token at all
+// (docs/security-review-260923.md finding #15) -- the updated auth text
+// requires a public endpoint to ignore a presented token, valid or not.
+// /tea/v1/products is public under the migration-seeded bootstrap
+// entitlement (TestTeaV1AuthzAnonymousDefaultAllowsRead's own baseline);
+// an invalid token here must not block it.
+func TestInvalidBearerTokenIgnoredForPublicResource(t *testing.T) {
+	srv := newTestServer(t)
+
+	status, _, raw := teaRequest(t, srv, http.MethodGet, "/tea/v1/products", "not-a-real-token")
+	if status != http.StatusOK {
+		t.Fatalf("GET /tea/v1/products with an invalid token: status=%d body=%s, want 200 (public resource, invalid token ignored)", status, raw)
 	}
 }
 
@@ -996,8 +1036,13 @@ func TestTeaV1BearerToken(t *testing.T) {
 		t.Fatalf("GET with garbage bearer token: %v", err)
 	}
 	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("garbage bearer token: status=%d, want 401", resp.StatusCode)
+	// A public resource ignores an invalid/expired token rather than
+	// rejecting the request outright (docs/security-review-260923.md
+	// finding #15; TestInvalidBearerTokenChallenge covers the 401+
+	// invalid_token case for a resource that actually requires
+	// authentication).
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("garbage bearer token against a public resource: status=%d, want 200 (invalid token ignored)", resp.StatusCode)
 	}
 
 	token, _, err := srv.repo.CreateAccessToken(context.Background(), srv.adminUser.UUID, time.Hour)

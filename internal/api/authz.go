@@ -60,9 +60,21 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request, capability au
 // an authenticated-but-unauthorized caller still gets the existing,
 // deliberately indistinguishable-from-nonexistent 404 (spec Sec 18,
 // 403-forbidden's own text: "servers may instead conceal the existence of
-// a resource... by answering 404").
+// a resource... by answering 404"). An anonymous caller who presented an
+// invalid/expired token (resolvePrincipal let the request through as
+// anonymous rather than rejecting it outright, since this resource might
+// have turned out to be public) gets the more specific invalid_token
+// challenge here instead of the generic "authentication required" one --
+// same 401 status, but now it's known this resource really does require
+// authentication, so surfacing that the presented token specifically was
+// the problem is more useful than pretending none was sent
+// (docs/security-review-260923.md finding #15).
 func (s *Server) writeAuthzDenial(w http.ResponseWriter, r *http.Request) {
 	if !principalFromContext(r.Context()).IsAuthenticated() {
+		if invalidBearerFromContext(r.Context()) {
+			httpx.UnauthorizedBearer(w, "invalid_token", "invalid or expired bearer token")
+			return
+		}
 		httpx.UnauthorizedBearer(w, "", "authentication required")
 		return
 	}

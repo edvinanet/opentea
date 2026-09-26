@@ -769,6 +769,40 @@ func TestPaginationAcrossPages(t *testing.T) {
 	}
 }
 
+// TestEmptyPaginatedListShape is the regression test for the finding that
+// an empty paginated list serialized as {"hasNext":false,"nextPageToken":"",
+// "results":null} -- TEA 1.0's pagination-details schema requires
+// nextPageToken to be entirely absent when hasNext is false, and results
+// (a JSON array type) must never be null (docs/security-review-260923.md
+// finding #14). Checked against the raw JSON, not the decoded Go struct --
+// decoding null and [] into a nil/empty []tea.Product looks identical from
+// Go's side, so only inspecting the wire bytes actually catches this.
+// /tea/v1/products goes through filterAuthorized (internal/api/pagination.go),
+// the specific helper that produced the bug; a fresh server with nothing
+// created is the simplest way to force zero authorized rows.
+func TestEmptyPaginatedListShape(t *testing.T) {
+	srv := newTestServer(t)
+
+	status, raw := jsonRequest(t, srv, http.MethodGet, "/tea/v1/products", nil)
+	if status != http.StatusOK {
+		t.Fatalf("GET /tea/v1/products: status=%d body=%s", status, raw)
+	}
+
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if got := string(fields["results"]); got != "[]" {
+		t.Fatalf(`"results" = %s, want [] (not null)`, got)
+	}
+	if _, present := fields["nextPageToken"]; present {
+		t.Fatalf(`"nextPageToken" = %s, want the key entirely absent when hasNext is false`, fields["nextPageToken"])
+	}
+	if got := string(fields["hasNext"]); got != "false" {
+		t.Fatalf(`"hasNext" = %s, want false`, got)
+	}
+}
+
 func mapUUIDs[T any](items []T, get func(T) string) []string {
 	out := make([]string, len(items))
 	for i, item := range items {

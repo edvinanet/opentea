@@ -305,10 +305,14 @@ type CLE struct {
 }
 
 // PaginationDetails is embedded in every paginated list response, carrying
-// the cursor needed to fetch the next page.
+// the cursor needed to fetch the next page. NextPageToken is only ever
+// non-empty when HasNext is true (see internal/api/pagination.go's
+// nextPageToken helper), so omitempty here exactly matches TEA 1.0's own
+// pagination-details schema: "This field shall be present when hasNext is
+// true. This field shall not be included when hasNext is false."
 type PaginationDetails struct {
 	HasNext       bool   `json:"hasNext"`
-	NextPageToken string `json:"nextPageToken"`
+	NextPageToken string `json:"nextPageToken,omitempty"`
 }
 
 // PaginatedProducts is the response shape for GET /tea/v1/products.

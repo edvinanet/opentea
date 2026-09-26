@@ -114,6 +114,11 @@ func filterAuthorized[T any](
 	startCursor *pagination.Cursor,
 	pageSize int,
 ) (page []T, hasNext bool, err error) {
+	// Initialized empty, not left nil, so a page with no authorized rows
+	// still serializes as "results": [] rather than "results": null -- TEA
+	// 1.0's own pagination schema requires an array
+	// (docs/security-review-260923.md finding #14).
+	page = []T{}
 	cursor := startCursor
 	for {
 		rows, err := fetch(cursor, pageSize+1)

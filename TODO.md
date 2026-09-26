@@ -900,6 +900,28 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       binary confirming both cases end to end: invalid token on a public product listing now
       200s, while the same invalid token against a product explicitly restricted via an
       entitlement still correctly 401s with the `invalid_token` challenge.
+- [x] ~~**[docs/security-review-260923.md finding 14] Empty paginated list responses violated
+      the pagination contract** — reproduced as `{"hasNext":false,"nextPageToken":"",
+      "results":null}`: TEA 1.0's `pagination-details` schema requires `nextPageToken` to be
+      entirely absent when `hasNext` is `false`, and `results` (a JSON array type) must never
+      serialize as `null`. `internal/api/pagination.go`'s `filterAuthorized` left its named
+      `page []T` return `nil` when no row was authorized (the repo layer already initializes
+      empty slices correctly everywhere else, confirmed by comparison -- this was specifically
+      an API-layer bug); `pkg/tea/types.go`'s `PaginationDetails.NextPageToken` had no
+      `omitempty`, so it always serialized as `""` instead of being omitted.~~ **Fixed
+      2026-09-25**: `filterAuthorized` now initializes `page = []T{}` up front. `NextPageToken`
+      gained `json:"nextPageToken,omitempty"` -- safe because the field is only ever non-empty
+      when `hasNext` is true (`nextPageToken()`'s own logic), so `omitempty`'s zero-value rule
+      exactly matches the spec's "present iff hasNext" requirement; `omitempty` only affects
+      encoding, so no client-side (`pkg/teaclient`) decoding compatibility concern. New
+      regression test `TestEmptyPaginatedListShape` (`cmd/opentea/integration_test.go`) checks
+      the raw JSON bytes, not the decoded Go struct -- decoding `null` and `[]` into a Go slice
+      looks identical from Go's own side, so only inspecting the wire response actually catches
+      this; confirmed to fail against the pre-fix code with the exact `"results":null` the
+      review reported, passes after. Full suite, `-race`, `golangci-lint`, `go vet`, `gofmt`
+      clean, plus a manual smoke test against a live built binary confirming both shapes:
+      `{"hasNext":false,"results":[]}` for an empty list, and `nextPageToken` correctly present
+      and non-empty when `hasNext` is `true`.
 - [ ] **[security review finding 4] Publisher API: create a new version of an existing
       artifact** — `createArtifact` always mints a fresh UUID at version 1
       (`internal/repo/artifact.go`'s `CreateArtifact`); there's no `/publisher/v1` operation

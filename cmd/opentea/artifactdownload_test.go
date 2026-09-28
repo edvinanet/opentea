@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
 	"io"
@@ -197,6 +198,121 @@ func TestArtifactDownloadErrorCases(t *testing.T) {
 	if !strings.Contains(string(sigBody), "SIGNATURE_NOT_FOUND") {
 		t.Fatalf("GET signature: body = %s, want SIGNATURE_NOT_FOUND", sigBody)
 	}
+}
+
+// TestArtifactDownloadContentNegotiation is the regression test for the
+// finding that Accept-header format negotiation stripped everything after
+// the first ";" without checking the q-value, so a format explicitly
+// marked unacceptable (q=0) could still be selected, an application/*
+// wildcard range never matched anything, and a higher-quality-weighted
+// alternative was ignored in favor of whichever format happened to appear
+// first (docs/security-review-260923.md finding #12) -- each case below
+// reproduces exactly one of the review's own three examples.
+func TestArtifactDownloadContentNegotiation(t *testing.T) {
+	srv := newTestServer(t)
+
+	status, raw := jsonRequest(t, srv, http.MethodPost, "/admin/v1/artifacts", map[string]any{
+		"type":        "BOM",
+		"createdDate": "2026-07-01T00:00:00Z",
+		"formats": []map[string]any{
+			{"mediaType": "application/vnd.cyclonedx+json"},
+			{"mediaType": "application/vnd.cyclonedx+xml"},
+		},
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("create artifact: status=%d body=%s", status, raw)
+	}
+	var artifact tea.Artifact
+	decodeInto(t, raw, &artifact)
+
+	if status, raw := uploadFile(t, srv, "/admin/v1/artifacts/"+artifact.UUID+"/1/files?formatIndex=0", "sbom.json", []byte(`{"json":true}`), "application/vnd.cyclonedx+json"); status != http.StatusOK {
+		t.Fatalf("upload json format: status=%d body=%s", status, raw)
+	}
+	if status, raw := uploadFile(t, srv, "/admin/v1/artifacts/"+artifact.UUID+"/1/files?formatIndex=1", "sbom.xml", []byte(`<xml/>`), "application/vnd.cyclonedx+xml"); status != http.StatusOK {
+		t.Fatalf("upload xml format: status=%d body=%s", status, raw)
+	}
+
+	getWithAccept := func(t *testing.T, accept string) (int, string, http.Header) {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodGet, srv.URL+"/tea/v1/artifact/"+artifact.UUID+"/latest/download", nil)
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		req.Header.Set("Accept", accept)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("GET: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		body, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(body), resp.Header
+	}
+
+	t.Run("q=0 explicitly excludes a format that would otherwise be the only candidate", func(t *testing.T) {
+		// Only the json format exists in this Accept header at all, and
+		// it's explicitly marked unacceptable -- must 406, not silently
+		// serve it anyway.
+		status, body, _ := getWithAccept(t, "application/vnd.cyclonedx+json;q=0")
+		if status != http.StatusNotAcceptable {
+			t.Fatalf("status = %d, want 406, body=%s", status, body)
+		}
+	})
+
+	t.Run("application/* wildcard matches a subtype it didn't name explicitly", func(t *testing.T) {
+		status, _, headers := getWithAccept(t, "application/*")
+		if status != http.StatusOK {
+			t.Fatalf("status = %d, want 200", status)
+		}
+		if ct := headers.Get("Content-Type"); ct != "application/vnd.cyclonedx+json" && ct != "application/vnd.cyclonedx+xml" {
+			t.Fatalf("Content-Type = %q, want one of the two application/* formats", ct)
+		}
+	})
+
+	t.Run("higher quality weight wins even when it's not the first format", func(t *testing.T) {
+		status, _, headers := getWithAccept(t, "application/vnd.cyclonedx+json;q=0.5, application/vnd.cyclonedx+xml;q=0.9")
+		if status != http.StatusOK {
+			t.Fatalf("status = %d, want 200", status)
+		}
+		if ct := headers.Get("Content-Type"); ct != "application/vnd.cyclonedx+xml" {
+			t.Fatalf("Content-Type = %q, want application/vnd.cyclonedx+xml (higher q)", ct)
+		}
+	})
+
+	// Signature downloads must ignore Accept entirely (this parameter's
+	// own spec text: "the server selects a format of its choice", not
+	// Accept-driven). Publishes a signature for the json format only,
+	// then sends an Accept header that unambiguously prefers xml -- under
+	// ordinary content negotiation this would select xml (which has no
+	// signature, 404), but the signature endpoint must ignore Accept and
+	// pick json (its first/only real candidate) regardless, succeeding.
+	t.Run("signature download ignores Accept entirely", func(t *testing.T) {
+		signature := []byte("fake-detached-signature-bytes")
+		status, raw := uploadFile(t, srv, "/admin/v1/artifacts/"+artifact.UUID+"/1/signature?formatIndex=0", "sbom.sig", signature, "application/octet-stream")
+		if status != http.StatusOK {
+			t.Fatalf("upload signature for json format: status=%d body=%s", status, raw)
+		}
+
+		req, err := http.NewRequest(http.MethodGet, srv.URL+"/tea/v1/artifact/"+artifact.UUID+"/latest/signature/download", nil)
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		req.Header.Set("Accept", "application/vnd.cyclonedx+xml")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("GET: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		body, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (Accept preferring xml must not steer this away from json's published signature), body=%s", resp.StatusCode, body)
+		}
+		if !strings.Contains(resp.Header.Get("Content-Location"), url.QueryEscape("application/vnd.cyclonedx+json")) {
+			t.Fatalf("Content-Location = %q, want the json format selected despite Accept preferring xml", resp.Header.Get("Content-Location"))
+		}
+		if !bytes.Equal(body, signature) {
+			t.Fatalf("body = %q, want the json format's published signature", body)
+		}
+	})
 }
 
 // TestArtifactDownloadExternalRedirect covers the 302 redirect for

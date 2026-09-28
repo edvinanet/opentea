@@ -971,6 +971,37 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       wrapper key for the component-release case. Full suite, `-race`, `golangci-lint`, `go vet`,
       `gofmt` clean, plus a manual smoke test against a live built binary confirming both wire
       shapes exactly.
+- [x] ~~**[docs/security-review-260923.md finding 12] Download format negotiation returned
+      explicitly unacceptable content** — `selectFormatMediaType` (`internal/api/artifactdownload.go`)
+      stripped everything after a candidate's first `;` (including a `q=0` weight) without
+      checking it, so a format the client explicitly marked unacceptable could still be
+      selected; a bare `application/*` never matched anything (only exact, full-string
+      comparison against Accept's stripped entries); and when multiple formats matched, the
+      first one in `formats` order won regardless of declared quality weight -- not RFC 9110
+      section 12 content negotiation at all, just a first-match substring scan. Signature
+      downloads called the same function, incorrectly inheriting Accept-driven selection even
+      though that parameter's own spec text says "the server selects a format of its choice"
+      when omitted -- Accept plays no role there at all.~~ **Fixed 2026-09-28**: `selectFormatMediaType`
+      now implements real RFC 9110 section 12.5.1 media-range matching (`parseAccept`/
+      `bestAcceptQuality`, new): exact type/subtype beats `type/*` beats `*/*`, a range's `q`
+      is parsed and honored, and a format is never selected via a `q=0` match even as a
+      fallback -- the spec parameter doc's "falls back to a format of its choice when Accept
+      does not constrain the result" describes an absent/unconstraining Accept, not one that
+      explicitly excludes everything offered; those are conflated no longer. `usedAccept` (for
+      `Vary: Accept`) is now `true` whenever `mediaType` is absent, even with no `Accept` header
+      at all, matching the spec text on when `Vary` is required. New, separate
+      `selectSignatureFormatMediaType` backs the two signature-download endpoints instead,
+      matching its own parameter's spec text exactly: explicit `mediaType` wins identically,
+      but Accept is never consulted when it's omitted. Verified: new regression test
+      `TestArtifactDownloadContentNegotiation` (`cmd/opentea/artifactdownload_test.go`)
+      reproduces the review's three exact examples (`q=0` exclusion, `application/*` wildcard,
+      higher-quality-wins) plus a fourth proving signature downloads ignore Accept entirely
+      (publishes a signature for one format only, sends an Accept header that unambiguously
+      prefers the *other* format, confirms the published format's signature is still served) --
+      all four confirmed to fail against the pre-fix code exactly as the review reproduced them,
+      pass after. Full suite, `-race`, `golangci-lint`, `go vet`, `gofmt` clean, plus a manual
+      smoke test against a live built binary confirming all three content-negotiation cases end
+      to end.
 - [ ] **[security review finding 4] Publisher API: create a new version of an existing
       artifact** — `createArtifact` always mints a fresh UUID at version 1
       (`internal/repo/artifact.go`'s `CreateArtifact`); there's no `/publisher/v1` operation

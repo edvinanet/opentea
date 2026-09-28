@@ -222,7 +222,7 @@ func (s *Server) downloadArtifactSignature(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	mediaType, _, ok := selectFormatMediaType(r, a.Formats)
+	mediaType, ok := selectSignatureFormatMediaType(r, a.Formats)
 	if !ok {
 		httpx.NotAcceptable(w, "no format matches the requested mediaType")
 		return
@@ -335,16 +335,105 @@ func (s *Server) artifactSignatureDownloadLocation(uuid string, version int, med
 		"/signature/download?mediaType=" + url.QueryEscape(mediaType)
 }
 
-// selectFormatMediaType picks which of formats to serve: an explicit
-// mediaType query parameter always wins (matched case-insensitively,
-// TEA 1.0: "case-insensitive for the type and subtype"); otherwise the
-// request's Accept header is consulted (a bare, pragmatic first pass --
-// the first format whose mediaType appears in Accept's comma-separated
-// list wins, ignoring q-value weighting; not full RFC 9110 section 12
-// content negotiation). usedAccept reports whether Accept (rather than an
-// explicit mediaType) drove the result, for the caller to decide whether
-// to send Vary: Accept. ok is false if formats is empty or nothing
-// matches.
+// acceptRange is one parsed entry from an Accept header's comma-separated
+// list of media ranges (RFC 9110 section 12.5.1): typ/subtype (each "*"
+// for a wildcard), plus its q weight (default 1; an explicit q=0 means
+// "not acceptable at all", RFC 9110 section 12.4.2). Parameters other
+// than q are ignored when matching -- no artifact mediaType this codebase
+// serves ever carries type-level parameters (charset and the like) for
+// those to distinguish.
+type acceptRange struct {
+	typ, subtype string
+	q            float64
+}
+
+// parseAccept parses an Accept header's comma-separated media ranges. A
+// malformed range or qvalue is skipped/defaulted rather than failing the
+// whole header -- lenient parsing, matching how HTTP servers commonly
+// treat this request header in practice; RFC 9110 sets no server-side
+// hard-failure requirement for a malformed Accept this permissive.
+func parseAccept(header string) []acceptRange {
+	var ranges []acceptRange
+	for _, part := range strings.Split(header, ",") {
+		segments := strings.Split(part, ";")
+		typ, subtype, found := strings.Cut(strings.TrimSpace(segments[0]), "/")
+		if !found || typ == "" || subtype == "" {
+			continue
+		}
+		q := 1.0
+		for _, param := range segments[1:] {
+			name, value, found := strings.Cut(param, "=")
+			if !found || !strings.EqualFold(strings.TrimSpace(name), "q") {
+				continue
+			}
+			// q, when present, is always the first accept-param (RFC 9110
+			// section 12.5.1) -- an unparseable value defaults to 1 (the
+			// same as if q were absent) rather than excluding the range.
+			if parsed, err := strconv.ParseFloat(strings.TrimSpace(value), 64); err == nil {
+				q = parsed
+			}
+			break
+		}
+		ranges = append(ranges, acceptRange{typ: strings.ToLower(typ), subtype: strings.ToLower(subtype), q: q})
+	}
+	return ranges
+}
+
+// bestAcceptQuality returns the quality of the most specific range in
+// ranges that matches mediaType -- an exact type/subtype match outranks a
+// type/* match, which outranks */* (RFC 9110 section 12.5.1: "a more
+// specific reference has precedence"). matched is false if no range
+// matches at all, or if the single most specific matching range has q=0
+// (explicitly not acceptable) -- either way, mediaType is not a candidate,
+// and the caller must not silently fall back to it.
+func bestAcceptQuality(ranges []acceptRange, mediaType string) (q float64, matched bool) {
+	typ, subtype, found := strings.Cut(mediaType, "/")
+	if !found {
+		return 0, false
+	}
+	typ, subtype = strings.ToLower(typ), strings.ToLower(subtype)
+
+	bestSpecificity := -1
+	for _, rg := range ranges {
+		var specificity int
+		switch {
+		case rg.typ == typ && rg.subtype == subtype:
+			specificity = 2
+		case rg.typ == typ && rg.subtype == "*":
+			specificity = 1
+		case rg.typ == "*" && rg.subtype == "*":
+			specificity = 0
+		default:
+			continue
+		}
+		if specificity > bestSpecificity {
+			bestSpecificity = specificity
+			q = rg.q
+		}
+	}
+	if bestSpecificity < 0 {
+		return 0, false
+	}
+	return q, q > 0
+}
+
+// selectFormatMediaType picks which of formats to serve for the regular
+// (non-signature) download endpoints (docs/security-review-260923.md
+// finding #12): an explicit mediaType query parameter always wins
+// (matched case-insensitively, TEA 1.0: "case-insensitive for the type
+// and subtype"); otherwise the request's Accept header is consulted per
+// RFC 9110 section 12 -- the highest-quality, most-specific matching
+// format wins. A format excluded via q=0 is never selected even if no
+// other format matches: the spec parameter doc's "falls back to a format
+// of its choice when Accept does not constrain the result" describes an
+// absent/unconstraining Accept, not one that explicitly excludes
+// everything offered -- those two cases must not be conflated. usedAccept
+// reports whether Accept negotiation was in play (mediaType was absent)
+// -- true even when Accept itself is also absent, since a client sending
+// a specific Accept next time could still get a different result (the
+// spec parameter doc: "the server shall include Accept in Vary... including
+// when Accept is absent or contains */*"). ok is false if formats is
+// empty or nothing is acceptable.
 func selectFormatMediaType(r *http.Request, formats []tea.ArtifactFormat) (mediaType string, usedAccept bool, ok bool) {
 	if q := r.URL.Query().Get("mediaType"); q != "" {
 		for _, f := range formats {
@@ -354,29 +443,57 @@ func selectFormatMediaType(r *http.Request, formats []tea.ArtifactFormat) (media
 		}
 		return "", false, false
 	}
+	if len(formats) == 0 {
+		return "", true, false
+	}
 
 	accept := r.Header.Get("Accept")
-	if accept == "" || strings.Contains(accept, "*/*") {
-		if len(formats) == 0 {
-			return "", false, false
-		}
-		return formats[0].MediaType, false, true
+	if accept == "" {
+		return formats[0].MediaType, true, true
 	}
-	candidates := strings.Split(accept, ",")
-	for i := range candidates {
-		if semi := strings.IndexByte(candidates[i], ';'); semi >= 0 {
-			candidates[i] = candidates[i][:semi]
+
+	ranges := parseAccept(accept)
+	bestIdx := -1
+	var bestQ float64
+	for i, f := range formats {
+		q, matched := bestAcceptQuality(ranges, f.MediaType)
+		if !matched {
+			continue
 		}
-		candidates[i] = strings.TrimSpace(candidates[i])
+		if bestIdx == -1 || q > bestQ {
+			bestIdx, bestQ = i, q
+		}
 	}
-	for _, f := range formats {
-		for _, c := range candidates {
-			if strings.EqualFold(f.MediaType, c) {
-				return f.MediaType, true, true
+	if bestIdx == -1 {
+		return "", true, false
+	}
+	return formats[bestIdx].MediaType, true, true
+}
+
+// selectSignatureFormatMediaType picks which of formats a signature
+// download applies to: an explicit mediaType query parameter always wins,
+// the same matching rule as selectFormatMediaType. When omitted, this
+// parameter's own spec text is explicit that Accept plays no role at all
+// -- "the server selects a format of its choice" -- unlike the content
+// download endpoints, this deliberately does not consult Accept
+// (docs/security-review-260923.md finding #12: signature downloads
+// previously called selectFormatMediaType directly, incorrectly
+// inheriting its Accept-driven selection for a parameter whose spec text
+// says otherwise). ok is false if formats is empty or an explicit
+// mediaType matches nothing.
+func selectSignatureFormatMediaType(r *http.Request, formats []tea.ArtifactFormat) (mediaType string, ok bool) {
+	if q := r.URL.Query().Get("mediaType"); q != "" {
+		for _, f := range formats {
+			if strings.EqualFold(f.MediaType, q) {
+				return f.MediaType, true
 			}
 		}
+		return "", false
 	}
-	return "", false, false
+	if len(formats) == 0 {
+		return "", false
+	}
+	return formats[0].MediaType, true
 }
 
 // contentDispositionFor builds a best-effort suggested filename (TEA 1.0:

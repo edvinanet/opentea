@@ -216,20 +216,33 @@ func TestBootstrapDiscoverFailoverOn503(t *testing.T) {
 	}
 }
 
-// TestBootstrapDiscoverFailoverOnNoMatch is the regression test for a real
-// bug this fix uncovered: upstream TEA 1.0 changed GET /discovery's
-// no-match response from 200+[] to 404+OBJECT_UNKNOWN
+// TestBootstrapDiscoverFailoverOnNonConformant404 is the regression test
+// for a real bug this fix uncovered: upstream TEA 1.0 changed GET
+// /discovery's no-match response from 200+[] to 404+OBJECT_UNKNOWN
 // (spec/openapi.yaml). Before that, Discover returning ([], nil) for "this
 // endpoint doesn't have the TEI" was indistinguishable from a genuine
 // match with zero results, so bootstrapDiscoverWithAuthority's `err == nil`
 // success check stopped at the very first endpoint every time, regardless
-// of whether a later, lower-priority endpoint actually had the TEI --
-// never previously caught because no existing failover test exercised a
-// no-match response, only 5xx/401/403. A 404 is correctly non-retryable
-// (isRetryableError) and now correctly triggers failover to the next
-// endpoint, exactly like a 5xx does.
-func TestBootstrapDiscoverFailoverOnNoMatch(t *testing.T) {
+// of whether a later, lower-priority endpoint actually had the TEI.
+//
+// Originally written (and still correct) for a 404 that is NOT a
+// conforming TEA error response -- noMatchSrv here deliberately answers
+// `text/plain`, not `application/json` (discovery/readme.md's own
+// "failed discovery attempt" example: "a web server answering for an
+// unmounted path"). A later pass (docs/security-review-260923.md finding
+// #9) found this test's fixture had, by accident, never actually been a
+// conforming TEA error response at all -- json.Encoder.Encode after an
+// explicit WriteHeader doesn't set Content-Type, so Go's server sniffs
+// the body and picks text/plain, not application/json (confirmed
+// empirically) -- so this test was accidentally exercising the *correct*
+// scenario for the wrong reason and never actually covered the
+// conforming case. Content-Type is now set explicitly, on purpose, and
+// TestBootstrapDiscoverStopsOnAuthoritativeTEA404 below is the new,
+// separate test for the conforming case that this one was previously
+// (mis)believed to cover.
+func TestBootstrapDiscoverFailoverOnNonConformant404(t *testing.T) {
 	noMatchSrv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusNotFound)
 		_ = json.NewEncoder(w).Encode(tea.ErrorResponse{Error: tea.ErrorObjectUnknown})
 	}))
@@ -255,6 +268,75 @@ func TestBootstrapDiscoverFailoverOnNoMatch(t *testing.T) {
 	}
 	if len(result.Info) != 1 || result.Info[0].ProductReleaseUUID != "from-working-endpoint" {
 		t.Fatalf("Info = %+v, want failover past the no-match endpoint to the working one", result.Info)
+	}
+}
+
+// TestBootstrapDiscoverStopsOnAuthoritativeTEA404 is the regression test
+// for the finding that a conforming TEA 404 (Content-Type application/json,
+// a JSON object with a string "error" property, per discovery/readme.md's
+// own definition) still triggered failover to the next candidate endpoint
+// instead of stopping (docs/security-review-260923.md finding #9,
+// reproduced exactly this way: "404 {"error":"OBJECT_UNKNOWN"} caused a
+// request to another endpoint, whose empty array was accepted as
+// success"). Unlike TestBootstrapDiscoverFailoverOnNonConformant404 above,
+// authoritativeSrv here explicitly sets Content-Type: application/json --
+// this server has definitively answered "I do not resolve this
+// identifier," and the client "shall not fail over to another endpoint
+// solely because of it" (discovery/readme.md). neverTriedSrv's own
+// handler fails the test outright if it's ever queried, proving failover
+// genuinely didn't happen, not just that the overall result happened to
+// still be an error.
+func TestBootstrapDiscoverStopsOnAuthoritativeTEA404(t *testing.T) {
+	authoritativeSrv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(tea.ErrorResponse{Error: tea.ErrorObjectUnknown})
+	}))
+	t.Cleanup(authoritativeSrv.Close)
+	neverTriedSrv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("a lower-priority endpoint must never be tried after an authoritative TEA 404")
+	}))
+	t.Cleanup(neverTriedSrv.Close)
+
+	authority, wkSrv := newFakeWellKnownAuthority(t, wellKnownHandler(t, []tea.WellKnownEndpoint{
+		{URL: authoritativeSrv.URL, Versions: []string{"0.4.0"}, Priority: priorityPtr(1.0)},
+		{URL: neverTriedSrv.URL, Versions: []string{"0.4.0"}, Priority: priorityPtr(0.5)},
+	}))
+
+	oldSupported := SupportedVersions
+	SupportedVersions = []string{"0.4.0"}
+	t.Cleanup(func() { SupportedVersions = oldSupported })
+
+	tei := "tei://" + authority + "/uuid/d4d9f54a-abcf-11ee-ac79-1a52914d44b1"
+	_, err := bootstrapDiscoverWithAuthority(context.Background(), authority, tei, trustingOption(wkSrv), trustingOption(authoritativeSrv), trustingOption(neverTriedSrv))
+	if err == nil {
+		t.Fatal("BootstrapDiscover: err = nil, want an error reporting the authoritative TEA 404")
+	}
+	if !strings.Contains(err.Error(), "OBJECT_UNKNOWN") {
+		t.Fatalf("err = %v, want it to mention the TEA error value OBJECT_UNKNOWN", err)
+	}
+}
+
+// TestDiscoverRejectsEmptySuccessArray is the regression test for the
+// other half of finding #9 (docs/security-review-260923.md): a 200
+// response with an empty result array is one of the discovery spec's own
+// named "invalid documents" ("A successful lookup shall return a
+// non-empty array... not 200 with an empty array"), not a legitimate
+// zero-result success -- previously accepted as success regardless.
+func TestDiscoverRejectsEmptySuccessArray(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("[]"))
+	}))
+	t.Cleanup(srv.Close)
+
+	client := NewClient(srv.URL)
+	_, err := client.Discover(context.Background(), "tei://example.com/uuid/d4d9f54a-abcf-11ee-ac79-1a52914d44b1")
+	if err == nil {
+		t.Fatal("Discover: err = nil, want an error rejecting the empty success array")
+	}
+	if IsNotFound(err) {
+		t.Fatalf("err = %v, want a content-validation error, not an APIError (the HTTP response itself was 200)", err)
 	}
 }
 

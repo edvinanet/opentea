@@ -129,7 +129,7 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 		return fmt.Errorf("teaclient: response body for %s %s exceeds %d byte limit", method, path, maxResponseBody)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return &APIError{StatusCode: resp.StatusCode, Body: body}
+		return &APIError{StatusCode: resp.StatusCode, ContentType: resp.Header.Get("Content-Type"), Body: body}
 	}
 	if out == nil || len(body) == 0 {
 		return nil

@@ -1034,6 +1034,44 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       `gofmt` clean, plus a manual smoke test against a live built binary confirming
       `Cache-Control: public, no-cache` on `/latest/download` and the versioned endpoint's
       policy unchanged.
+- [x] ~~**[docs/security-review-260923.md finding 9] Discovery failed over after an
+      authoritative TEA 404 and accepted invalid success bodies** — `bootstrapDiscoverWithAuthority`
+      (`pkg/teaclient/wellknown.go`) only stopped candidate traversal on `401`/`403`; a `404
+      {"error":"OBJECT_UNKNOWN"}` from one candidate still moved on to the next, whose empty
+      `[]` was then accepted as a successful (if uninteresting) match. `discovery/readme.md`
+      is explicit and precise about both halves: a *conforming* TEA `404` (`Content-Type:
+      application/json`, a JSON object with a string `error` property) means "this server does
+      not resolve the identifier... the client shall not fail over to another endpoint solely
+      because of it, shall stop discovery for that identifier at this authority"; a `404` that
+      is *not* a conforming TEA error response (wrong Content-Type, no `error` property -- a
+      reverse proxy's own 404 page) is bucketed with DNS/TLS/5xx failures as an ordinary failed
+      attempt, still failover-eligible. Separately: "a successful lookup shall return a
+      non-empty array" -- an empty one is one of the spec's own named "invalid documents", not
+      a legitimate zero-result success.~~ **Fixed 2026-09-28**: `APIError` gained a
+      `ContentType` field (`pkg/teaclient/client.go`/`errors.go`), and a new, general-purpose
+      `TEAErrorCode(err)` classifies whether an error is a genuinely conforming TEA
+      error-response per the spec's own definition (JSON content type + string `error`
+      property) -- deliberately not scoped to 404 alone, since the spec frames the definition
+      generally. `bootstrapDiscoverWithAuthority` now stops and reports the `error` value when
+      `TEAErrorCode` matches *and* the status is 404, leaving every other 404 (and every other
+      status) to the existing failover path unchanged. `Client.Discover`/`DiscoverByPURL`
+      (`pkg/teaclient/discovery.go`) now share a `discover` helper that rejects an empty
+      success array -- their own doc comments already stated this contract ("no match returns
+      a 404 *APIError, not an empty, successful slice"), but nothing had actually enforced it.
+      Verified: found and fixed a real, pre-existing test-fixture bug along the way --
+      `TestBootstrapDiscoverFailoverOnNoMatch`'s 404 handler called `json.Encoder.Encode` after
+      an explicit `WriteHeader`, which never sets `Content-Type` explicitly, so Go's server
+      sniffed the body as `text/plain`, not `application/json` (confirmed empirically) -- the
+      test had *never* actually exercised a conforming TEA 404 despite appearing to. Split into
+      `TestBootstrapDiscoverFailoverOnNonConformant404` (Content-Type now explicitly
+      `text/plain`, on purpose) and a new `TestBootstrapDiscoverStopsOnAuthoritativeTEA404`
+      (explicitly `application/json`, a second candidate that fails the test outright if ever
+      queried) for the genuinely conforming case; plus `TestDiscoverRejectsEmptySuccessArray`
+      for the empty-array half. Both new tests confirmed to fail against the pre-fix code and
+      pass after. Full suite, `-race`, `golangci-lint`, `go vet`, `gofmt` clean, plus a manual
+      smoke test confirming the real opentea server's own discovery 404 already sends the
+      conforming `Content-Type: application/json` + `{"error":"OBJECT_UNKNOWN"}` shape this fix
+      depends on.
 - [ ] **[security review finding 4] Publisher API: create a new version of an existing
       artifact** — `createArtifact` always mints a fresh UUID at version 1
       (`internal/repo/artifact.go`'s `CreateArtifact`); there's no `/publisher/v1` operation

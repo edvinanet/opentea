@@ -295,6 +295,23 @@ func bootstrapDiscoverWithAuthority(ctx context.Context, authority, tei string, 
 		if IsUnauthorized(err) || IsForbidden(err) {
 			return BootstrapDiscoverResult{}, fmt.Errorf("teaclient: %s: authentication error, not trying further endpoints: %w", serverURL, err)
 		}
+		// A conforming TEA 404 (Content-Type application/json, a JSON
+		// object with a string "error" property -- TEAErrorCode) means
+		// this specific server has authoritatively answered "I do not
+		// resolve this identifier," whether because it's unknown or
+		// withheld; the client "shall not fail over to another endpoint
+		// solely because of it" and "shall stop discovery for that
+		// identifier at this authority" (discovery/readme.md). A 404 that
+		// ISN'T a conforming TEA error response (wrong Content-Type, no
+		// "error" property -- e.g. a reverse proxy's own 404 page for an
+		// unmounted path) is deliberately NOT covered by this branch: the
+		// spec explicitly buckets that with DNS/TLS/5xx failures as a
+		// failed *attempt*, still eligible for failover to the next
+		// candidate below (docs/security-review-260923.md finding #9: the
+		// previous code failed over even on the conforming case).
+		if code, ok := TEAErrorCode(err); ok && IsNotFound(err) {
+			return BootstrapDiscoverResult{}, fmt.Errorf("teaclient: %s does not resolve %s (TEA 404 error=%q), not trying further endpoints: %w", serverURL, tei, code, err)
+		}
 		errs = append(errs, fmt.Errorf("%s: %w", serverURL, err))
 	}
 

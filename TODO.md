@@ -1002,6 +1002,38 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       pass after. Full suite, `-race`, `golangci-lint`, `go vet`, `gofmt` clean, plus a manual
       smoke test against a live built binary confirming all three content-negotiation cases end
       to end.
+- [x] ~~**[docs/security-review-260923.md finding 13] "Latest" downloads permitted reuse
+      without required revalidation** — the four `/latest` artifact-download endpoints (content
+      and signature) used `cacheControlRevalidate` (`public, max-age=60,
+      stale-while-revalidate=300`), the same policy as every other "can change" `/tea/v1`
+      response. TEA 1.0's own `artifact-cache-control-latest` header text is explicit and
+      specific to these two response types only: "the latest revision is a moving target...
+      servers shall not mark it immutable and shall require revalidation" -- `stale-while-
+      revalidate`'s entire purpose is serving a stale copy *without* synchronous revalidation
+      first, which this text directly forbids for "latest".~~ **Fixed 2026-09-28**: new
+      `cacheControlLatest = "public, no-cache"` constant (`internal/api/cachepolicy.go`),
+      applied only to `downloadLatestArtifact`/`downloadLatestArtifactSignature`
+      (`internal/api/artifactdownload.go`) -- the existing `cacheControlFor` swap (`public` →
+      `private` for authenticated responses) applies unchanged, producing exactly `private,
+      no-cache` for protected content, one of the spec's own three given examples. Deliberately
+      scoped to just these two endpoints: checked the spec's entire `Cache-Control:` header
+      surface (only 6 references in the whole document) and confirmed no other `/tea/v1`
+      response -- collections, releases, products, discovery -- has *any* spec-mandated
+      Cache-Control at all, so `cacheControlRevalidate` remains this server's own free choice
+      everywhere else; an earlier, broader "affects most latest-style endpoints" note from
+      research earlier in this session was an unverified over-generalization, corrected here.
+      The *versioned* download endpoints are untouched -- their own existing, already-justified
+      `cacheControlRevalidate` choice (this codebase's create-then-upload flow can still add a
+      format's content after the artifact row exists, so even the versioned endpoint isn't
+      strictly immutable here) is a separate, deliberate tradeoff finding #13 doesn't touch.
+      Verified: new regression test `TestLatestArtifactDownloadRequiresRevalidation`
+      (`cmd/opentea/artifactdownload_test.go`) confirms both `/latest` endpoints' Cache-Control
+      contains `no-cache` and none of `stale-while-revalidate`/`immutable`/`max-age`, and that
+      the versioned endpoint is unaffected (still `stale-while-revalidate`) -- confirmed to fail
+      against the pre-fix code, passes after. Full suite, `-race`, `golangci-lint`, `go vet`,
+      `gofmt` clean, plus a manual smoke test against a live built binary confirming
+      `Cache-Control: public, no-cache` on `/latest/download` and the versioned endpoint's
+      policy unchanged.
 - [ ] **[security review finding 4] Publisher API: create a new version of an existing
       artifact** — `createArtifact` always mints a fresh UUID at version 1
       (`internal/repo/artifact.go`'s `CreateArtifact`); there's no `/publisher/v1` operation

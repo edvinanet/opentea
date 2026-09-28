@@ -126,6 +126,76 @@ func TestArtifactDownloadSelfHostedContent(t *testing.T) {
 	}
 }
 
+// TestLatestArtifactDownloadRequiresRevalidation is the regression test
+// for the finding that "latest" content/signature downloads used the same
+// Cache-Control as everything else (a 60s freshness window plus
+// stale-while-revalidate), even though "latest" resolves to a different
+// revision the instant a new one is published and the spec requires
+// revalidation before reuse specifically because of that
+// (docs/security-review-260923.md finding #13) -- stale-while-revalidate's
+// entire purpose is avoiding synchronous revalidation, which is exactly
+// what's forbidden here. Confirms both /latest endpoints now use
+// `no-cache` with no `stale-while-revalidate`/`immutable`/`max-age`, and
+// that the *versioned* endpoint (a deliberately separate, unaffected
+// tradeoff -- see downloadArtifactByVersion's own doc comment) is
+// untouched by this fix.
+func TestLatestArtifactDownloadRequiresRevalidation(t *testing.T) {
+	srv := newTestServer(t)
+
+	status, raw := jsonRequest(t, srv, http.MethodPost, "/admin/v1/artifacts", map[string]any{
+		"type":        "BOM",
+		"createdDate": "2026-07-01T00:00:00Z",
+		"formats":     []map[string]any{{"mediaType": "application/vnd.cyclonedx+json"}},
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("create artifact: status=%d body=%s", status, raw)
+	}
+	var artifact tea.Artifact
+	decodeInto(t, raw, &artifact)
+
+	content := []byte(`{"bomFormat":"CycloneDX"}`)
+	if status, raw := uploadFile(t, srv, "/admin/v1/artifacts/"+artifact.UUID+"/1/files", "sbom.json", content, "application/vnd.cyclonedx+json"); status != http.StatusOK {
+		t.Fatalf("upload content: status=%d body=%s", status, raw)
+	}
+	signature := []byte("fake-detached-signature-bytes")
+	if status, raw := uploadFile(t, srv, "/admin/v1/artifacts/"+artifact.UUID+"/1/signature", "sbom.sig", signature, "application/octet-stream"); status != http.StatusOK {
+		t.Fatalf("upload signature: status=%d body=%s", status, raw)
+	}
+
+	assertLatestCacheControl := func(t *testing.T, path string) {
+		t.Helper()
+		resp, err := http.Get(srv.URL + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s: status=%d, want 200", path, resp.StatusCode)
+		}
+		cc := resp.Header.Get("Cache-Control")
+		if !strings.Contains(cc, "no-cache") {
+			t.Fatalf("GET %s: Cache-Control = %q, want it to contain \"no-cache\"", path, cc)
+		}
+		for _, forbidden := range []string{"stale-while-revalidate", "immutable", "max-age"} {
+			if strings.Contains(cc, forbidden) {
+				t.Fatalf("GET %s: Cache-Control = %q, must not contain %q (the spec requires synchronous revalidation for \"latest\")", path, cc, forbidden)
+			}
+		}
+	}
+	assertLatestCacheControl(t, "/tea/v1/artifact/"+artifact.UUID+"/latest/download")
+	assertLatestCacheControl(t, "/tea/v1/artifact/"+artifact.UUID+"/latest/signature/download")
+
+	// The versioned endpoint is a deliberately separate tradeoff, unaffected.
+	verResp, err := http.Get(srv.URL + "/tea/v1/artifact/" + artifact.UUID + "/1/download")
+	if err != nil {
+		t.Fatalf("GET versioned download: %v", err)
+	}
+	_ = verResp.Body.Close()
+	if cc := verResp.Header.Get("Cache-Control"); !strings.Contains(cc, "stale-while-revalidate") {
+		t.Fatalf("versioned download Cache-Control = %q, want it unaffected (still stale-while-revalidate)", cc)
+	}
+}
+
 // TestArtifactDownloadErrorCases covers the spec's distinct error
 // conditions: 406 for a mediaType matching no format, 404 (existence-
 // hiding, OBJECT_UNKNOWN) for a concealed/nonexistent artifact -- extending

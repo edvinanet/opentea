@@ -46,6 +46,12 @@ func requireGetOrHead(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// downloadLatestArtifact uses cacheControlLatest, not cacheControlRevalidate:
+// "latest" resolves to a different revision the moment a new one is
+// published, and the spec requires revalidation before reuse for that
+// reason specifically -- stale-while-revalidate (cacheControlRevalidate's
+// whole point) is exactly what that forbids
+// (docs/security-review-260923.md finding #13).
 func (s *Server) downloadLatestArtifact(w http.ResponseWriter, r *http.Request) {
 	uuid, err := httpx.PathUUID(r, "uuid")
 	if err != nil {
@@ -61,7 +67,7 @@ func (s *Server) downloadLatestArtifact(w http.ResponseWriter, r *http.Request) 
 		httpx.NotFound(w)
 		return
 	}
-	s.downloadArtifactContent(w, r, uuid, version, cacheControlRevalidate)
+	s.downloadArtifactContent(w, r, uuid, version, cacheControlLatest)
 }
 
 func (s *Server) downloadArtifactByVersion(w http.ResponseWriter, r *http.Request) {
@@ -83,6 +89,8 @@ func (s *Server) downloadArtifactByVersion(w http.ResponseWriter, r *http.Reques
 	s.downloadArtifactContent(w, r, uuid, version, cacheControlRevalidate)
 }
 
+// downloadLatestArtifactSignature uses cacheControlLatest -- see
+// downloadLatestArtifact's own doc comment for why.
 func (s *Server) downloadLatestArtifactSignature(w http.ResponseWriter, r *http.Request) {
 	uuid, err := httpx.PathUUID(r, "uuid")
 	if err != nil {
@@ -98,7 +106,7 @@ func (s *Server) downloadLatestArtifactSignature(w http.ResponseWriter, r *http.
 		httpx.NotFound(w)
 		return
 	}
-	s.downloadArtifactSignature(w, r, uuid, version, cacheControlRevalidate)
+	s.downloadArtifactSignature(w, r, uuid, version, cacheControlLatest)
 }
 
 func (s *Server) downloadArtifactSignatureByVersion(w http.ResponseWriter, r *http.Request) {

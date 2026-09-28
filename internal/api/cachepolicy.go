@@ -29,6 +29,22 @@ const (
 	// while it re-checks in the background, rather than blocking every
 	// request past max-age on a synchronous revalidation.
 	cacheControlRevalidate = "public, max-age=60, stale-while-revalidate=300"
+
+	// cacheControlLatest is specifically for the artifact-content-latest/
+	// artifact-signature-content-latest responses (the four /latest
+	// artifact-download endpoints only -- TEA 1.0, spec/openapi.yaml's
+	// artifact-cache-control-latest header): "the latest revision is a
+	// moving target... servers shall not mark it immutable and shall
+	// require revalidation" -- stale-while-revalidate is explicitly
+	// incompatible with that, since its whole point is serving a stale
+	// copy WITHOUT synchronous revalidation first
+	// (docs/security-review-260923.md finding #13). Distinct from the
+	// broader cacheControlRevalidate, which the spec does not constrain --
+	// every other "can change" /tea/v1 response (collections, releases,
+	// products, ...) has no spec-mandated Cache-Control at all, so
+	// deliberately keeps its own, more cache-friendly policy; only these
+	// two endpoints have this specific "moving target" text.
+	cacheControlLatest = "public, no-cache"
 )
 
 // conditional builds this response's ETag from parts plus a principal-

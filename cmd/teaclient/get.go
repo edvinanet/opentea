@@ -28,7 +28,7 @@ func runGet(args []string) error {
 		v, err := client.GetProduct(ctx, uuid)
 		return printResult(v, err, jsonOut)
 	case "product-release":
-		v, err := client.GetProductRelease(ctx, uuid)
+		v, err := client.GetProductReleaseWithCollection(ctx, uuid)
 		return printResult(v, err, jsonOut)
 	case "component":
 		v, err := client.GetComponent(ctx, uuid)

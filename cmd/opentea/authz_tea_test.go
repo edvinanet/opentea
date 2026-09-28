@@ -107,10 +107,20 @@ func TestTeaV1AuthzAnonymousDefaultAllowsRead(t *testing.T) {
 
 // TestTeaV1AuthzCapabilityIndependence proves spec Sec 12.2: a
 // release-scoped entitlement that grants release.read but denies
-// collection.read must NOT leak collection access, even though the
-// broader (migration-seeded) bootstrap entitlement would otherwise allow
-// it -- the narrower, more specific restriction wins. Also covers TEA
-// 1.0's 401-vs-404 split for that denial: an anonymous caller (no token
+// collection.read must NOT leak collection access via the standalone
+// /collection/latest sub-resource endpoint, even though the broader
+// (migration-seeded) bootstrap entitlement would otherwise allow it -- the
+// narrower, more specific restriction wins. GET productRelease itself is
+// NOT independent of collection.read: its response embeds latestCollection
+// unconditionally (spec/openapi.yaml's product-release-with-collection),
+// so denying collection.read correctly denies this endpoint too -- the
+// analogous check for GET componentRelease was already established this
+// way (internal/api/componentrelease.go's own doc comment: "denying
+// release access without also checking collection access would let a
+// collection-only grant leak the release, and vice versa"); productRelease
+// gained the same requirement once it started embedding a collection too
+// (docs/security-review-260923.md finding #5). Also covers TEA 1.0's
+// 401-vs-404 split for that denial: an anonymous caller (no token
 // presented at all) gets 401 ("a protected object shall not answer 404
 // solely because the client is unauthenticated"), while an authenticated-
 // but-unauthorized one still gets the existing, deliberately concealing
@@ -151,8 +161,8 @@ func TestTeaV1AuthzCapabilityIndependence(t *testing.T) {
 	)
 
 	status, _, raw = teaRequest(t, srv, http.MethodGet, "/tea/v1/productRelease/"+release.UUID, "")
-	if status != http.StatusOK {
-		t.Fatalf("GET productRelease: status=%d body=%s, want 200 (release.read allowed)", status, raw)
+	if status != http.StatusUnauthorized {
+		t.Fatalf("GET productRelease (anonymous): status=%d body=%s, want 401 (its response embeds latestCollection, and collection.read is denied)", status, raw)
 	}
 
 	status, headers, raw := teaRequest(t, srv, http.MethodGet, "/tea/v1/productRelease/"+release.UUID+"/collection/latest", "")

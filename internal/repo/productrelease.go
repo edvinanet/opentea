@@ -25,7 +25,15 @@ type ProductReleaseInput struct {
 }
 
 // CreateProductRelease creates a new release of productUUID with a fresh
-// generated UUID. Returns ErrNotFound if productUUID doesn't exist.
+// generated UUID, together with its required initial collection (TEA 1.0,
+// spec/openapi.yaml's own collection schema: "Every component release and
+// product release has a collection. If no artifacts have been published
+// when the release first becomes retrievable, the server serves version 1
+// with an empty artifacts list and updateReason.type: INITIAL_RELEASE.")
+// -- both created atomically in one transaction, since GET /productRelease/{uuid}'s
+// product-release-with-collection response requires latestCollection
+// unconditionally (docs/security-review-260923.md findings #5 and #7).
+// Returns ErrNotFound if productUUID doesn't exist.
 func (r *Repo) CreateProductRelease(ctx context.Context, productUUID string, in ProductReleaseInput) (tea.ProductRelease, error) {
 	var productName string
 	if err := r.db.QueryRowContext(ctx, `SELECT name FROM product WHERE uuid = ?`, productUUID).Scan(&productName); err != nil {
@@ -36,26 +44,25 @@ func (r *Repo) CreateProductRelease(ctx context.Context, productUUID string, in 
 	}
 
 	uuid := idgen.New()
-	tx, err := r.db.BeginTx(ctx, nil)
+	err := r.WithTx(ctx, func(tx *Repo) error {
+		if _, err := tx.conn().ExecContext(ctx,
+			`INSERT INTO product_release (uuid, product_uuid, product_name, version, created_date, release_date, pre_release) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			uuid, productUUID, productName, in.Version, formatTime(in.CreatedDate), formatTimePtr(in.ReleaseDate), boolToInt(in.PreRelease),
+		); err != nil {
+			return err
+		}
+		if err := insertIdentifiers(ctx, tx.conn(), OwnerProductRelease, uuid, in.Identifiers); err != nil {
+			return err
+		}
+		if err := bumpWatermarkTx(ctx, tx.conn(), WatermarkProductReleases); err != nil {
+			return err
+		}
+		_, err := tx.CreateCollectionForProductRelease(ctx, uuid, CollectionInput{
+			UpdateReason: &tea.UpdateReason{Type: tea.CollectionUpdateReasonInitialRelease},
+		})
+		return err
+	})
 	if err != nil {
-		return tea.ProductRelease{}, err
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	_, err = tx.ExecContext(ctx,
-		`INSERT INTO product_release (uuid, product_uuid, product_name, version, created_date, release_date, pre_release) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		uuid, productUUID, productName, in.Version, formatTime(in.CreatedDate), formatTimePtr(in.ReleaseDate), boolToInt(in.PreRelease),
-	)
-	if err != nil {
-		return tea.ProductRelease{}, err
-	}
-	if err := insertIdentifiers(ctx, tx, OwnerProductRelease, uuid, in.Identifiers); err != nil {
-		return tea.ProductRelease{}, err
-	}
-	if err := bumpWatermarkTx(ctx, tx, WatermarkProductReleases); err != nil {
-		return tea.ProductRelease{}, err
-	}
-	if err := tx.Commit(); err != nil {
 		return tea.ProductRelease{}, err
 	}
 

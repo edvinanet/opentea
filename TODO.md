@@ -922,6 +922,55 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       clean, plus a manual smoke test against a live built binary confirming both shapes:
       `{"hasNext":false,"results":[]}` for an empty list, and `nextPageToken` correctly present
       and non-empty when `hasNext` is `true`.
+- [x] ~~**[docs/security-review-260923.md findings 5 and 7] Release detail responses violated
+      the updated wire contract, and a release with no artifacts had no collection at all** —
+      `GET /productRelease/{uuid}` returned a bare `product-release` with no `latestCollection`
+      field; `GET /componentRelease/{uuid}` nested the release under a `"release"` key instead
+      of the spec's flat `allOf` merge (`{release:{...}, latestCollection:{...}}` instead of
+      every release field at the top level alongside `latestCollection`). Both schemas mark
+      `latestCollection` required, and TEA 1.0's own collection schema text settles why: "Every
+      component release and product release has a collection. If no artifacts have been
+      published when the release first becomes retrievable, the server serves version 1 with an
+      empty artifacts list and updateReason.type: INITIAL_RELEASE." -- opentea had no such
+      guarantee (finding #7), so finding #5's wire-shape fix had nothing to embed for a freshly
+      created release; the two are one fix, not two.~~ **Fixed 2026-09-26**:
+      `CreateProductRelease`/`CreateComponentRelease` (`internal/repo/{productrelease,componentrelease}.go`)
+      now create that required initial empty v1 collection atomically, in the same transaction
+      as the release itself (converted from a raw `*sql.Tx` to the `WithTx` composition pattern
+      `CommitCollectionDraft` already established, so the existing
+      `CreateCollectionForProductRelease`/`ComponentRelease` machinery -- version
+      auto-increment included -- composes into it directly rather than being reimplemented).
+      New migration `0011_release_initial_collection.sql` backfills the same for every release
+      that predates this fix (dated to the release's own `created_date`), and bumps the
+      collections watermark once unconditionally so any previously cached collection-list ETag
+      invalidates. `getProductRelease` (`internal/api/productrelease.go`) now mirrors
+      `getComponentReleaseWithCollection`'s already-correct pattern exactly: a light dual lookup
+      (`GetProductReleaseRevision` + `LatestCollectionVersion`) for the ETag, dual capability
+      check (`release.read` AND `collection.read` -- the response can't omit `latestCollection`,
+      so denying one without the other would let either capability alone leak or block the
+      whole thing), then the full fetch. `ComponentReleaseWithCollection`/new
+      `ProductReleaseWithCollection` (`pkg/tea/types.go`) now embed the release type
+      anonymously instead of nesting it under a named field, so Go's own field-promotion gives
+      the correct flat JSON shape for free. `pkg/teaclient.GetProductRelease` renamed to
+      `GetProductReleaseWithCollection` (matching the already-correctly-named component-release
+      client method) and changed to decode the `-with-collection` shape -- the old bare-type
+      client method would have silently dropped `latestCollection` from every response even
+      after the server-side fix, hiding the incompatibility from any test built on it, exactly
+      as the review warned. The remaining 404 branch in both handlers is now defensive only (a
+      release imported from a source that never carried a collection), not an expected path --
+      noted as a residual gap for bundle import from a non-compliant source, not otherwise
+      addressed here. Every collection version number in the existing test suite that assumed
+      "first explicit collection = version 1" shifted by one (the auto-created one is now
+      version 1); updated across `internal/repo`, `internal/bundle`, and `cmd/opentea`/
+      `cmd/fixtures` tests, including `TestGetStats`'s distinct-collection count and
+      `TestWatermarkBumpsOnEveryFamily`'s baseline (the migration's own unconditional bump
+      applies to a fresh test database too, not just a real upgrade). New regression test
+      `TestReleaseDetailResponsesEmbedLatestCollectionFlat` (`cmd/opentea/integration_test.go`)
+      checks the raw JSON bytes for both endpoints against a release with nothing published
+      yet -- 200 (not 404), `latestCollection.version == 1`, empty `artifacts`, and no `"release"`
+      wrapper key for the component-release case. Full suite, `-race`, `golangci-lint`, `go vet`,
+      `gofmt` clean, plus a manual smoke test against a live built binary confirming both wire
+      shapes exactly.
 - [ ] **[security review finding 4] Publisher API: create a new version of an existing
       artifact** — `createArtifact` always mints a fresh UUID at version 1
       (`internal/repo/artifact.go`'s `CreateArtifact`); there's no `/publisher/v1` operation

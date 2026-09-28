@@ -68,8 +68,13 @@ func TestGetStats(t *testing.T) {
 	if stats.ComponentReleases != 1 {
 		t.Errorf("ComponentReleases = %d, want 1", stats.ComponentReleases)
 	}
-	if stats.Collections != 1 {
-		t.Errorf("Collections = %d, want 1 (two versions of the same collection)", stats.Collections)
+	// 2 distinct collections, not 1: the product release's own required
+	// initial empty collection (docs/security-review-260923.md finding #7)
+	// counts as one, and the component release's -- despite having three
+	// versions (one auto-created, two explicit above) -- still counts as
+	// just one distinct collection uuid.
+	if stats.Collections != 2 {
+		t.Errorf("Collections = %d, want 2", stats.Collections)
 	}
 	if stats.Artifacts != 1 {
 		t.Errorf("Artifacts = %d, want 1 (two revisions of the same artifact)", stats.Artifacts)

@@ -46,6 +46,18 @@ type ProductRelease struct {
 	Components  []ComponentRef `json:"components"`
 }
 
+// ProductReleaseWithCollection bundles a ProductRelease with its latest
+// Collection, matching the flat shape GET /productRelease/{uuid} returns
+// (spec/openapi.yaml's product-release-with-collection: an allOf merge --
+// every product-release field applies unchanged, at the top level,
+// alongside latestCollection, not nested under a wrapper key). The
+// embedded ProductRelease's own fields promote to the top level of the
+// JSON object automatically; only LatestCollection needs its own tag.
+type ProductReleaseWithCollection struct {
+	ProductRelease
+	LatestCollection Collection `json:"latestCollection"`
+}
+
 // Component is a reusable piece of software (e.g. a library or package)
 // that can be shared across many products' releases, tracked independently
 // of any specific release.
@@ -93,12 +105,15 @@ type ComponentRelease struct {
 	Distributions []ReleaseDistribution `json:"distributions,omitempty"`
 }
 
-// ComponentReleaseWithCollection bundles a ComponentRelease with its most
-// recent Collection, matching the shape GET .../componentRelease/{uuid}
-// returns in one call.
+// ComponentReleaseWithCollection bundles a ComponentRelease with its latest
+// Collection, matching the flat shape GET /componentRelease/{uuid} returns
+// (spec/openapi.yaml's component-release-with-collection: an allOf merge,
+// same reasoning as ProductReleaseWithCollection above -- every
+// component-release field applies unchanged, at the top level, not nested
+// under a "release" wrapper key as this type previously modeled it).
 type ComponentReleaseWithCollection struct {
-	Release          ComponentRelease `json:"release"`
-	LatestCollection Collection       `json:"latestCollection"`
+	ComponentRelease
+	LatestCollection Collection `json:"latestCollection"`
 }
 
 // UpdateReason explains why a new Collection version was published (e.g.

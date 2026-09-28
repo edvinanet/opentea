@@ -276,8 +276,12 @@ func TestCollectionDraftFullHappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PrepareCollectionCommit: %v", err)
 	}
-	if wouldBe.Version != 1 {
-		t.Fatalf("wouldBe.Version = %d, want 1", wouldBe.Version)
+	// 2, not 1: createTestProductReleaseForDraft's CreateProductRelease
+	// already created version 1 -- the release's required initial empty
+	// collection, created atomically (docs/security-review-260923.md
+	// finding #7).
+	if wouldBe.Version != 2 {
+		t.Fatalf("wouldBe.Version = %d, want 2", wouldBe.Version)
 	}
 	if len(wouldBe.Artifacts) != 1 || wouldBe.Artifacts[0].UUID != artifactUUID {
 		t.Fatalf("wouldBe.Artifacts = %+v", wouldBe.Artifacts)
@@ -295,7 +299,7 @@ func TestCollectionDraftFullHappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CommitCollectionDraft: %v", err)
 	}
-	if collection.UUID != prUUID || collection.Version != 1 {
+	if collection.UUID != prUUID || collection.Version != 2 {
 		t.Fatalf("collection = %+v", collection)
 	}
 
@@ -305,14 +309,14 @@ func TestCollectionDraftFullHappyPath(t *testing.T) {
 	}
 
 	// The collection is really there, and carries its evidence bundle.
-	stored, err := r.GetCollectionByVersion(ctx, prUUID, 1, BelongsToProductRelease)
+	stored, err := r.GetCollectionByVersion(ctx, prUUID, 2, BelongsToProductRelease)
 	if err != nil {
 		t.Fatalf("GetCollectionByVersion: %v", err)
 	}
 	if len(stored.Artifacts) != 1 || stored.Artifacts[0].UUID != artifactUUID {
 		t.Fatalf("stored.Artifacts = %+v", stored.Artifacts)
 	}
-	bundle, err := r.GetEvidenceBundleForOwner(ctx, "COLLECTION", prUUID, 1)
+	bundle, err := r.GetEvidenceBundleForOwner(ctx, "COLLECTION", prUUID, 2)
 	if err != nil {
 		t.Fatalf("GetEvidenceBundleForOwner: %v", err)
 	}
@@ -361,7 +365,7 @@ func TestCommitCollectionDraftPublishesPreparedDate(t *testing.T) {
 			collection.CreatedDate, wouldBe.CreatedDate)
 	}
 
-	stored, err := r.GetCollectionByVersion(ctx, prUUID, 1, BelongsToProductRelease)
+	stored, err := r.GetCollectionByVersion(ctx, prUUID, 2, BelongsToProductRelease)
 	if err != nil {
 		t.Fatalf("GetCollectionByVersion: %v", err)
 	}

@@ -15,6 +15,16 @@ import (
 	"github.com/oej/opentea/pkg/tea"
 )
 
+// getProductRelease returns product-release-with-collection (spec/openapi.yaml):
+// every product-release field at the top level, plus the required
+// latestCollection -- mirrors getComponentReleaseWithCollection's pattern
+// exactly (internal/api/componentrelease.go), see its own doc comment for
+// the shared reasoning (light dual-lookup ETag, dual capability check).
+// Since CreateProductRelease now creates a release's initial empty
+// collection atomically (docs/security-review-260923.md finding #7), a
+// missing collection here should never actually happen except for a
+// release imported from a source that didn't carry one -- the 404 is
+// defensive, not an expected path.
 func (s *Server) getProductRelease(w http.ResponseWriter, r *http.Request) {
 	uuid, err := httpx.PathUUID(r, "uuid")
 	if err != nil {
@@ -30,10 +40,28 @@ func (s *Server) getProductRelease(w http.ResponseWriter, r *http.Request) {
 		httpx.InternalError(w, r, err)
 		return
 	}
+	latestVersion, hasCollection, err := s.repo.LatestCollectionVersion(r.Context(), uuid, repo.BelongsToProductRelease)
+	if err != nil {
+		httpx.InternalError(w, r, err)
+		return
+	}
+	if !hasCollection {
+		httpx.NotFound(w)
+		return
+	}
+	// This response can't omit latestCollection (the wire contract requires
+	// it), so denying release access without also checking collection
+	// access would let a collection-only grant leak the release, and vice
+	// versa -- both capabilities must allow. collectionUUID == uuid in this
+	// schema (see internal/db/migrations/0001_init.sql's comment on the
+	// collection table).
 	if !s.authorize(w, r, authz.CapReleaseRead, authz.Resource{ProductReleaseUUID: uuid}) {
 		return
 	}
-	if s.conditional(w, r, cacheControlRevalidate, "productRelease", uuid, strconv.FormatInt(revision, 10)) {
+	if !s.authorize(w, r, authz.CapCollectionRead, authz.Resource{CollectionUUID: uuid}) {
+		return
+	}
+	if s.conditional(w, r, cacheControlRevalidate, "productRelease", uuid, strconv.FormatInt(revision, 10), strconv.Itoa(latestVersion)) {
 		return
 	}
 
@@ -46,7 +74,16 @@ func (s *Server) getProductRelease(w http.ResponseWriter, r *http.Request) {
 		httpx.InternalError(w, r, err)
 		return
 	}
-	httpx.WriteJSON(w, http.StatusOK, pr)
+	latest, err := s.repo.GetLatestCollection(r.Context(), uuid, repo.BelongsToProductRelease)
+	if errors.Is(err, repo.ErrNotFound) {
+		httpx.NotFound(w)
+		return
+	}
+	if err != nil {
+		httpx.InternalError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, tea.ProductReleaseWithCollection{ProductRelease: pr, LatestCollection: latest})
 }
 
 func (s *Server) queryProductReleases(w http.ResponseWriter, r *http.Request) {

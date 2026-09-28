@@ -92,7 +92,10 @@ func TestPublisherClientFullWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CommitProductReleaseCollectionDraft: %v", err)
 	}
-	if collection.Version != 1 || len(collection.Artifacts) != 1 || collection.Artifacts[0].UUID != artifact.UUID {
+	// Version 2, not 1: CreateProductRelease already created the required
+	// initial empty v1 collection atomically
+	// (docs/security-review-260923.md finding #7).
+	if collection.Version != 2 || len(collection.Artifacts) != 1 || collection.Artifacts[0].UUID != artifact.UUID {
 		t.Fatalf("collection = %+v", collection)
 	}
 

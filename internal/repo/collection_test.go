@@ -32,6 +32,10 @@ func TestCollectionVersioningAndArtifactReuse(t *testing.T) {
 		t.Fatalf("CreateArtifact: %v", err)
 	}
 
+	// CreateComponentRelease already created version 1 -- its required
+	// initial empty collection, created atomically
+	// (docs/security-review-260923.md finding #7) -- so this explicit
+	// content-carrying collection is version 2, not 1.
 	c1, err := r.CreateCollectionForComponentRelease(ctx, cr.UUID, CollectionInput{
 		UpdateReason: &tea.UpdateReason{Type: "INITIAL_RELEASE", Comment: "first collection"},
 		Artifacts:    []ArtifactRef{{UUID: sbom.UUID, Version: sbom.Version}},
@@ -39,8 +43,8 @@ func TestCollectionVersioningAndArtifactReuse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateCollectionForComponentRelease: %v", err)
 	}
-	if c1.Version != 1 {
-		t.Fatalf("Version = %d, want 1", c1.Version)
+	if c1.Version != 2 {
+		t.Fatalf("Version = %d, want 2", c1.Version)
 	}
 	if c1.BelongsTo != BelongsToComponentRelease {
 		t.Fatalf("BelongsTo = %q", c1.BelongsTo)
@@ -58,10 +62,10 @@ func TestCollectionVersioningAndArtifactReuse(t *testing.T) {
 		Artifacts:    []ArtifactRef{{UUID: sbom.UUID, Version: sbom.Version}, {UUID: vex.UUID, Version: vex.Version}},
 	})
 	if err != nil {
-		t.Fatalf("CreateCollectionForComponentRelease (v2): %v", err)
+		t.Fatalf("CreateCollectionForComponentRelease (v3): %v", err)
 	}
-	if c2.Version != 2 {
-		t.Fatalf("Version = %d, want 2 (must increment per owner)", c2.Version)
+	if c2.Version != 3 {
+		t.Fatalf("Version = %d, want 3 (must increment per owner)", c2.Version)
 	}
 	if len(c2.Artifacts) != 2 {
 		t.Fatalf("Artifacts = %+v, want sbom reused + vex added", c2.Artifacts)
@@ -71,23 +75,23 @@ func TestCollectionVersioningAndArtifactReuse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetLatestCollection: %v", err)
 	}
-	if latest.Version != 2 {
-		t.Fatalf("latest.Version = %d, want 2", latest.Version)
+	if latest.Version != 3 {
+		t.Fatalf("latest.Version = %d, want 3", latest.Version)
 	}
 
-	v1, err := r.GetCollectionByVersion(ctx, cr.UUID, 1, BelongsToComponentRelease)
+	v1, err := r.GetCollectionByVersion(ctx, cr.UUID, 2, BelongsToComponentRelease)
 	if err != nil {
-		t.Fatalf("GetCollectionByVersion(1): %v", err)
+		t.Fatalf("GetCollectionByVersion(2): %v", err)
 	}
 	if len(v1.Artifacts) != 1 {
-		t.Fatalf("v1.Artifacts = %+v, want unaffected by v2's addition", v1.Artifacts)
+		t.Fatalf("v1.Artifacts = %+v, want unaffected by v3's addition", v1.Artifacts)
 	}
 
 	all, err := r.ListCollections(ctx, cr.UUID, "desc", nil, 10, BelongsToComponentRelease)
 	if err != nil {
 		t.Fatalf("ListCollections: %v", err)
 	}
-	if len(all) != 2 || all[0].Version != 2 || all[1].Version != 1 {
+	if len(all) != 3 || all[0].Version != 3 || all[1].Version != 2 || all[2].Version != 1 {
 		t.Fatalf("ListCollections (desc) = %+v", all)
 	}
 }
@@ -103,6 +107,23 @@ func TestCreateCollectionUnknownOwner(t *testing.T) {
 func TestGetLatestCollectionNotFound(t *testing.T) {
 	ctx := context.Background()
 	r := newTestRepo(t)
+	// A genuinely nonexistent owner still has no collection at all.
+	if _, err := r.GetLatestCollection(ctx, "00000000-0000-4000-8000-000000000000", BelongsToComponentRelease); err != ErrNotFound {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+}
+
+// TestGetLatestCollectionFindsAutoCreatedInitialCollection is the
+// regression test for the finding that a component release with no
+// artifacts published yet had no collection at all, so its detail
+// endpoint 404ed instead of returning the required latestCollection
+// (docs/security-review-260923.md finding #7) -- CreateComponentRelease
+// now creates that empty version-1 collection atomically, per TEA 1.0's
+// own collection schema text: "the server serves version 1 with an empty
+// artifacts list and updateReason.type: INITIAL_RELEASE."
+func TestGetLatestCollectionFindsAutoCreatedInitialCollection(t *testing.T) {
+	ctx := context.Background()
+	r := newTestRepo(t)
 	component, err := r.CreateComponent(ctx, "empty", nil)
 	if err != nil {
 		t.Fatalf("CreateComponent: %v", err)
@@ -111,8 +132,18 @@ func TestGetLatestCollectionNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateComponentRelease: %v", err)
 	}
-	if _, err := r.GetLatestCollection(ctx, cr.UUID, BelongsToComponentRelease); err != ErrNotFound {
-		t.Fatalf("err = %v, want ErrNotFound", err)
+	latest, err := r.GetLatestCollection(ctx, cr.UUID, BelongsToComponentRelease)
+	if err != nil {
+		t.Fatalf("GetLatestCollection: %v", err)
+	}
+	if latest.Version != 1 {
+		t.Fatalf("Version = %d, want 1", latest.Version)
+	}
+	if len(latest.Artifacts) != 0 {
+		t.Fatalf("Artifacts = %+v, want empty", latest.Artifacts)
+	}
+	if latest.UpdateReason == nil || latest.UpdateReason.Type != tea.CollectionUpdateReasonInitialRelease {
+		t.Fatalf("UpdateReason = %+v, want INITIAL_RELEASE", latest.UpdateReason)
 	}
 }
 

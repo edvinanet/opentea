@@ -141,12 +141,15 @@ func TestClientAgainstRealServer(t *testing.T) {
 		t.Fatalf("QueryProducts.Results = %+v", products.Results)
 	}
 
-	gotRelease, err := client.GetProductRelease(ctx, productRelease.UUID)
+	gotRelease, err := client.GetProductReleaseWithCollection(ctx, productRelease.UUID)
 	if err != nil {
-		t.Fatalf("GetProductRelease: %v", err)
+		t.Fatalf("GetProductReleaseWithCollection: %v", err)
 	}
 	if len(gotRelease.Components) != 1 || gotRelease.Components[0].UUID != component.UUID {
 		t.Fatalf("gotRelease.Components = %+v", gotRelease.Components)
+	}
+	if gotRelease.LatestCollection.Version < 1 {
+		t.Fatalf("gotRelease.LatestCollection = %+v, want a real collection (at least the auto-created initial one)", gotRelease.LatestCollection)
 	}
 
 	withCollection, err := client.GetComponentReleaseWithCollection(ctx, componentRelease.UUID)

@@ -96,11 +96,17 @@ func TestWatermarkBumpsOnEveryFamily(t *testing.T) {
 	}
 	assertWatermark(WatermarkComponentReleases, 3)
 
-	// collections: CreateCollectionForComponentRelease
+	// collections: 4, not 1 -- 0011_release_initial_collection.sql bumps
+	// this watermark once unconditionally on migration (even on a fresh
+	// test database), then CreateProductRelease and CreateComponentRelease
+	// above each bumped it again for their own required initial empty
+	// collection, created atomically (docs/security-review-260923.md
+	// finding #7); this explicit CreateCollectionForComponentRelease is
+	// the fourth bump.
 	if _, err := r.CreateCollectionForComponentRelease(ctx, cr.UUID, CollectionInput{}); err != nil {
 		t.Fatalf("CreateCollectionForComponentRelease: %v", err)
 	}
-	assertWatermark(WatermarkCollections, 1)
+	assertWatermark(WatermarkCollections, 4)
 
 	// Deletes bump their own family too.
 	if err := r.DeleteComponentRelease(ctx, cr.UUID); err != nil {

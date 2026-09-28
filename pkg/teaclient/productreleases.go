@@ -10,9 +10,17 @@ import (
 	"github.com/oej/opentea/pkg/tea"
 )
 
-// GetProductRelease fetches one product release by UUID (GET /productRelease/{uuid}).
-func (c *Client) GetProductRelease(ctx context.Context, uuid string) (tea.ProductRelease, error) {
-	var pr tea.ProductRelease
+// GetProductReleaseWithCollection fetches one product release together with
+// its latest collection (GET /productRelease/{uuid}) -- named to match
+// GetComponentReleaseWithCollection, since the server response always
+// includes latestCollection (spec/openapi.yaml's product-release-with-collection),
+// not the bare release this method used to decode into
+// (docs/security-review-260923.md finding #5: a client type matching the
+// old shape would have silently dropped latestCollection from every
+// response, hiding the server-side bug from any test built on this
+// method).
+func (c *Client) GetProductReleaseWithCollection(ctx context.Context, uuid string) (tea.ProductReleaseWithCollection, error) {
+	var pr tea.ProductReleaseWithCollection
 	err := c.do(ctx, "GET", "/productRelease/"+uuid, nil, &pr)
 	return pr, err
 }

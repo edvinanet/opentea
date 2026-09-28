@@ -97,8 +97,13 @@ func TestImportRoundTrip(t *testing.T) {
 		t.Fatal("ProductCreated = false, want true on first import")
 	}
 	wantCreated := map[string]int{
+		// collection: 3, not 1 -- CreateProductRelease/CreateComponentRelease
+		// each create their own required initial empty v1 collection
+		// atomically (docs/security-review-260923.md finding #7),
+		// exported and imported like any other collection; seedProduct's
+		// own explicit collection (with the real artifact) is the third.
 		"product": 1, "productRelease": 1, "component": 1, "componentRelease": 1,
-		"distribution": 1, "artifact": 1, "collection": 1, "cleEvent": 1,
+		"distribution": 1, "artifact": 1, "collection": 3, "cleEvent": 1,
 	}
 	for kind, want := range wantCreated {
 		if got := result.Created[kind]; got != want {
@@ -139,11 +144,13 @@ func TestImportRoundTrip(t *testing.T) {
 		t.Fatalf("Distribution URL = %q, want rewritten against the destination server's root URL", dist.URL)
 	}
 
+	// 2, not 1: the component release's own required initial empty v1
+	// collection, plus seedProduct's explicit one carrying the artifact.
 	collections, err := dstRepo.ListCollections(ctx, componentReleaseUUID, "asc", nil, 10, repo.BelongsToComponentRelease)
 	if err != nil {
 		t.Fatalf("ListCollections: %v", err)
 	}
-	if len(collections) != 1 || len(collections[0].Artifacts) != 1 {
+	if len(collections) != 2 || len(collections[1].Artifacts) != 1 {
 		t.Fatalf("collections = %+v", collections)
 	}
 
@@ -667,6 +674,31 @@ func corruptComponentLinkRelease(t *testing.T, zipBytes []byte) []byte {
 // same key for different content (see repo.ErrImportIdentityConflict's doc
 // comment). Mirrors corruptComponentLinkRelease's decode/mutate/re-encode
 // approach above, generalized to an arbitrary mutation.
+// withArtifacts returns the one entry in collections (a manifest's raw
+// "collections" JSON array) whose "artifacts" field is a non-empty array --
+// used instead of hardcoding index 0, since CreateProductRelease/
+// CreateComponentRelease each now create their own required initial empty
+// v1 collection atomically (docs/security-review-260923.md finding #7),
+// so the manifest's first collection entry is no longer reliably the one
+// carrying real content. Fails the test if there isn't exactly one match.
+func withArtifacts(t *testing.T, collections []any) map[string]any {
+	t.Helper()
+	var found map[string]any
+	for _, c := range collections {
+		m := c.(map[string]any)
+		if artifacts, ok := m["artifacts"].([]any); ok && len(artifacts) > 0 {
+			if found != nil {
+				t.Fatalf("more than one collection carries artifacts: %+v", collections)
+			}
+			found = m
+		}
+	}
+	if found == nil {
+		t.Fatalf("no collection carries artifacts: %+v", collections)
+	}
+	return found
+}
+
 func mutateManifestJSON(t *testing.T, zipBytes []byte, mutate func(doc map[string]any)) []byte {
 	t.Helper()
 	zr, err := zip.NewReader(bytes.NewReader(zipBytes), int64(len(zipBytes)))
@@ -834,8 +866,14 @@ func TestImportConflictDetection(t *testing.T) {
 		{
 			name: "collection",
 			mutate: func(doc map[string]any) {
+				// The collection carrying the real artifact, not index 0
+				// (which -- since CreateProductRelease/CreateComponentRelease
+				// each now create their own required initial empty v1
+				// collection atomically, docs/security-review-260923.md
+				// finding #7 -- is one of the empty auto-created ones, not
+				// necessarily the one this test means to mutate).
 				collections := doc["collections"].([]any)
-				collections[0].(map[string]any)["createdDate"] = "2020-01-01T00:00:00Z"
+				withArtifacts(t, collections)["createdDate"] = "2020-01-01T00:00:00Z"
 			},
 			verify: func(t *testing.T, ctx context.Context, dstRepo *repo.Repo, productUUID string) {
 				releases, err := dstRepo.ListProductReleasesByProduct(ctx, productUUID, "", "asc", nil, 10)
@@ -843,12 +881,15 @@ func TestImportConflictDetection(t *testing.T) {
 					t.Fatalf("ListProductReleasesByProduct: releases=%+v err=%v", releases, err)
 				}
 				componentReleaseUUID := *releases[0].Components[0].Release
+				// 2, not 1: the component release's own required initial
+				// empty v1 collection, plus seedProduct's explicit one
+				// carrying the artifact -- the one this test mutates.
 				collections, err := dstRepo.ListCollections(ctx, componentReleaseUUID, "asc", nil, 10, repo.BelongsToComponentRelease)
-				if err != nil || len(collections) != 1 {
+				if err != nil || len(collections) != 2 {
 					t.Fatalf("ListCollections: collections=%+v err=%v", collections, err)
 				}
-				if collections[0].CreatedDate.Year() == 2020 {
-					t.Fatalf("CreatedDate = %v, want original unchanged (not the mutated 2020 date)", collections[0].CreatedDate)
+				if collections[1].CreatedDate.Year() == 2020 {
+					t.Fatalf("CreatedDate = %v, want original unchanged (not the mutated 2020 date)", collections[1].CreatedDate)
 				}
 			},
 		},
@@ -876,7 +917,7 @@ func TestImportConflictDetection(t *testing.T) {
 			name: "artifact",
 			mutate: func(doc map[string]any) {
 				collections := doc["collections"].([]any)
-				artifacts := collections[0].(map[string]any)["artifacts"].([]any)
+				artifacts := withArtifacts(t, collections)["artifacts"].([]any)
 				artifacts[0].(map[string]any)["type"] = "VULNERABILITIES"
 			},
 			verify: func(t *testing.T, ctx context.Context, dstRepo *repo.Repo, productUUID string) {
@@ -885,12 +926,13 @@ func TestImportConflictDetection(t *testing.T) {
 					t.Fatalf("ListProductReleasesByProduct: releases=%+v err=%v", releases, err)
 				}
 				componentReleaseUUID := *releases[0].Components[0].Release
+				// 2, not 1: see the "collection" case above.
 				collections, err := dstRepo.ListCollections(ctx, componentReleaseUUID, "asc", nil, 10, repo.BelongsToComponentRelease)
-				if err != nil || len(collections) != 1 || len(collections[0].Artifacts) != 1 {
+				if err != nil || len(collections) != 2 || len(collections[1].Artifacts) != 1 {
 					t.Fatalf("ListCollections: collections=%+v err=%v", collections, err)
 				}
-				if collections[0].Artifacts[0].Type != "BOM" {
-					t.Fatalf("Type = %q, want original unchanged", collections[0].Artifacts[0].Type)
+				if collections[1].Artifacts[0].Type != "BOM" {
+					t.Fatalf("Type = %q, want original unchanged", collections[1].Artifacts[0].Type)
 				}
 			},
 		},

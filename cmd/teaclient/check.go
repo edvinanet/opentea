@@ -77,7 +77,7 @@ func checkProductsAndReleases(ctx context.Context, client *teaclient.Client, rep
 		}
 		report.ProductReleasesChecked += len(releases)
 		for _, rel := range releases {
-			if _, err := client.GetProductRelease(ctx, rel.UUID); err != nil {
+			if _, err := client.GetProductReleaseWithCollection(ctx, rel.UUID); err != nil {
 				report.fail("re-fetch product release %s: %v", rel.UUID, err)
 			}
 		}

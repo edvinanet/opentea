@@ -262,8 +262,12 @@ func TestPublisherFullWorkflow(t *testing.T) {
 	}
 	var collection tea.Collection
 	decodeInto(t, raw, &collection)
-	if collection.Version != 1 {
-		t.Fatalf("collection.Version = %d, want 1", collection.Version)
+	// Version 2, not 1: createProductRelease already created the
+	// required initial empty v1 collection atomically
+	// (docs/security-review-260923.md finding #7) -- this commit is the
+	// release's first collection with real content.
+	if collection.Version != 2 {
+		t.Fatalf("collection.Version = %d, want 2", collection.Version)
 	}
 
 	// The draft is gone.
@@ -279,7 +283,7 @@ func TestPublisherFullWorkflow(t *testing.T) {
 	}
 	var readBack tea.Collection
 	decodeInto(t, teaBody, &readBack)
-	if readBack.Version != 1 || len(readBack.Artifacts) != 1 || readBack.Artifacts[0].UUID != artifact.UUID {
+	if readBack.Version != 2 || len(readBack.Artifacts) != 1 || readBack.Artifacts[0].UUID != artifact.UUID {
 		t.Fatalf("readBack = %+v", readBack)
 	}
 }

@@ -293,8 +293,12 @@ func TestWorkedExample(t *testing.T) {
 	}
 	var collection tea.Collection
 	decodeInto(t, raw, &collection)
-	if collection.Version != 1 {
-		t.Fatalf("collection.Version = %d, want 1", collection.Version)
+	// Version 2, not 1: CreateComponentRelease already created the
+	// required initial empty v1 collection atomically
+	// (docs/security-review-260923.md finding #7) -- this is the release's
+	// first collection with real content.
+	if collection.Version != 2 {
+		t.Fatalf("collection.Version = %d, want 2", collection.Version)
 	}
 
 	// 11. Add a CLE "released" event to the product release.
@@ -335,10 +339,13 @@ func TestWorkedExample(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("GET /productRelease/{uuid}: status=%d", status)
 	}
-	var gotProductRelease tea.ProductRelease
+	var gotProductRelease tea.ProductReleaseWithCollection
 	decodeInto(t, raw, &gotProductRelease)
 	if len(gotProductRelease.Components) != 1 || gotProductRelease.Components[0].UUID != component.UUID {
 		t.Fatalf("productRelease.Components = %+v, want linked component", gotProductRelease.Components)
+	}
+	if gotProductRelease.LatestCollection.Version < 1 {
+		t.Fatalf("productRelease.LatestCollection = %+v, want a real collection (at least the auto-created initial one)", gotProductRelease.LatestCollection)
 	}
 
 	status, raw = jsonRequest(t, srv, http.MethodGet, "/tea/v1/componentRelease/"+componentRelease.UUID, nil)
@@ -800,6 +807,101 @@ func TestEmptyPaginatedListShape(t *testing.T) {
 	}
 	if got := string(fields["hasNext"]); got != "false" {
 		t.Fatalf(`"hasNext" = %s, want false`, got)
+	}
+}
+
+// TestReleaseDetailResponsesEmbedLatestCollectionFlat is the regression
+// test for the finding that both release detail endpoints violated the
+// updated wire contract (docs/security-review-260923.md finding #5):
+// GET /productRelease/{uuid} omitted the required latestCollection
+// entirely, and GET /componentRelease/{uuid} nested the release under a
+// "release" key instead of the spec's flat allOf merge
+// (product-release-with-collection/component-release-with-collection:
+// every release field at the top level, plus latestCollection alongside
+// them). Checked against the raw JSON, not a decoded Go struct -- Go's
+// embedded-field promotion would silently paper over a nested wire shape
+// during decode, so only inspecting the actual bytes catches this. Also
+// confirms finding #7's guarantee that a release with no artifacts
+// published yet still returns 200 with a real (empty, version 1)
+// collection, not a 404 -- without it, finding #5's fix would have nothing
+// to embed for a release created via this same request.
+func TestReleaseDetailResponsesEmbedLatestCollectionFlat(t *testing.T) {
+	srv := newTestServer(t)
+
+	status, raw := jsonRequest(t, srv, http.MethodPost, "/admin/v1/products", map[string]any{"name": "Widget"})
+	if status != http.StatusCreated {
+		t.Fatalf("POST /admin/v1/products: status=%d body=%s", status, raw)
+	}
+	var product tea.Product
+	decodeInto(t, raw, &product)
+
+	status, raw = jsonRequest(t, srv, http.MethodPost, "/admin/v1/products/"+product.UUID+"/releases", map[string]any{
+		"version": "1.0.0", "createdDate": "2026-07-01T00:00:00Z",
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("POST .../releases: status=%d body=%s", status, raw)
+	}
+	var release tea.ProductRelease
+	decodeInto(t, raw, &release)
+
+	status, raw = jsonRequest(t, srv, http.MethodGet, "/tea/v1/productRelease/"+release.UUID, nil)
+	if status != http.StatusOK {
+		t.Fatalf("GET /productRelease/{uuid} (no artifacts published yet): status=%d body=%s, want 200", status, raw)
+	}
+	var prFields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &prFields); err != nil {
+		t.Fatalf("unmarshal productRelease response: %v", err)
+	}
+	if _, present := prFields["uuid"]; !present {
+		t.Fatalf(`productRelease response = %s, want "uuid" at the top level`, raw)
+	}
+	var prCollection map[string]json.RawMessage
+	if err := json.Unmarshal(prFields["latestCollection"], &prCollection); err != nil {
+		t.Fatalf(`productRelease response = %s, want a "latestCollection" object`, raw)
+	}
+	if string(prCollection["version"]) != "1" {
+		t.Fatalf(`productRelease latestCollection.version = %s, want 1 (the auto-created initial collection)`, prCollection["version"])
+	}
+	if string(prCollection["artifacts"]) != "[]" {
+		t.Fatalf(`productRelease latestCollection.artifacts = %s, want []`, prCollection["artifacts"])
+	}
+
+	status, raw = jsonRequest(t, srv, http.MethodPost, "/admin/v1/components", map[string]any{"name": "libfoo"})
+	if status != http.StatusCreated {
+		t.Fatalf("POST /admin/v1/components: status=%d body=%s", status, raw)
+	}
+	var component tea.Component
+	decodeInto(t, raw, &component)
+
+	status, raw = jsonRequest(t, srv, http.MethodPost, "/admin/v1/components/"+component.UUID+"/releases", map[string]any{
+		"version": "1.0.0", "createdDate": "2026-07-01T00:00:00Z",
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("POST .../releases: status=%d body=%s", status, raw)
+	}
+	var componentRelease tea.ComponentRelease
+	decodeInto(t, raw, &componentRelease)
+
+	status, raw = jsonRequest(t, srv, http.MethodGet, "/tea/v1/componentRelease/"+componentRelease.UUID, nil)
+	if status != http.StatusOK {
+		t.Fatalf("GET /componentRelease/{uuid} (no artifacts published yet): status=%d body=%s, want 200", status, raw)
+	}
+	var crFields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &crFields); err != nil {
+		t.Fatalf("unmarshal componentRelease response: %v", err)
+	}
+	if _, present := crFields["release"]; present {
+		t.Fatalf(`componentRelease response = %s, want no "release" wrapper key (flat allOf merge)`, raw)
+	}
+	if _, present := crFields["uuid"]; !present {
+		t.Fatalf(`componentRelease response = %s, want "uuid" at the top level`, raw)
+	}
+	var crCollection map[string]json.RawMessage
+	if err := json.Unmarshal(crFields["latestCollection"], &crCollection); err != nil {
+		t.Fatalf(`componentRelease response = %s, want a "latestCollection" object`, raw)
+	}
+	if string(crCollection["version"]) != "1" {
+		t.Fatalf(`componentRelease latestCollection.version = %s, want 1 (the auto-created initial collection)`, crCollection["version"])
 	}
 }
 
@@ -1270,8 +1372,12 @@ func TestCollectionRoutesRespectParentType(t *testing.T) {
 		status, raw := jsonRequest(t, srv, http.MethodGet, "/tea/v1/productRelease/"+productRelease.UUID+"/collections", nil)
 		var ownList tea.PaginatedCollections
 		decodeInto(t, raw, &ownList)
-		if status != http.StatusOK || len(ownList.Results) != 1 {
-			t.Fatalf("productRelease list (own type): status=%d results=%+v, want 200 with 1 result", status, ownList.Results)
+		// 2, not 1: CreateProductRelease already created the required
+		// initial empty v1 collection atomically
+		// (docs/security-review-260923.md finding #7), and this test
+		// explicitly creates one more on top of it.
+		if status != http.StatusOK || len(ownList.Results) != 2 {
+			t.Fatalf("productRelease list (own type): status=%d results=%+v, want 200 with 2 results", status, ownList.Results)
 		}
 
 		status, raw = jsonRequest(t, srv, http.MethodGet, "/tea/v1/componentRelease/"+productRelease.UUID+"/collections", nil)

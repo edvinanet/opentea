@@ -124,8 +124,8 @@ func TestLoadReferenceFixtures(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetComponentReleaseWithCollection(tomcat): %v", err)
 	}
-	if len(withCollection.Release.Distributions) != 2 {
-		t.Fatalf("tomcat distributions = %+v, want 2", withCollection.Release.Distributions)
+	if len(withCollection.Distributions) != 2 {
+		t.Fatalf("tomcat distributions = %+v, want 2", withCollection.Distributions)
 	}
 	if len(withCollection.LatestCollection.Artifacts) != 1 {
 		t.Fatalf("tomcat collection artifacts = %+v, want 1", withCollection.LatestCollection.Artifacts)
@@ -140,11 +140,15 @@ func TestLoadReferenceFixtures(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetComponentReleaseWithCollection(gateway): %v", err)
 	}
-	if gatewayWithCollection.Release.PreRelease == nil || !*gatewayWithCollection.Release.PreRelease {
-		t.Fatalf("gateway release PreRelease = %v, want true", gatewayWithCollection.Release.PreRelease)
+	if gatewayWithCollection.PreRelease == nil || !*gatewayWithCollection.PreRelease {
+		t.Fatalf("gateway release PreRelease = %v, want true", gatewayWithCollection.PreRelease)
 	}
-	if gatewayWithCollection.LatestCollection.Version != 3 {
-		t.Fatalf("gateway latest collection version = %d, want 3", gatewayWithCollection.LatestCollection.Version)
+	// 4, not 3: CreateComponentRelease already created the required
+	// initial empty v1 collection atomically
+	// (docs/security-review-260923.md finding #7), on top of which the
+	// fixtures loader creates its own 3 collection versions.
+	if gatewayWithCollection.LatestCollection.Version != 4 {
+		t.Fatalf("gateway latest collection version = %d, want 4", gatewayWithCollection.LatestCollection.Version)
 	}
 	if len(gatewayWithCollection.LatestCollection.Artifacts[0].Formats) != 2 {
 		t.Fatalf("gateway artifact formats = %+v, want 2", gatewayWithCollection.LatestCollection.Artifacts[0].Formats)
@@ -160,8 +164,8 @@ func TestLoadReferenceFixtures(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListCollectionsForComponentRelease: %v", err)
 	}
-	if len(collections.Results) != 3 {
-		t.Fatalf("gateway collection versions = %+v, want 3", collections.Results)
+	if len(collections.Results) != 4 {
+		t.Fatalf("gateway collection versions = %+v, want 4", collections.Results)
 	}
 
 	// CLE lifecycle: released, endOfSupport, supersededBy, withdrawn -- 4

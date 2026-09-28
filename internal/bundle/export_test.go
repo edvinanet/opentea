@@ -183,11 +183,23 @@ func TestExportProducesValidZip(t *testing.T) {
 	if len(m.ComponentReleases[0].Distributions) != 1 {
 		t.Fatalf("ComponentReleases[0].Distributions = %+v, want 1", m.ComponentReleases[0].Distributions)
 	}
-	if len(m.Collections) != 1 {
-		t.Fatalf("Collections = %+v, want 1", m.Collections)
+	// 3, not 1: CreateProductRelease/CreateComponentRelease each already
+	// create their own required initial empty v1 collection atomically
+	// (docs/security-review-260923.md finding #7) -- seedProduct's own
+	// explicit CreateCollectionForComponentRelease call (with the real
+	// artifact) is the component release's version 2, its third collection
+	// overall.
+	if len(m.Collections) != 3 {
+		t.Fatalf("Collections = %+v, want 3", m.Collections)
 	}
-	if len(m.Collections[0].Artifacts) != 1 {
-		t.Fatalf("Collections[0].Artifacts = %+v, want 1", m.Collections[0].Artifacts)
+	var withArtifacts *tea.Collection
+	for i := range m.Collections {
+		if len(m.Collections[i].Artifacts) > 0 {
+			withArtifacts = &m.Collections[i]
+		}
+	}
+	if withArtifacts == nil || len(withArtifacts.Artifacts) != 1 {
+		t.Fatalf("Collections = %+v, want exactly one collection carrying 1 artifact", m.Collections)
 	}
 
 	// The manifest itself must satisfy the JSON Schema.

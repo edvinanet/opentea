@@ -25,7 +25,10 @@ type ComponentReleaseInput struct {
 }
 
 // CreateComponentRelease creates a new release of componentUUID with a
-// fresh generated UUID. Returns ErrNotFound if componentUUID doesn't exist.
+// fresh generated UUID, together with its required initial collection --
+// see CreateProductRelease's doc comment for the spec text and rationale;
+// component releases follow the exact same rule. Returns ErrNotFound if
+// componentUUID doesn't exist.
 func (r *Repo) CreateComponentRelease(ctx context.Context, componentUUID string, in ComponentReleaseInput) (tea.ComponentRelease, error) {
 	var componentName string
 	if err := r.db.QueryRowContext(ctx, `SELECT name FROM component WHERE uuid = ?`, componentUUID).Scan(&componentName); err != nil {
@@ -36,26 +39,25 @@ func (r *Repo) CreateComponentRelease(ctx context.Context, componentUUID string,
 	}
 
 	uuid := idgen.New()
-	tx, err := r.db.BeginTx(ctx, nil)
+	err := r.WithTx(ctx, func(tx *Repo) error {
+		if _, err := tx.conn().ExecContext(ctx,
+			`INSERT INTO component_release (uuid, component_uuid, component_name, version, created_date, release_date, pre_release) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			uuid, componentUUID, componentName, in.Version, formatTime(in.CreatedDate), formatTimePtr(in.ReleaseDate), boolToInt(in.PreRelease),
+		); err != nil {
+			return err
+		}
+		if err := insertIdentifiers(ctx, tx.conn(), OwnerComponentRelease, uuid, in.Identifiers); err != nil {
+			return err
+		}
+		if err := bumpWatermarkTx(ctx, tx.conn(), WatermarkComponentReleases); err != nil {
+			return err
+		}
+		_, err := tx.CreateCollectionForComponentRelease(ctx, uuid, CollectionInput{
+			UpdateReason: &tea.UpdateReason{Type: tea.CollectionUpdateReasonInitialRelease},
+		})
+		return err
+	})
 	if err != nil {
-		return tea.ComponentRelease{}, err
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	_, err = tx.ExecContext(ctx,
-		`INSERT INTO component_release (uuid, component_uuid, component_name, version, created_date, release_date, pre_release) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		uuid, componentUUID, componentName, in.Version, formatTime(in.CreatedDate), formatTimePtr(in.ReleaseDate), boolToInt(in.PreRelease),
-	)
-	if err != nil {
-		return tea.ComponentRelease{}, err
-	}
-	if err := insertIdentifiers(ctx, tx, OwnerComponentRelease, uuid, in.Identifiers); err != nil {
-		return tea.ComponentRelease{}, err
-	}
-	if err := bumpWatermarkTx(ctx, tx, WatermarkComponentReleases); err != nil {
-		return tea.ComponentRelease{}, err
-	}
-	if err := tx.Commit(); err != nil {
 		return tea.ComponentRelease{}, err
 	}
 

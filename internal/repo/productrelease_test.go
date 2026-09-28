@@ -313,8 +313,17 @@ func TestComponentReleaseLatestCollectionVersionTracksNewCollections(t *testing.
 		t.Fatalf("CreateComponentRelease: %v", err)
 	}
 
-	if _, err := r.GetLatestCollection(ctx, cr.UUID, BelongsToComponentRelease); err != ErrNotFound {
-		t.Fatalf("GetLatestCollection (no collection yet): err = %v, want ErrNotFound", err)
+	// CreateComponentRelease already created version 1 -- its required
+	// initial empty collection, created atomically
+	// (docs/security-review-260923.md finding #7) -- so "latest" already
+	// resolves before either of this test's own explicit collections
+	// exist.
+	initial, err := r.GetLatestCollection(ctx, cr.UUID, BelongsToComponentRelease)
+	if err != nil {
+		t.Fatalf("GetLatestCollection (auto-created initial collection): %v", err)
+	}
+	if initial.Version != 1 {
+		t.Fatalf("initial.Version = %d, want 1", initial.Version)
 	}
 
 	c1, err := r.CreateCollectionForComponentRelease(ctx, cr.UUID, CollectionInput{})

@@ -15,9 +15,14 @@ import (
 	"github.com/oej/opentea/pkg/tea"
 )
 
-// getComponentReleaseWithCollection returns component-release-with-collection.
-// The spec marks both release and latestCollection as required, so if the
-// release has no collection yet, we 404 rather than fabricate an empty one.
+// getComponentReleaseWithCollection returns component-release-with-collection
+// (spec/openapi.yaml): every component-release field at the top level, plus
+// the required latestCollection -- an allOf flat merge, not the release
+// nested under its own "release" key. Since CreateComponentRelease now
+// creates a release's initial empty collection atomically
+// (docs/security-review-260923.md finding #7), a missing collection here
+// should never actually happen except for a release imported from a source
+// that didn't carry one -- the 404 below is defensive, not an expected path.
 func (s *Server) getComponentReleaseWithCollection(w http.ResponseWriter, r *http.Request) {
 	uuid, err := httpx.PathUUID(r, "uuid")
 	if err != nil {
@@ -44,9 +49,6 @@ func (s *Server) getComponentReleaseWithCollection(w http.ResponseWriter, r *htt
 		return
 	}
 	if !hasCollection {
-		// Matches the full-fetch path below: no collection yet is a 404 for
-		// this endpoint specifically (spec requires latestCollection), not
-		// an empty/absent field.
 		httpx.NotFound(w)
 		return
 	}
@@ -86,7 +88,7 @@ func (s *Server) getComponentReleaseWithCollection(w http.ResponseWriter, r *htt
 		return
 	}
 
-	httpx.WriteJSON(w, http.StatusOK, tea.ComponentReleaseWithCollection{Release: cr, LatestCollection: latest})
+	httpx.WriteJSON(w, http.StatusOK, tea.ComponentReleaseWithCollection{ComponentRelease: cr, LatestCollection: latest})
 }
 
 func (s *Server) queryComponentReleases(w http.ResponseWriter, r *http.Request) {

@@ -37,7 +37,7 @@ type Config struct {
 	AdminListenAddr string
 
 	// APIBasePath is the URL path prefix this process's own mux serves the
-	// consumer read API under (e.g. "/tea/v1", the default -- or "/v0.4.0"
+	// consumer read API under (e.g. "/tea/v1", the default -- or "/v1.0.0"
 	// for a standalone deployment that wants to answer literally at the
 	// path TEA's discovery spec has clients construct: <endpoint's
 	// url>/v<negotiated-version>/...). Deliberately independent of RootURL:
@@ -152,7 +152,7 @@ func Load() (Config, error) {
 		DBPath:                   resolve("TEA_DB_PATH", fileValues, "data/opentea.db"),
 		BlobDir:                  resolve("TEA_BLOB_DIR", fileValues, "data/blobs"),
 		RootURL:                  resolve("TEA_ROOT_URL", fileValues, "http://localhost:8080"),
-		Versions:                 splitCSV(resolve("TEA_VERSIONS", fileValues, "0.4.0")),
+		Versions:                 splitCSV(resolve("TEA_VERSIONS", fileValues, "1.0.0")),
 		APIBasePath:              basePath,
 		OrgName:                  resolve("TEA_ORG_NAME", fileValues, ""),
 		TLSCertFile:              resolve("TEA_TLS_CERT_FILE", fileValues, ""),

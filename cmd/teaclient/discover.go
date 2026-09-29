@@ -21,16 +21,21 @@ func runDiscover(args []string) error {
 	fs := flag.NewFlagSet("discover", flag.ExitOnError)
 	server := fs.String("server", "", "TEA server base URL, e.g. http://localhost:8080/tea/v1 (optional for TEI discovery -- omit to use TEI-authority .well-known bootstrap discovery instead; required for -purl)")
 	purl := fs.String("purl", "", "Package URL (PURL) to discover instead of a TEI -- requires -server; there is no .well-known bootstrap flow for a bare PURL (TEA 1.0, spec/openapi.yaml), the caller must already know which server to ask")
-	token := fs.String("token", "", "optional bearer token")
+	token := fs.String("token", "", "optional bearer token (an already-issued, short-lived access token -- not an API key)")
+	apiKey := fs.String("apikey", "", "optional API key as keyId:secret, exchanged for a short-lived access token via POST /token before use -- requires -server, mutually exclusive with -token")
 	jsonFlag := fs.Bool("json", false, "output raw JSON instead of a human-readable summary")
 
 	if err := fs.Parse(reorderArgsForFlagParsing(fs, args)); err != nil {
 		return err
 	}
 
+	bearer, err := resolveBearerToken(*server, *token, *apiKey)
+	if err != nil {
+		return err
+	}
 	var opts []teaclient.Option
-	if *token != "" {
-		opts = append(opts, teaclient.WithBearerToken(*token))
+	if bearer != "" {
+		opts = append(opts, teaclient.WithBearerToken(bearer))
 	}
 
 	if *purl != "" {

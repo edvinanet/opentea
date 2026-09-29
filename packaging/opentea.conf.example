@@ -35,12 +35,12 @@ TEA_BLOB_DIR=/var/lib/opentea/blobs
 TEA_ROOT_URL=https://tea.example.com
 
 # Comma-separated list of supported TEA API versions, reported by discovery.
-TEA_VERSIONS=0.4.0
+TEA_VERSIONS=1.0.0
 
 # Path prefix this process serves the consumer read API under. Default is
 # /tea/v1. Only change this if you're running standalone (no reverse proxy
 # in front) and want to answer literally at the /v{version} path TEA's
-# discovery spec has clients construct -- e.g. TEA_API_BASE_PATH=/v0.4.0.
+# discovery spec has clients construct -- e.g. TEA_API_BASE_PATH=/v1.0.0.
 # If a reverse proxy sits in front of this server, prefer having it rewrite
 # the externally-exposed path to this server's default /tea/v1 instead of
 # changing this -- TEA_ROOT_URL above is what controls what's advertised

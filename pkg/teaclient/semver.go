@@ -14,10 +14,13 @@ import (
 // to the API" section: a client MUST pick an endpoint sharing at least one
 // version, and MUST prefer the highest mutually-supported one by SemVer
 // 2.0.0 precedence). Matches opentea's own server-side default
-// (internal/config.Config's TEA_VERSIONS default, "0.4.0") since this is
+// (internal/config.Config's TEA_VERSIONS default, "1.0.0") since this is
 // the reference client for this project's own server, but any conformant
-// TEA server's well-known endpoint can be matched against it too.
-var SupportedVersions = []string{"0.4.0"}
+// TEA server's well-known endpoint can be matched against it too. Was
+// stuck at the old "0.4.0" Beta 2 string, which made this client unable to
+// complete a discovery handshake against any server advertising only the
+// current "1.0.0" (docs/security-review-260923.md finding #10).
+var SupportedVersions = []string{"1.0.0"}
 
 // semVer is a parsed SemVer 2.0.0 version: numeric major/minor/patch, plus
 // an unparsed pre-release identifier (only its dot-separated fields are

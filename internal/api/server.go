@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Olle E. Johansson, Edvina AB, Sollentuna, Sweden
 
 // Package api implements the spec-conformant TEA consumer read API
-// (matching spec/openapi.yaml v0.4.0 exactly), mounted at
+// (matching spec/openapi.yaml v1.0.0 exactly), mounted at
 // config.Config.APIBasePath -- "/tea/v1" by default, configurable via
 // TEA_API_BASE_PATH.
 package api

@@ -115,6 +115,41 @@ func TestBootstrapDiscoverSuccessWithVersionNegotiation(t *testing.T) {
 	}
 }
 
+// TestBootstrapDiscoverDefaultSupportsTEA1_0_0 uses the real, unmodified
+// package-level SupportedVersions (deliberately not overridden, unlike
+// every other test in this file) against an endpoint advertising only
+// "1.0.0" -- the exact reproduction from
+// docs/security-review-260923.md finding #10: "bootstrap rejects a server
+// advertising only 1.0.0" when SupportedVersions was still stuck at the
+// old "0.4.0" Beta 2 string. Confirmed to fail against the pre-fix
+// SupportedVersions = []string{"0.4.0"} (no mutual version, "no version
+// supported by both this client ... and the endpoint" error), passes now
+// that the default is "1.0.0".
+func TestBootstrapDiscoverDefaultSupportsTEA1_0_0(t *testing.T) {
+	var discoverPath string
+	apiSrv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		discoverPath = r.URL.Path
+		_ = json.NewEncoder(w).Encode([]tea.DiscoveryInfo{{ProductReleaseUUID: "pr-1"}})
+	}))
+	t.Cleanup(apiSrv.Close)
+
+	authority, wkSrv := newFakeWellKnownAuthority(t, wellKnownHandler(t, []tea.WellKnownEndpoint{
+		{URL: apiSrv.URL, Versions: []string{"1.0.0"}},
+	}))
+
+	tei := "tei://" + authority + "/uuid/d4d9f54a-abcf-11ee-ac79-1a52914d44b1"
+	result, err := bootstrapDiscoverWithAuthority(context.Background(), authority, tei, trustingOption(wkSrv), trustingOption(apiSrv))
+	if err != nil {
+		t.Fatalf("BootstrapDiscover against a server advertising only 1.0.0: %v", err)
+	}
+	if !strings.HasSuffix(result.ServerURL, "/v1.0.0") {
+		t.Fatalf("ServerURL = %q, want a /v1.0.0 suffix", result.ServerURL)
+	}
+	if discoverPath != "/v1.0.0/discovery" {
+		t.Fatalf("discover request path = %q, want /v1.0.0/discovery", discoverPath)
+	}
+}
+
 func TestBootstrapDiscoverPriorityOrdering(t *testing.T) {
 	var triedHighPriority bool
 	highSrv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

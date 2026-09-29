@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Olle E. Johansson, Edvina AB, Sollentuna, Sweden
 
 // Package teaclient is a reference client for the CycloneDX Transparency
-// Exchange API consumer read API (spec/openapi.yaml v0.4.0). It's built for
+// Exchange API consumer read API (spec/openapi.yaml v1.0.0). It's built for
 // interoperability testing: point it at any conformant TEA server, not just
 // this repo's own reference server.
 package teaclient

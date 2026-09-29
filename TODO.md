@@ -437,10 +437,14 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       `COMPLIANCE_DOCUMENT` was "attachable to a product/release/component/component-release
       the same way" as CPE/PURL/TEI, which predates and is now contradicted by TEA 1.0's
       scoping rule.
-- [ ] **`server-info.versions` / `TEA_VERSIONS` needs a version bump** — upstream now requires
+- [x] ~~**`server-info.versions` / `TEA_VERSIONS` needs a version bump** — upstream now requires
       full SemVer 2.0.0 strings, no leading `v` (e.g. `["1.0.0"]`). Do this *last*, once the
       conformance work above actually lands — bumping the advertised version before the server
-      behaves like it should would be actively misleading to clients.
+      behaves like it should would be actively misleading to clients.~~ **Fixed 2026-09-29**,
+      folded into `docs/security-review-260923.md` finding #10's fix below (search for that
+      finding number) — bumped `TEA_VERSIONS`' default alongside `pkg/teaclient`'s
+      `SupportedVersions` in one pass, once the conformance work had substantially landed,
+      rather than as two separate changes.
 - [x] ~~**Not yet checked, flagged rather than assumed clean**~~ — checked 2026-09-21, all
       four sub-areas skipped in the initial diff pass:
       1. `discovery/tea-well-known.schema.json` vs. `pkg/tea.WellKnownDocument` — diffed
@@ -1150,6 +1154,57 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       exact scenario end to end: pre-upload ETag ending `...:2:1:anon`, post-upload
       `...:2:2:anon`, and the stale pre-upload ETag correctly returning `200` instead of a
       false `304` afterward.
+- [x] ~~**[docs/security-review-260923.md finding 10] The reference client cannot complete
+      the TEA 1.0 baseline flow** — `pkg/teaclient/semver.go`'s `SupportedVersions` was
+      stuck at `["0.4.0"]`, the old Beta 2 string, so `BootstrapDiscover` rejected any
+      server (this project's own included, once its own advertised version caught up)
+      whose `.well-known/tea` document listed only `"1.0.0"` — no mutual version, discovery
+      fails outright. Separately, `cmd/teaclient` accepted an already-issued bearer token
+      via `-token` but had no way to perform the API-key `/token` exchange itself, so it
+      could never obtain one against a server that actually enforces baseline
+      authentication.~~ **Fixed 2026-09-29**: this folds in the version-string bump the
+      other, pre-existing "upstream is now v1.0.0" TODO section above had deliberately
+      deferred until "last, once the conformance work lands" — that conformance work has
+      now substantially landed, so both halves moved together, not as two separate passes:
+      `pkg/teaclient/semver.go`'s `SupportedVersions` and `internal/config/config.go`'s
+      `TEA_VERSIONS` default both became `["1.0.0"]`, plus every doc/comment/packaging
+      example referencing the old `0.4.0`/Beta 2 string (`README.md`,
+      `packaging/opentea.conf.example`, `packaging/systemd/opentea.env.example`,
+      `internal/api/server.go`, `pkg/tea/types.go`, `pkg/teaclient/client.go`,
+      `internal/config/config.go`'s `APIBasePath` doc comment) — `docs/discovery-test-rig.md`
+      deliberately left alone, since its many `0.4.0` scenario fixtures are illustrative
+      protocol-negotiation test data, not a literal default this codebase reads.
+      For the `/token` exchange gap: the server side (`POST /token`,
+      `internal/api/token.go`) already existed from earlier work this session, so this was
+      purely client-side. New `Client.ExchangeToken` (`pkg/teaclient/token.go`) performs
+      the `client_credentials` exchange over HTTP Basic (RFC 6749 §2.3.1
+      form-urlencoding both components, matching `internal/api/token.go`'s
+      `basicAuthUnescaped` unwind exactly), bound to that `Client`'s own `baseURL` the same
+      way an already-attached bearer token is service-scoped
+      (`crossOriginCheckRedirect`, finding #2's fix). `cmd/teaclient` gained a new
+      `-apikey=<keyId>:<secret>` flag (`cmd/teaclient/flags.go`'s new
+      `resolveBearerToken`, matching the admin GUI's own documented
+      `curl -u <keyId>:<secret>` convention) alongside every subcommand's existing
+      `-token`, mutually exclusive with it, applied consistently in both
+      `newClientFromFlags` (every ordinary subcommand) and `discover.go`'s separately-built
+      flag set. Verified: new regression test
+      `TestBootstrapDiscoverDefaultSupportsTEA1_0_0` (`pkg/teaclient/wellknown_test.go`)
+      exercises the real, unoverridden package default (every other test in that file
+      deliberately overrides `SupportedVersions` for isolation) against an endpoint
+      advertising only `"1.0.0"` — confirmed to fail against the pre-fix `["0.4.0"]`
+      default with exactly the reproduced "no version supported by both this client and
+      the endpoint" error, passes after. `TestExchangeTokenSuccess`/
+      `TestExchangeTokenEscapesReservedCharacters`/`TestExchangeTokenWrongSecret`
+      (`pkg/teaclient/token_test.go`) and `TestResolveBearerTokenExchangesAPIKey`/
+      `TestResolveBearerTokenMutuallyExclusive`/`TestResolveBearerTokenAPIKeyRequiresServer`/
+      `TestResolveBearerTokenAPIKeyBadFormat`/`TestResolveBearerTokenPlainToken`
+      (`cmd/teaclient/flags_test.go`) cover the exchange and CLI-flag logic, the latter
+      against a real in-process server. Full suite, `-race`, `golangci-lint`, `go vet`,
+      `gofmt` clean, plus a manual smoke test against live built `opentea`/`teaclient`
+      binaries: generated a real API key through the admin GUI's own login+generate flow,
+      confirmed `teaclient list products -apikey=<keyId>:<secret>` succeeds, a wrong secret
+      fails with `401 invalid_client`, and `-token`+`-apikey` together are rejected as
+      mutually exclusive.
 - [ ] **[security review finding 4] Publisher API: create a new version of an existing
       artifact** — `createArtifact` always mints a fresh UUID at version 1
       (`internal/repo/artifact.go`'s `CreateArtifact`); there's no `/publisher/v1` operation

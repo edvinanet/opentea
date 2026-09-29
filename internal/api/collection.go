@@ -16,6 +16,22 @@ import (
 
 var collectionSortFields = []string{"version"}
 
+// collectionArtifactETagParts converts revisions (from
+// repo.CollectionArtifactRevisions) into extra ETag parts, shared by
+// every endpoint whose response embeds a specific collection version's
+// full artifact list (docs/security-review-260923.md finding #8) --
+// getCollectionByVersion/latestCollection here, and
+// getProductRelease/getComponentReleaseWithCollection (productrelease.go/
+// componentrelease.go), which embed a release's latest collection the
+// same way since findings #5/#7's fix.
+func collectionArtifactETagParts(revisions []int64) []string {
+	parts := make([]string, len(revisions))
+	for i, rev := range revisions {
+		parts[i] = strconv.FormatInt(rev, 10)
+	}
+	return parts
+}
+
 func (s *Server) latestCollectionForComponentRelease(w http.ResponseWriter, r *http.Request) {
 	s.latestCollection(w, r, repo.BelongsToComponentRelease)
 }
@@ -53,7 +69,18 @@ func (s *Server) latestCollection(w http.ResponseWriter, r *http.Request, belong
 	if !s.authorize(w, r, authz.CapCollectionRead, authz.Resource{CollectionUUID: uuid}) {
 		return
 	}
-	if s.conditional(w, r, cacheControlRevalidate, "collection-latest", belongsTo, uuid, strconv.Itoa(version)) {
+	// The response embeds this version's full artifact list, fetched live
+	// on every read -- uploading new format content to one of those
+	// artifacts changes the response body without changing collection
+	// identity/version, so their own revisions must be part of the ETag
+	// too (docs/security-review-260923.md finding #8).
+	revisions, err := s.repo.CollectionArtifactRevisions(r.Context(), uuid, version)
+	if err != nil {
+		httpx.InternalError(w, r, err)
+		return
+	}
+	etagParts := append([]string{"collection-latest", belongsTo, uuid, strconv.Itoa(version)}, collectionArtifactETagParts(revisions)...)
+	if s.conditional(w, r, cacheControlRevalidate, etagParts...) {
 		return
 	}
 
@@ -89,11 +116,18 @@ func (s *Server) getCollectionByVersion(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	// A specific collection version is genuinely immutable in this
-	// codebase (insert-only, no update path -- see repo.ExistsCollectionVersion's
-	// doc comment), so this is the one endpoint that gets the long-lived
-	// immutable cache policy, matching the proposal's original
-	// recommendation exactly.
+	// A specific collection version's own row is immutable (insert-only,
+	// no update path -- see repo.ExistsCollectionVersion's doc comment),
+	// but the response it produces is NOT: it embeds each referenced
+	// artifact's CURRENT format content on every read, and this codebase's
+	// own two-step create-then-upload flow can still add or replace that
+	// content after the collection was published (the exact same reason
+	// the versioned artifact-download endpoint isn't cacheControlImmutable
+	// either -- see downloadArtifactByVersion's doc comment,
+	// artifactdownload.go). Was previously cacheControlImmutable with an
+	// ETag built from collection identity alone, which a real,
+	// content-changing artifact upload never invalidated
+	// (docs/security-review-260923.md finding #8).
 	if err := s.repo.ExistsCollectionVersion(r.Context(), uuid, version, belongsTo); errors.Is(err, repo.ErrNotFound) {
 		httpx.NotFound(w)
 		return
@@ -108,7 +142,13 @@ func (s *Server) getCollectionByVersion(w http.ResponseWriter, r *http.Request, 
 	if !s.authorize(w, r, authz.CapCollectionRead, authz.Resource{CollectionUUID: uuid}) {
 		return
 	}
-	if s.conditional(w, r, cacheControlImmutable, "collection", belongsTo, uuid, strconv.Itoa(version)) {
+	revisions, err := s.repo.CollectionArtifactRevisions(r.Context(), uuid, version)
+	if err != nil {
+		httpx.InternalError(w, r, err)
+		return
+	}
+	etagParts := append([]string{"collection", belongsTo, uuid, strconv.Itoa(version)}, collectionArtifactETagParts(revisions)...)
+	if s.conditional(w, r, cacheControlRevalidate, etagParts...) {
 		return
 	}
 

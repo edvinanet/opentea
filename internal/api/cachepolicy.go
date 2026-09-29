@@ -15,14 +15,21 @@ import (
 // their ETag (see internal/httpx/etag.go's WriteConditional) via
 // conditional below, which adapts "public" to "private" for authenticated
 // requests -- see conditional's doc comment for why.
+//
+// No long-lived, never-revalidate ("immutable") policy is defined here,
+// deliberately: every representation this server currently addresses by
+// (uuid, version) -- an artifact revision or a collection version -- can
+// still have its embedded content change after that identity first
+// exists, since the create-then-upload flow can add or replace a
+// format's file later, and a collection embeds its referenced artifacts'
+// CURRENT content on every read (docs/security-review-260923.md finding
+// #8: an earlier cacheControlImmutable existed and was used for
+// collection-by-version specifically, whose own doc comment incorrectly
+// asserted it was "genuinely immutable" -- removed once every remaining
+// caller had migrated off it, rather than left unused). Revisit only if
+// a future change genuinely freezes content at creation (the review's
+// other suggested remedy, not the one taken here).
 const (
-	// cacheControlImmutable is for representations keyed by an identity that
-	// can never point at different content once it exists (a specific
-	// artifact/collection version, addressed by (uuid, version) in the URL)
-	// -- long-lived and never-revalidate, safe because the content really
-	// can't change out from under a cached copy.
-	cacheControlImmutable = "public, max-age=31536000, immutable"
-
 	// cacheControlRevalidate is for representations that can change (or
 	// disappear) over time -- a short freshness window plus
 	// stale-while-revalidate so a cache can serve a slightly-stale copy

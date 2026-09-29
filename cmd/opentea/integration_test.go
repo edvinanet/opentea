@@ -1731,6 +1731,127 @@ func TestETagConditionalRequests(t *testing.T) {
 	})
 }
 
+// getFull is like getWithETag but also returns Cache-Control and the
+// full response body, for tests that need to compare body content or
+// inspect the cache policy, not just ETag/status.
+func getFull(t *testing.T, srv *testServer, path, ifNoneMatch string) (status int, etag, cacheControl string, body []byte) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, srv.URL+path, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	if ifNoneMatch != "" {
+		req.Header.Set("If-None-Match", ifNoneMatch)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET %s: %v", path, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read response body: %v", err)
+	}
+	return resp.StatusCode, resp.Header.Get("ETag"), resp.Header.Get("Cache-Control"), b
+}
+
+// TestCollectionByVersionETagReflectsArtifactContentChanges is the
+// regression test for the finding that a collection's response embeds
+// each referenced artifact's current format content on every read, but
+// its ETag was built from collection identity alone and its Cache-Control
+// falsely advertised year-long immutable caching -- publishing a
+// collection referencing an artifact whose format had no content
+// uploaded yet, then uploading that content, changed the response body
+// without changing the ETag, and a conditional GET incorrectly returned
+// 304 for content the client had never actually seen
+// (docs/security-review-260923.md finding #8, reproduced exactly this
+// way).
+func TestCollectionByVersionETagReflectsArtifactContentChanges(t *testing.T) {
+	srv := newTestServer(t)
+
+	status, raw := jsonRequest(t, srv, http.MethodPost, "/admin/v1/components", map[string]any{"name": "etag-collection-component"})
+	if status != http.StatusCreated {
+		t.Fatalf("create component: status=%d body=%s", status, raw)
+	}
+	var component tea.Component
+	decodeInto(t, raw, &component)
+
+	status, raw = jsonRequest(t, srv, http.MethodPost, "/admin/v1/components/"+component.UUID+"/releases", map[string]any{
+		"version": "1.0.0", "createdDate": "2026-07-01T00:00:00Z",
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("create component release: status=%d body=%s", status, raw)
+	}
+	var componentRelease tea.ComponentRelease
+	decodeInto(t, raw, &componentRelease)
+
+	// The artifact's format has no content uploaded yet -- collections
+	// reference artifacts by (uuid, version) row existence, not by
+	// "format complete" status, so this is a legal, real sequence the
+	// two-step create-then-upload flow already allows elsewhere.
+	status, raw = jsonRequest(t, srv, http.MethodPost, "/admin/v1/artifacts", map[string]any{
+		"type": "BOM", "createdDate": "2026-07-01T00:00:00Z", "formats": []map[string]any{{"mediaType": "application/json"}},
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("create artifact: status=%d body=%s", status, raw)
+	}
+	var artifact tea.Artifact
+	decodeInto(t, raw, &artifact)
+
+	status, raw = jsonRequest(t, srv, http.MethodPost, "/admin/v1/componentReleases/"+componentRelease.UUID+"/collections", map[string]any{
+		"artifacts": []map[string]any{{"uuid": artifact.UUID, "version": artifact.Version}},
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("create collection: status=%d body=%s", status, raw)
+	}
+	var collection tea.Collection
+	decodeInto(t, raw, &collection)
+
+	path := "/tea/v1/componentRelease/" + componentRelease.UUID + "/collection/" + strconv.Itoa(collection.Version)
+	status, etag1, cc1, body1 := getFull(t, srv, path, "")
+	if status != http.StatusOK || etag1 == "" {
+		t.Fatalf("first GET: status=%d etag=%q, want 200 with a non-empty ETag", status, etag1)
+	}
+	if strings.Contains(cc1, "immutable") {
+		t.Fatalf("Cache-Control = %q, must not claim immutable -- the embedded artifact content can still change", cc1)
+	}
+
+	status, _, _, _ = getFull(t, srv, path, etag1)
+	if status != http.StatusNotModified {
+		t.Fatalf("matching If-None-Match before any upload: status=%d, want 304", status)
+	}
+
+	content := []byte(`{"bomFormat":"CycloneDX"}`)
+	if status, raw := uploadFile(t, srv, "/admin/v1/artifacts/"+artifact.UUID+"/"+strconv.Itoa(artifact.Version)+"/files?formatIndex=0", "sbom.json", content, "application/json"); status != http.StatusOK {
+		t.Fatalf("upload artifact file: status=%d body=%s", status, raw)
+	}
+
+	// The old ETag must no longer match -- a 304 here would mean the
+	// client keeps its stale, contentless cached copy forever despite the
+	// artifact upload actually having happened.
+	status, etag2, _, body2 := getFull(t, srv, path, etag1)
+	if status != http.StatusOK {
+		t.Fatalf("GET after artifact upload with the old ETag: status=%d, want 200 (old ETag must no longer match)", status)
+	}
+	if etag2 == etag1 {
+		t.Fatal("ETag unchanged after artifact content upload, want a new one")
+	}
+	if string(body1) == string(body2) {
+		t.Fatal("response body unchanged after artifact content upload, want the new format content reflected")
+	}
+	sum := sha256.Sum256(content)
+	wantChecksum := hex.EncodeToString(sum[:])
+	if !strings.Contains(string(body2), wantChecksum) {
+		t.Fatalf("body after upload = %s, want it to contain the uploaded content's SHA-256 checksum %s", body2, wantChecksum)
+	}
+
+	// The new ETag now correctly short-circuits.
+	status, _, _, _ = getFull(t, srv, path, etag2)
+	if status != http.StatusNotModified {
+		t.Fatalf("matching If-None-Match with the new ETag: status=%d, want 304", status)
+	}
+}
+
 // TestListETagConditionalRequests confirms list-endpoint ETags (backed by
 // the global per-resource-family watermark, not any single row's own
 // identity) behave correctly through the real HTTP stack: stable across

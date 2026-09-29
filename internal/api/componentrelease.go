@@ -64,7 +64,19 @@ func (s *Server) getComponentReleaseWithCollection(w http.ResponseWriter, r *htt
 	if !s.authorize(w, r, authz.CapCollectionRead, authz.Resource{CollectionUUID: uuid}) {
 		return
 	}
-	if s.conditional(w, r, cacheControlRevalidate, "componentRelease", uuid, strconv.FormatInt(revision, 10), strconv.Itoa(latestVersion)) {
+	// The embedded latestCollection carries each referenced artifact's
+	// current format content, fetched live on every read -- those
+	// artifacts' own revisions must be part of the ETag too, same
+	// reasoning as getCollectionByVersion/latestCollection
+	// (collection.go), which this response embeds the equivalent of
+	// (docs/security-review-260923.md finding #8).
+	revisions, err := s.repo.CollectionArtifactRevisions(r.Context(), uuid, latestVersion)
+	if err != nil {
+		httpx.InternalError(w, r, err)
+		return
+	}
+	etagParts := append([]string{"componentRelease", uuid, strconv.FormatInt(revision, 10), strconv.Itoa(latestVersion)}, collectionArtifactETagParts(revisions)...)
+	if s.conditional(w, r, cacheControlRevalidate, etagParts...) {
 		return
 	}
 

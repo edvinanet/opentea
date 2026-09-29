@@ -81,11 +81,11 @@ func (s *Server) downloadArtifactByVersion(w http.ResponseWriter, r *http.Reques
 		httpx.BadRequestTyped(w, tea.ErrorInvalidRequest, "invalid artifactVersion")
 		return
 	}
-	// Not cacheControlImmutable, deliberately, same reasoning as
-	// getArtifactByVersion (artifact.go): artifact revisions aren't
-	// strictly enforced immutable in this codebase (the create-then-upload
-	// flow can still add a format's content after creation), so even the
-	// versioned endpoint must still revalidate.
+	// Not a long-lived, never-revalidate cache policy, deliberately, same
+	// reasoning as getArtifactByVersion (artifact.go): artifact revisions
+	// aren't strictly enforced immutable in this codebase (the create-
+	// then-upload flow can still add a format's content after creation),
+	// so even the versioned endpoint must still revalidate.
 	s.downloadArtifactContent(w, r, uuid, version, cacheControlRevalidate)
 }
 

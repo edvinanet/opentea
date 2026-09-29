@@ -434,6 +434,45 @@ func listCollectionArtifacts(ctx context.Context, q dbtx, ownerUUID string, vers
 	return out, nil
 }
 
+// CollectionArtifactRevisions returns the revision counter of every
+// artifact this collection version references, in the collection's own
+// stored order -- for ETag construction, so a conditional GET on a
+// collection (or anything whose response embeds one, like a
+// release-with-collection response) reflects live artifact format-content
+// changes, not just the collection row's own identity/version
+// (docs/security-review-260923.md finding #8: listCollectionArtifacts
+// above fetches each referenced artifact's CURRENT row on every read, but
+// callers built their ETags from collection identity alone -- uploading
+// new format content to a referenced artifact bumps that artifact's own
+// `revision` column (see GetArtifactRevision) and changes this response's
+// body, without changing the collection's own row or its old ETag at
+// all). Returns an empty slice, not an error, for a collection version
+// with no artifacts or one that doesn't exist -- every current call site
+// has already separately confirmed existence via its own lookup.
+func (r *Repo) CollectionArtifactRevisions(ctx context.Context, ownerUUID string, version int) ([]int64, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT a.revision
+		FROM collection_artifact ca
+		JOIN artifact a ON a.uuid = ca.artifact_uuid AND a.version = ca.artifact_version
+		WHERE ca.collection_uuid = ? AND ca.collection_version = ?
+		ORDER BY ca.rowid`,
+		ownerUUID, version)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var revisions []int64
+	for rows.Next() {
+		var rev int64
+		if err := rows.Scan(&rev); err != nil {
+			return nil, err
+		}
+		revisions = append(revisions, rev)
+	}
+	return revisions, rows.Err()
+}
+
 // ListCollections returns up to limit collection versions for ownerUUID
 // whose belongs_to matches belongsTo -- see GetLatestCollection's doc
 // comment for why. "version" is the only allowed sortField.

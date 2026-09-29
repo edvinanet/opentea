@@ -1103,6 +1103,53 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       want `400`), passes after. Full suite, `-race`, `golangci-lint`, `go vet`, `gofmt` clean,
       plus a manual smoke test against a live built binary confirming the exact
       `/products`-token-on-`/components` case end to end.
+- [x] ~~**[docs/security-review-260923.md finding 8] Collection ETag didn't reflect
+      artifact content changes** — `getCollectionByVersion` served a specific collection
+      version as `cacheControlImmutable` (`public, max-age=31536000, immutable`) with an
+      ETag built from collection identity alone (`uuid`/`version`); `latestCollection` and
+      the two release-detail endpoints that embed a collection (`getProductRelease`/
+      `getComponentReleaseWithCollection`, per findings #5/#7) had the same gap under
+      `cacheControlRevalidate`. But `listCollectionArtifacts` (`internal/repo/
+      collection.go`) fetches each referenced artifact's CURRENT row live on every read,
+      and this codebase's own two-step create-then-upload flow lets an artifact's format
+      content be uploaded (or replaced) after the collection referencing it already
+      exists — so uploading new content changed the response body without changing the
+      collection's own row or its ETag at all. A client (or an intermediate cache honoring
+      the `immutable` directive) could hold a stale, pre-upload representation forever.~~
+      **Fixed 2026-09-29**: reused the existing `artifact.revision` counter (added in
+      migration `0004_etags.sql`, already bumped by `SetArtifactFormatFile`/
+      `SetArtifactFormatSignatureFile` on every format-content upload) rather than
+      inventing a new mechanism. New `repo.CollectionArtifactRevisions(ctx, ownerUUID,
+      version)` (`internal/repo/collection.go`) returns every referenced artifact's
+      current revision, in the collection's own stored order; a new
+      `collectionArtifactETagParts` helper (`internal/api/collection.go`) folds them into
+      extra ETag parts. Applied at all four affected endpoints
+      (`getCollectionByVersion`/`latestCollection` in `collection.go`, `getProductRelease`
+      in `productrelease.go`, `getComponentReleaseWithCollection` in
+      `componentrelease.go`); `listCollections` (the paginated list endpoint) was
+      deliberately left alone, since its ETag already follows the different,
+      watermark-based invalidation pattern shared by every other list endpoint in this
+      codebase, and nothing in this finding's own reproduction touched it.
+      `getCollectionByVersion` also switched from `cacheControlImmutable` to
+      `cacheControlRevalidate` — a specific collection version's own row is genuinely
+      immutable (insert-only, no update path), but the response it produces isn't, for the
+      same reason `downloadArtifactByVersion` was already never `cacheControlImmutable`
+      either. With its last remaining use site gone, `cacheControlImmutable` itself became
+      dead code (caught by a full, non-diff-scoped `golangci-lint run ./internal/api/...`)
+      and was removed, with its reasoning folded into `cachepolicy.go`'s doc comment so the
+      institutional knowledge isn't lost. Verified: new regression test
+      `TestCollectionByVersionETagReflectsArtifactContentChanges`
+      (`cmd/opentea/integration_test.go`) creates a collection referencing an artifact with
+      unuploaded format content, confirms the Cache-Control no longer claims `immutable`
+      and a matching If-None-Match still 304s pre-upload, then uploads content and confirms
+      the same old ETag now correctly produces `200` (not a false `304`) with a changed
+      ETag and body reflecting the new content's checksum — confirmed to fail against the
+      pre-fix code (via `git stash` on just this fix's files) on the "must not claim
+      immutable" assertion, passes after. Full suite, `-race`, `golangci-lint`, `go vet`,
+      `gofmt` clean, plus a manual smoke test against a live built binary confirming the
+      exact scenario end to end: pre-upload ETag ending `...:2:1:anon`, post-upload
+      `...:2:2:anon`, and the stale pre-upload ETag correctly returning `200` instead of a
+      false `304` afterward.
 - [ ] **[security review finding 4] Publisher API: create a new version of an existing
       artifact** — `createArtifact` always mints a fresh UUID at version 1
       (`internal/repo/artifact.go`'s `CreateArtifact`); there's no `/publisher/v1` operation

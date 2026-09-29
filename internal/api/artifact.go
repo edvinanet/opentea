@@ -103,12 +103,12 @@ func (s *Server) getArtifactByVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Not cacheControlImmutable, deliberately: unlike the proposal's
-	// generic assumption, artifact revisions aren't strictly enforced
-	// immutable in this codebase -- SetArtifactFormatFile mutates an
-	// existing artifact_format row (the create-then-upload flow) after
-	// creation, tracked via artifact.revision -- so this must still
-	// revalidate, not cache forever.
+	// Not a long-lived, never-revalidate cache policy, deliberately:
+	// unlike the proposal's generic assumption, artifact revisions aren't
+	// strictly enforced immutable in this codebase -- SetArtifactFormatFile
+	// mutates an existing artifact_format row (the create-then-upload
+	// flow) after creation, tracked via artifact.revision -- so this must
+	// still revalidate, not cache forever.
 	revision, err := s.repo.GetArtifactRevision(r.Context(), uuid, version)
 	if errors.Is(err, repo.ErrNotFound) {
 		httpx.NotFound(w)

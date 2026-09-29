@@ -76,7 +76,8 @@ func (s *Server) listReleasesByProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	pp, ok := parsePageParams(w, r, productReleaseSortFields)
+	scope := pageScope("product/releases", uuid)
+	pp, ok := parsePageParams(w, r, productReleaseSortFields, scope)
 	if !ok {
 		return
 	}
@@ -111,7 +112,7 @@ func (s *Server) listReleasesByProduct(w http.ResponseWriter, r *http.Request) {
 	resp.HasNext = hasNext
 	if hasNext {
 		last := page[len(page)-1]
-		resp.NextPageToken = nextPageToken(true, pp.SortField, pp.SortOrder, productReleaseSortValue(last, pp.SortField), last.UUID)
+		resp.NextPageToken = nextPageToken(true, pp.SortField, pp.SortOrder, productReleaseSortValue(last, pp.SortField), last.UUID, scope)
 	}
 	httpx.WriteJSON(w, http.StatusOK, resp)
 }
@@ -124,7 +125,8 @@ func (s *Server) queryProducts(w http.ResponseWriter, r *http.Request) {
 		httpx.BadRequestTyped(w, tea.ErrorInvalidRequest, "invalid idType")
 		return
 	}
-	pp, ok := parsePageParams(w, r, productSortFields)
+	scope := pageScope("products", idType, idValue)
+	pp, ok := parsePageParams(w, r, productSortFields, scope)
 	if !ok {
 		return
 	}
@@ -159,7 +161,7 @@ func (s *Server) queryProducts(w http.ResponseWriter, r *http.Request) {
 	resp.HasNext = hasNext
 	if hasNext {
 		last := page[len(page)-1]
-		resp.NextPageToken = nextPageToken(true, pp.SortField, pp.SortOrder, last.Name, last.UUID)
+		resp.NextPageToken = nextPageToken(true, pp.SortField, pp.SortOrder, last.Name, last.UUID, scope)
 	}
 	httpx.WriteJSON(w, http.StatusOK, resp)
 }

@@ -776,6 +776,102 @@ func TestPaginationAcrossPages(t *testing.T) {
 	}
 }
 
+// TestPageTokenBoundToEndpointAndParameters is the regression test for the
+// finding that a pageToken carried only sortField/sortOrder, not the
+// endpoint or any result-affecting parameter it was issued for -- reusing
+// a /products cursor on /components returned 200 instead of
+// 400 INVALID_PAGE_TOKEN (docs/security-review-260923.md finding #11).
+// TEA 1.0's page-token parameter doc: "The token represents continuation
+// state for the original query, including... result-affecting filters...
+// and path parameters... Clients shall not reuse a pageToken across
+// different parent resource paths or different path uuid values."
+// Confirms three ways a token can now be correctly rejected -- different
+// endpoint entirely, different parent uuid, and a changed idType/idValue
+// filter -- plus that reusing it unchanged still works (a token isn't
+// simply broken outright).
+func TestPageTokenBoundToEndpointAndParameters(t *testing.T) {
+	srv := newTestServer(t)
+
+	// Two products, forcing a real next page with pageSize=1.
+	for _, name := range []string{"product-a", "product-b"} {
+		status, raw := jsonRequest(t, srv, http.MethodPost, "/admin/v1/products", map[string]any{"name": name})
+		if status != http.StatusCreated {
+			t.Fatalf("create product %s: status=%d body=%s", name, status, raw)
+		}
+	}
+	status, raw := jsonRequest(t, srv, http.MethodGet, "/tea/v1/products?pageSize=1", nil)
+	if status != http.StatusOK {
+		t.Fatalf("GET /products: status=%d body=%s", status, raw)
+	}
+	var page tea.PaginatedProducts
+	decodeInto(t, raw, &page)
+	if !page.HasNext || page.NextPageToken == "" {
+		t.Fatalf("page = %+v, want a next page token", page)
+	}
+	productsToken := page.NextPageToken
+
+	// Reused on a completely different endpoint.
+	status, raw = jsonRequest(t, srv, http.MethodGet, "/tea/v1/components?pageToken="+url.QueryEscape(productsToken), nil)
+	if status != http.StatusBadRequest {
+		t.Fatalf("GET /components with a /products token: status=%d body=%s, want 400", status, raw)
+	}
+	if !strings.Contains(string(raw), "INVALID_PAGE_TOKEN") {
+		t.Fatalf("body = %s, want INVALID_PAGE_TOKEN", raw)
+	}
+
+	// Reused on the same endpoint but a different parent uuid.
+	status, raw = jsonRequest(t, srv, http.MethodPost, "/admin/v1/products", map[string]any{"name": "for-releases-1"})
+	if status != http.StatusCreated {
+		t.Fatalf("create product: status=%d body=%s", status, raw)
+	}
+	var releasesProduct1 tea.Product
+	decodeInto(t, raw, &releasesProduct1)
+	status, raw = jsonRequest(t, srv, http.MethodPost, "/admin/v1/products", map[string]any{"name": "for-releases-2"})
+	if status != http.StatusCreated {
+		t.Fatalf("create product: status=%d body=%s", status, raw)
+	}
+	var releasesProduct2 tea.Product
+	decodeInto(t, raw, &releasesProduct2)
+	for _, version := range []string{"1.0.0", "2.0.0"} {
+		status, raw := jsonRequest(t, srv, http.MethodPost, "/admin/v1/products/"+releasesProduct1.UUID+"/releases", map[string]any{
+			"version": version, "createdDate": "2026-07-01T00:00:00Z",
+		})
+		if status != http.StatusCreated {
+			t.Fatalf("create release %s: status=%d body=%s", version, status, raw)
+		}
+	}
+	status, raw = jsonRequest(t, srv, http.MethodGet, "/tea/v1/product/"+releasesProduct1.UUID+"/releases?pageSize=1", nil)
+	if status != http.StatusOK {
+		t.Fatalf("GET releases for product1: status=%d body=%s", status, raw)
+	}
+	var releasesPage tea.PaginatedProductReleases
+	decodeInto(t, raw, &releasesPage)
+	if !releasesPage.HasNext || releasesPage.NextPageToken == "" {
+		t.Fatalf("releasesPage = %+v, want a next page token", releasesPage)
+	}
+	status, raw = jsonRequest(t, srv, http.MethodGet, "/tea/v1/product/"+releasesProduct2.UUID+"/releases?pageToken="+url.QueryEscape(releasesPage.NextPageToken), nil)
+	if status != http.StatusBadRequest {
+		t.Fatalf("GET releases for product2 with product1's token: status=%d body=%s, want 400", status, raw)
+	}
+	if !strings.Contains(string(raw), "INVALID_PAGE_TOKEN") {
+		t.Fatalf("body = %s, want INVALID_PAGE_TOKEN", raw)
+	}
+	// The same token against the product it actually came from still works.
+	status, raw = jsonRequest(t, srv, http.MethodGet, "/tea/v1/product/"+releasesProduct1.UUID+"/releases?pageToken="+url.QueryEscape(releasesPage.NextPageToken), nil)
+	if status != http.StatusOK {
+		t.Fatalf("GET releases for product1 with its own token: status=%d body=%s, want 200", status, raw)
+	}
+
+	// Reused on the same endpoint but with a changed idType/idValue filter.
+	status, raw = jsonRequest(t, srv, http.MethodGet, "/tea/v1/products?pageToken="+url.QueryEscape(productsToken)+"&idType=TEI&idValue=urn:tei:test:x", nil)
+	if status != http.StatusBadRequest {
+		t.Fatalf("GET /products with token but a new idType/idValue: status=%d body=%s, want 400", status, raw)
+	}
+	if !strings.Contains(string(raw), "INVALID_PAGE_TOKEN") {
+		t.Fatalf("body = %s, want INVALID_PAGE_TOKEN", raw)
+	}
+}
+
 // TestEmptyPaginatedListShape is the regression test for the finding that
 // an empty paginated list serialized as {"hasNext":false,"nextPageToken":"",
 // "results":null} -- TEA 1.0's pagination-details schema requires

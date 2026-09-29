@@ -5,11 +5,26 @@ package api
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/oej/opentea/internal/httpx"
 	"github.com/oej/opentea/internal/pagination"
 	"github.com/oej/opentea/pkg/tea"
 )
+
+// pageScope builds the opaque scope string a pagination.Cursor binds
+// itself to (see Cursor's own doc comment): the first part should
+// uniquely identify the literal endpoint/request path (never shared
+// between two different routes, even for a conceptually similar
+// resource), followed by every result-affecting path parameter (a parent
+// uuid) or query parameter (idType/idValue) that endpoint has. Every
+// parsePageParams/nextPageToken call site must pass the exact same parts,
+// in the exact same order, for its own endpoint. Deliberately excludes
+// sortField/sortOrder -- Cursor already carries and validates those as
+// their own separately-named fields.
+func pageScope(parts ...string) string {
+	return strings.Join(parts, ":")
+}
 
 // pageParams holds the parsed & validated pagination/sort query parameters
 // shared by every list endpoint.
@@ -22,9 +37,14 @@ type pageParams struct {
 
 // parsePageParams parses pageSize/sortField/sortOrder/pageToken, validating
 // sortField against allowedSortFields and (if a pageToken is present)
-// requiring it to match the current sortField/sortOrder. Writes a 400 and
+// requiring it to match the current sortField/sortOrder AND scope (built
+// the same way nextPageToken's own caller built it when the token was
+// issued -- see pageScope). A pageToken from a different endpoint, a
+// different parent uuid, or changed result-affecting filters fails this
+// check even though its sortField/sortOrder might coincidentally still
+// match (docs/security-review-260923.md finding #11). Writes a 400 and
 // returns ok=false on any validation failure.
-func parsePageParams(w http.ResponseWriter, r *http.Request, allowedSortFields []string) (pageParams, bool) {
+func parsePageParams(w http.ResponseWriter, r *http.Request, allowedSortFields []string, scope string) (pageParams, bool) {
 	var p pageParams
 
 	pageSize, err := httpx.PageSize(r)
@@ -58,6 +78,10 @@ func parsePageParams(w http.ResponseWriter, r *http.Request, allowedSortFields [
 			httpx.BadRequestTyped(w, tea.ErrorInvalidPageToken, "pageToken does not match the current sortField/sortOrder")
 			return p, false
 		}
+		if cursor.Scope != scope {
+			httpx.BadRequestTyped(w, tea.ErrorInvalidPageToken, "pageToken does not match the current request path, parent uuid, or result-affecting query parameters")
+			return p, false
+		}
 		p.Cursor = &cursor
 	}
 
@@ -73,7 +97,7 @@ func splitPage[T any](rows []T, pageSize int) (page []T, hasNext bool) {
 	return rows, false
 }
 
-func nextPageToken(hasNext bool, sortField, sortOrder, lastValue, lastUUID string) string {
+func nextPageToken(hasNext bool, sortField, sortOrder, lastValue, lastUUID, scope string) string {
 	if !hasNext {
 		return ""
 	}
@@ -82,6 +106,7 @@ func nextPageToken(hasNext bool, sortField, sortOrder, lastValue, lastUUID strin
 		SortOrder: sortOrder,
 		LastValue: lastValue,
 		LastUUID:  lastUUID,
+		Scope:     scope,
 	})
 }
 

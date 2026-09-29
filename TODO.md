@@ -1072,6 +1072,37 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       smoke test confirming the real opentea server's own discovery 404 already sends the
       conforming `Content-Type: application/json` + `{"error":"OBJECT_UNKNOWN"}` shape this fix
       depends on.
+- [x] ~~**[docs/security-review-260923.md finding 11] Pagination tokens were not bound to
+      their query or resource path** — `pagination.Cursor` (`internal/pagination/cursor.go`)
+      carried only `sortField`/`sortOrder`/`lastValue`/`lastUUID`; `parsePageParams`
+      (`internal/api/pagination.go`) validated a submitted `pageToken`'s sort fields against
+      the current request but nothing else. Reusing a `/products` cursor on `/components`
+      returned `200`; a cursor from one parent `uuid` worked against a different one; a changed
+      `idType`/`idValue` filter went unchecked too. TEA 1.0's `pageToken` parameter doc is
+      explicit: "The token represents continuation state for the original query, including...
+      result-affecting filters... and path parameters... Servers shall return `400 Bad Request`
+      when a `pageToken` is used with a different path or different path parameter values."~~
+      **Fixed 2026-09-28**: `Cursor` gained a `Scope` field, required non-empty by `Decode` like
+      every other field; `parsePageParams`/`nextPageToken` both gained a `scope string`
+      parameter, and a new `pageScope(parts...)` helper (`internal/api/pagination.go`) builds it
+      per endpoint -- a literal-endpoint-identifying prefix (never shared between two different
+      routes, even for a conceptually similar resource) followed by every result-affecting path/
+      query parameter that endpoint has. Applied at all 7 list endpoints
+      (`product.go`/`component.go`/`collection.go`/`componentrelease.go`/`productrelease.go`):
+      `product/releases:<uuid>`, `products:<idType>:<idValue>`, `component/releases:<uuid>`,
+      `components:<idType>:<idValue>`, `productRelease/collections:<uuid>` or
+      `componentRelease/collections:<uuid>`, `componentReleases:<idType>:<idValue>`,
+      `productReleases:<idType>:<idValue>`. `filterAuthorized`'s own *internal* resumption
+      cursors (used only to resume a filtered fetch across repo calls within one request, never
+      round-tripped to a client) were deliberately left without a Scope -- nothing reads that
+      field on that path, so there was nothing to fix there. Verified: new regression test
+      `TestPageTokenBoundToEndpointAndParameters` (`cmd/opentea/integration_test.go`) reproduces
+      the review's own three cases (different endpoint, different parent uuid, changed filter)
+      plus confirms an unchanged token still works -- confirmed to fail against the pre-fix code
+      exactly as the review reproduced it (`GET /components` with a `/products` token: `200`,
+      want `400`), passes after. Full suite, `-race`, `golangci-lint`, `go vet`, `gofmt` clean,
+      plus a manual smoke test against a live built binary confirming the exact
+      `/products`-token-on-`/components` case end to end.
 - [ ] **[security review finding 4] Publisher API: create a new version of an existing
       artifact** — `createArtifact` always mints a fresh UUID at version 1
       (`internal/repo/artifact.go`'s `CreateArtifact`); there's no `/publisher/v1` operation

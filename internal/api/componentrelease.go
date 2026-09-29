@@ -97,7 +97,8 @@ func (s *Server) queryComponentReleases(w http.ResponseWriter, r *http.Request) 
 		httpx.BadRequestTyped(w, tea.ErrorInvalidRequest, "invalid idType")
 		return
 	}
-	pp, ok := parsePageParams(w, r, componentReleaseSortFields)
+	scope := pageScope("componentReleases", idType, idValue)
+	pp, ok := parsePageParams(w, r, componentReleaseSortFields, scope)
 	if !ok {
 		return
 	}
@@ -132,7 +133,7 @@ func (s *Server) queryComponentReleases(w http.ResponseWriter, r *http.Request) 
 	resp.HasNext = hasNext
 	if hasNext {
 		last := page[len(page)-1]
-		resp.NextPageToken = nextPageToken(true, pp.SortField, pp.SortOrder, componentReleaseSortValue(last, pp.SortField), last.UUID)
+		resp.NextPageToken = nextPageToken(true, pp.SortField, pp.SortOrder, componentReleaseSortValue(last, pp.SortField), last.UUID, scope)
 	}
 	httpx.WriteJSON(w, http.StatusOK, resp)
 }

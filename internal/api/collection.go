@@ -148,7 +148,17 @@ func (s *Server) listCollections(w http.ResponseWriter, r *http.Request, belongs
 		return
 	}
 
-	pp, ok := parsePageParams(w, r, collectionSortFields)
+	// The endpoint prefix folds in belongsTo directly (rather than passing
+	// it as a separate pageScope part) since it's really encoding *which
+	// literal route* this is (/productRelease/.../collections vs
+	// /componentRelease/.../collections), not a result-affecting filter
+	// value.
+	collectionsScope := "productRelease/collections"
+	if belongsTo == repo.BelongsToComponentRelease {
+		collectionsScope = "componentRelease/collections"
+	}
+	scope := pageScope(collectionsScope, uuid)
+	pp, ok := parsePageParams(w, r, collectionSortFields, scope)
 	if !ok {
 		return
 	}
@@ -173,7 +183,7 @@ func (s *Server) listCollections(w http.ResponseWriter, r *http.Request, belongs
 	resp.HasNext = hasNext
 	if hasNext {
 		last := page[len(page)-1]
-		resp.NextPageToken = nextPageToken(true, pp.SortField, pp.SortOrder, collectionSortValue(last), last.UUID)
+		resp.NextPageToken = nextPageToken(true, pp.SortField, pp.SortOrder, collectionSortValue(last), last.UUID, scope)
 	}
 	httpx.WriteJSON(w, http.StatusOK, resp)
 }

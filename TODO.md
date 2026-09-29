@@ -1233,6 +1233,31 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       `install`'s recipe. `make check` (fmt-check + vet + full test suite) clean --
       no Go source changed by this fix, so `-race`/`golangci-lint` weren't re-run (nothing
       new for them to check beyond the prior fix's already-clean run).
+- [x] ~~**[docs/security-review-260923.md finding 17] The race-enabled suite fails in a DNS
+      test helper** — `TestResolveWellKnownTargetStripsPortFromAuthorityForQuery`
+      (`pkg/teaclient/svcb_test.go:203`) wrote the DNS handler's received query name into a
+      plain `var queriedName string` from inside the handler goroutine, then read it back
+      in the test body right after `resolveWellKnownTargetWithConfig` returned. The real
+      UDP round trip inside that call does happen-before the read in wall-clock terms, but
+      raw socket I/O (`net.PacketConn`, underneath `miekg/dns`'s own UDP server) isn't a
+      synchronization primitive the race detector recognizes, so this flagged as a genuine
+      data race under `-race` even though the two accesses were never actually concurrent
+      in practice -- confirmed a test-code-only issue, not evidence of a production DNS
+      race, exactly as the review itself already concluded.~~ **Fixed 2026-09-29**: the
+      handler now sends the queried name over a buffered `chan string` instead of writing
+      a shared variable, and the test receives it via `select` (with a 2-second timeout
+      guard) instead of reading the variable directly -- a real happens-before edge the
+      race detector does recognize. Confirmed no other test in this file shares this
+      pattern (every other `startTestDNSServer` handler in the file only reads request
+      data locally to build its response, never stores it in an outer-scope variable for
+      the test to inspect afterward), so the fix is scoped to just this one test.
+      Verified: `go test ./pkg/teaclient/... -race -run
+      TestResolveWellKnownTargetStripsPortFromAuthorityForQuery -count=50` clean (50/50,
+      confirming the fix genuinely eliminates the race rather than just narrowing its
+      timing window), full suite clean, `golangci-lint` clean, and (unlike every prior fix
+      this session) a genuinely fully clean `go test ./... -race -count=1` run across the
+      whole module -- the first time in this entire session that command's output doesn't
+      end in this exact DNS test's `FAIL`.
 - [ ] **[security review finding 4] Publisher API: create a new version of an existing
       artifact** — `createArtifact` always mints a fresh UUID at version 1
       (`internal/repo/artifact.go`'s `CreateArtifact`); there's no `/publisher/v1` operation

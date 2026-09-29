@@ -197,18 +197,35 @@ func TestResolveWellKnownTargetResolverUnreachableFallsBack(t *testing.T) {
 	}
 }
 
+// TestResolveWellKnownTargetStripsPortFromAuthorityForQuery hands the
+// queried name back to the test over a channel rather than through a
+// plain shared variable: the handler runs in the DNS server's own
+// goroutine, and while the real UDP round trip inside
+// resolveWellKnownTargetWithConfig does happen-before the read below in
+// wall-clock terms, raw socket I/O isn't a synchronization primitive the
+// race detector understands, so a plain `queriedName = ...` write here
+// followed by a plain read after the call raced under `-race` even though
+// the access was never actually concurrent in practice
+// (docs/security-review-260923.md finding #17). The channel send/receive
+// gives the race detector a real happens-before edge instead.
 func TestResolveWellKnownTargetStripsPortFromAuthorityForQuery(t *testing.T) {
-	var queriedName string
+	queried := make(chan string, 1)
 	cfg := startTestDNSServer(t, func(w dns.ResponseWriter, r *dns.Msg) {
-		queriedName = r.Question[0].Name
+		queried <- r.Question[0].Name
 		m := new(dns.Msg)
 		m.SetReply(r)
 		_ = w.WriteMsg(m)
 	})
 
 	_, _, _ = resolveWellKnownTargetWithConfig(context.Background(), cfg, "products.example.com:8443")
-	if queriedName != dns.Fqdn("products.example.com") {
-		t.Fatalf("queried name = %q, want %q (port must not be part of the DNS query name)", queriedName, dns.Fqdn("products.example.com"))
+
+	select {
+	case queriedName := <-queried:
+		if queriedName != dns.Fqdn("products.example.com") {
+			t.Fatalf("queried name = %q, want %q (port must not be part of the DNS query name)", queriedName, dns.Fqdn("products.example.com"))
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("DNS handler never received a query")
 	}
 }
 

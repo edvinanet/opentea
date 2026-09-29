@@ -20,7 +20,7 @@ CONSUMER_TARGETS   := $(addprefix $(BUILD_DIR)/,$(CONSUMER_BINARIES))
 TOOLS_TARGETS      := $(addprefix $(BUILD_DIR)/,$(TOOLS_BINARIES))
 PUBLISHER_TARGETS  := $(addprefix $(BUILD_DIR)/,$(PUBLISHER_BINARIES))
 
-.PHONY: all build build-server build-consumer build-tools build-publisher warn-if-root check-built install uninstall test test-verbose vet fmt fmt-check tidy check clean help
+.PHONY: all build build-server build-consumer build-tools build-publisher warn-if-root check-built install uninstall test test-verbose vet fmt fmt-check tidy check clean help $(SERVER_TARGETS) $(CONSUMER_TARGETS) $(TOOLS_TARGETS) $(PUBLISHER_TARGETS)
 
 all: build ## Alias for build (server + consumer + tools + publisher)
 
@@ -48,6 +48,15 @@ warn-if-root:
 		echo "  your normal user ('make build') and only using sudo for 'make install'."; \
 	fi
 
+# Listed in .PHONY above despite naming real output files: Make has no
+# visibility into the Go source/import graph, so a plain file-timestamp
+# prerequisite here would only catch a *rebuild*, not "this binary was
+# built once and its source has changed since" -- go build's own build
+# cache already tracks that correctly and is a near-instant no-op when
+# nothing relevant changed, so .PHONY just makes every `make build` defer
+# to it instead of Make's much coarser (and here, entirely absent) staleness
+# check, which could otherwise leave `make install` shipping a stale binary
+# (docs/security-review-260923.md finding #16).
 $(BUILD_DIR)/opentea: | $(BUILD_DIR)
 	$(GO) build -o $@ ./cmd/opentea
 

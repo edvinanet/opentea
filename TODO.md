@@ -1205,6 +1205,34 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       confirmed `teaclient list products -apikey=<keyId>:<secret>` succeeds, a wrong secret
       fails with `401 invalid_client`, and `-token`+`-apikey` together are rejected as
       mutually exclusive.
+- [x] ~~**[docs/security-review-260923.md finding 16] `make build` can leave stale binaries
+      after source updates** — `$(BUILD_DIR)/opentea` and its four siblings
+      (`Makefile:51`) had only an order-only prerequisite on the build directory, no
+      dependency on any Go source file. Make had no way to tell a binary was stale, so once
+      one existed, `make build` never re-ran its recipe again regardless of source changes
+      -- `make install` could silently ship an old executable. Reproduced: built
+      `bin/bundlecheck`, edited `cmd/bundlecheck/main.go`, ran `make build-tools` again --
+      identical SHA-256 before and after.~~ **Fixed 2026-09-29**: added all five binary
+      target paths (`$(SERVER_TARGETS) $(CONSUMER_TARGETS) $(TOOLS_TARGETS)
+      $(PUBLISHER_TARGETS)`) to `.PHONY`, so every `make build`/`build-server`/etc.
+      invocation always re-runs `go build`, deferring the actual staleness decision to
+      `go build`'s own build cache (which correctly tracks the whole Go import graph and is
+      a near-instant no-op when nothing relevant changed) rather than Make's file-timestamp
+      heuristic, which had no visibility into that graph in the first place. Considered and
+      rejected the alternative of hand-listing real Go-file prerequisites per binary (e.g.
+      via `go list -deps`/a generated `.d` file) — meaningfully more complex for the same
+      result, and `go build`'s own cache already makes a redundant recipe run cheap (see
+      verification below), so there's nothing to save by avoiding it. Verified: reproduced
+      the exact stale-binary scenario against the pre-fix `Makefile` (`git stash`) --
+      identical SHA-256 before/after a real source edit; confirmed the fixed `Makefile`
+      rebuilds correctly (different SHA-256) for the same edit, and that a redundant build
+      with *no* source change stays fast (~0.2s, `go build`'s cache absorbing it, not a
+      wasted full rebuild). Also ran a full `make build` (all 5 binaries) into a scratch
+      `BUILD_DIR`, followed by `make install` into a scratch `BINDIR`, confirming
+      `.PHONY`-on-a-real-file-target doesn't break `check-built`'s `-x` existence check or
+      `install`'s recipe. `make check` (fmt-check + vet + full test suite) clean --
+      no Go source changed by this fix, so `-race`/`golangci-lint` weren't re-run (nothing
+      new for them to check beyond the prior fix's already-clean run).
 - [ ] **[security review finding 4] Publisher API: create a new version of an existing
       artifact** — `createArtifact` always mints a fresh UUID at version 1
       (`internal/repo/artifact.go`'s `CreateArtifact`); there's no `/publisher/v1` operation

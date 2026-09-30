@@ -1,6 +1,6 @@
 # TEA Publisher — protocol and service design
 
-**Status:** draft v0.27, for discussion. Nothing here is scheduled or approved; no
+**Status:** draft v0.29, for discussion. Nothing here is scheduled or approved; no
 implementation exists yet. This document is the design opentea's `TODO.md` "Reference
 publisher" entry has been blocked on since 2026-07-04.
 
@@ -368,6 +368,34 @@ than repeated here.
   content, a signature upload is never rejected once evidence has been submitted for that
   artifact version (§9.2-§9.4) -- evidence attests to the format's content checksum, which a
   signature upload never changes, so there is nothing for it to invalidate.
+- **v0.28** adds `createArtifactVersion`
+  (`design/publisher-openapi.yaml` v0.12), closing the gap this document's own §6 scenario
+  3 ("SBOM correction") assumed was already possible: `createArtifact` (§7.4) could only
+  ever mint a brand new artifact identity at version 1, with no operation resembling
+  `POST /artifacts/{artifactUuid}/versions` to add version 2 under an existing one (found
+  by external security review, docs/security-review-publisher-design-260828.md finding 4).
+  Version is server-assigned (current-highest-version + 1, matching TEA 1.0's own
+  `artifact.version` field description); nothing carries forward automatically from the
+  prior version -- every field is supplied fresh, exactly like `createArtifact`'s own body,
+  per that same spec text ("cover[s] ... changes to any published field"). No new
+  concurrency primitive was needed: this target already serializes every database write
+  through a single connection (§1's `internal/db.Open`, unchanged), the same guarantee
+  `createCLEEvent`'s existing `MAX(id)+1` allocation already relies on, so two concurrent
+  calls can never allocate the same version number. An optional `previousVersion` request
+  field is the one genuinely new piece -- not for database-level safety, but so a caller
+  that wants it can detect "someone else already advanced this artifact since I last read
+  its state" as an explicit `409`, rather than silently landing on version N+2 instead of
+  the N+1 it expected.
+- **v0.29 (this revision)** adds §9.7, precisely specifying the exact bytes Mode 1 signs
+  and verifies -- closing another gap from the same external security review
+  (docs/security-review-publisher-design-260828.md finding 5): `digestToSign`/
+  `signatureValue` said "sign the digest bytes" without saying whether that meant the hex
+  ASCII characters or the 32 decoded bytes, or whether `jws-detached` meant real RFC 7797
+  JWS framing. No behavior changed -- `internal/trust`/`internal/publisher` already did
+  the one thing §9.7 documents; this makes it explicit, versioned, and gives it a
+  published, byte-exact test vector. Domain separation (also on the review's list)
+  deliberately deferred to its own `TODO.md` item, not decided here -- see §9.7's own
+  callout for why.
 
 ## 1. Problem statement
 
@@ -1001,6 +1029,90 @@ This section cleans up abandoned *draft* state, which is cheap (uuid+version
 references). It says nothing about the *artifacts* those references point at, which are
 where the actual storage cost is, and which have no expiry, size limit, or count limit
 of their own anywhere in this design.
+
+### 9.7 The exact to-be-signed bytes: a versioned structure and a published test vector
+
+§9.1-9.3 describe the prepare/sign/submit *shape*; this subsection pins down the exact
+*bytes* Mode 1 (§9.5's software-key case, the only mode actually implemented) signs and
+verifies — closing the ambiguity external security review raised (finding 5,
+docs/security-review-publisher-design-260828.md): whether to sign the hex digest's ASCII
+characters or its 32 decoded bytes, whether a JWS envelope wraps the digest or the
+canonical JSON, which algorithms are accepted. Nothing below changes `internal/trust` or
+`internal/publisher`'s actual behavior — every rule here is already what the code does
+(`internal/publisher/evidence.go`, `internal/admin/evidencebundle.go`); this is that
+behavior made explicit, versioned, and interoperability-testable, not a new behavior.
+
+**Structure v1** (the only version that exists; any future change to steps 1-4 is a new,
+distinct version, not a silent edit to this one):
+
+1. **Canonicalize** the owning `artifact` or `tea-collection` object as it exists on the
+   target server right now (`internal/trust.Canonicalize`, RFC 8785 JCS: sorted object
+   keys, no insignificant whitespace, minimal escaping). Media type: `application/json`.
+2. **Digest** = SHA-256 of those canonical bytes. Transport encoding is lowercase hex
+   (`objectDigestValue`/`digestToSign`).
+3. **The signature covers the 32 raw decoded digest bytes — never the hex ASCII
+   characters, never the canonical JSON directly.** A digest envelope, not a direct-object
+   signature: `internal/publisher/evidence.go`'s `submitArtifactEvidence` calls
+   `trust.Verify(pub, digestBytes, sigBytes)` with `digestBytes` from
+   `hex.DecodeString(objectDigestValue)`, not the hex string or the canonical JSON itself.
+4. **`signatureFormat: "jws-detached"`, this phase's only accepted value, is a restricted
+   profile, not RFC 7797 JWS compact serialization.** `signatureValue` is a raw Ed25519
+   signature (RFC 8032) over step 3's digest bytes, base64-*standard*-encoded — no JWS
+   protected header, no three-part compact serialization, no JWS structure of any kind.
+   The label is reused from `tea-trust-architecture`'s `evidence-bundle-schema.json`
+   `signature.format` vocabulary to stay aligned with that schema's enum, not because real
+   JWS framing is implemented under it. A future phase that wants genuine interop with
+   generic JWS-consuming tooling needs its own implementation (and arguably its own label,
+   to stop overloading this one) — not designed further here, tracked in `TODO.md`.
+5. **Algorithm and certificate allowlist, this phase: Ed25519 only, self-signed X.509 leaf
+   only.** `internal/trust.ParseCertificatePublicKey` hard-rejects any certificate whose
+   key isn't Ed25519; there is no code path that accepts RSA, ECDSA, or any other
+   algorithm, and none that chain-validates against an external trust store (that's Mode
+   2, §9.5, unimplemented). `cms-detached`/`dsse-envelope`/`cose-sign1` remain reserved
+   vocabulary — accepted by no validator anywhere in this codebase.
+
+**Deliberately not part of structure v1, and not decided here:** a domain-separation
+context (a fixed prefix distinguishing "this is a TEA publisher artifact/collection
+evidence digest" from any other SHA-256-of-canonical-JSON this or another protocol might
+ever compute) — flagged as a known, accepted gap for this revision, tracked as its own
+`TODO.md` item rather than folded into this fix, since it would change the digest formula
+across both artifact and collection evidence and this document's own external
+`tea-trust-architecture` dependency may already have an opinion on it worth matching
+exactly rather than inventing independently.
+
+**Published test vector**, reproducible byte-for-byte by any independent implementation
+(and pinned as a passing Go test, `internal/trust/vectors_test.go`, so it cannot silently
+drift from what this server actually verifies):
+
+```
+seed (hex):       000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+public key (hex): 03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8
+fingerprint:      56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708c
+
+artifact object (before canonicalization):
+{
+  "uuid": "d4d9f54a-abcf-11ee-ac79-1a52914d44b1",
+  "version": 1,
+  "name": "example-sbom.json",
+  "type": "BOM",
+  "createdDate": "2026-01-01T00:00:00Z",
+  "formats": [{"mediaType": "application/vnd.cyclonedx+json"}]
+}
+
+canonical JSON (step 1, RFC 8785 JCS):
+{"createdDate":"2026-01-01T00:00:00Z","formats":[{"mediaType":"application/vnd.cyclonedx+json"}],"name":"example-sbom.json","type":"BOM","uuid":"d4d9f54a-abcf-11ee-ac79-1a52914d44b1","version":1}
+
+digest / objectDigestValue (step 2, hex):
+0339d2aa34db670a08263975373480d6a1dab14c7b45ed9e3b43bc635662b62c
+
+signatureValue (step 3+4, Ed25519 over the 32 decoded digest bytes, base64-standard):
+E+o+tG2jCLbCkVr5zUEQ8vyFYQKLOlPacO/Wj7jgB14Nn4ZRorYk52GNBkq9jZHuTQ+ua9MNxrNmASczA9xXAQ==
+```
+
+Ed25519 signing is deterministic (RFC 8032 — no random nonce, unlike ECDSA), so this
+vector has exactly one correct `signatureValue` for this key and digest; any
+implementation of structure v1 that disagrees with it is non-conformant, not merely
+differently-randomized.
 
 ## 10. Authorization
 

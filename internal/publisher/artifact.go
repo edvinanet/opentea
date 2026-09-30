@@ -36,22 +36,9 @@ func (s *Server) createArtifact(w http.ResponseWriter, r *http.Request) {
 		httpx.BadRequest(w, "invalid JSON body: "+err.Error())
 		return
 	}
-	if !validArtifactTypes[req.Type] {
-		httpx.BadRequest(w, "type must be a valid artifact-type enum value")
+	formats, ok := validateArtifactFields(w, req.Type, req.Formats)
+	if !ok {
 		return
-	}
-	if len(req.Formats) == 0 {
-		httpx.BadRequest(w, "at least one format is required")
-		return
-	}
-
-	formats := make([]repo.ArtifactFormatInput, len(req.Formats))
-	for i, f := range req.Formats {
-		if f.MediaType == "" {
-			httpx.BadRequest(w, "formats[].mediaType is required")
-			return
-		}
-		formats[i] = repo.ArtifactFormatInput{MediaType: f.MediaType, Description: f.Description}
 	}
 
 	now := time.Now()
@@ -62,6 +49,80 @@ func (s *Server) createArtifact(w http.ResponseWriter, r *http.Request) {
 		DistributionIDs: req.DistributionIDs,
 		Formats:         formats,
 	})
+	if err != nil {
+		httpx.InternalError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusCreated, a)
+}
+
+// validateArtifactFields validates the type/formats fields shared by
+// createArtifact's and createArtifactVersion's request bodies, converting
+// formats to repo.ArtifactFormatInput on success. Writes the appropriate
+// 400 response and returns ok=false on the first violation.
+func validateArtifactFields(w http.ResponseWriter, artifactType string, in []teapublisher.ArtifactFormatCreate) (formats []repo.ArtifactFormatInput, ok bool) {
+	if !validArtifactTypes[artifactType] {
+		httpx.BadRequest(w, "type must be a valid artifact-type enum value")
+		return nil, false
+	}
+	if len(in) == 0 {
+		httpx.BadRequest(w, "at least one format is required")
+		return nil, false
+	}
+	formats = make([]repo.ArtifactFormatInput, len(in))
+	for i, f := range in {
+		if f.MediaType == "" {
+			httpx.BadRequest(w, "formats[].mediaType is required")
+			return nil, false
+		}
+		formats[i] = repo.ArtifactFormatInput{MediaType: f.MediaType, Description: f.Description}
+	}
+	return formats, true
+}
+
+// createArtifactVersion implements createArtifactVersion: adds a new,
+// server-numbered version under an already-existing artifact uuid --
+// closing the gap identified by external security review (finding 4,
+// docs/security-review-publisher-design-260828.md) that createArtifact
+// above could only ever mint a brand new artifact identity, never a
+// correction/update to one that already exists
+// (design/publisher-service.md §6 scenario 3, "SBOM correction"). Nothing
+// is carried forward from the prior version automatically -- see
+// repo.CreateArtifactVersion's doc comment for why: the request supplies
+// every field fresh, exactly like createArtifact's own body.
+func (s *Server) createArtifactVersion(w http.ResponseWriter, r *http.Request) {
+	uuid, err := httpx.PathUUID(r, "uuid")
+	if err != nil {
+		httpx.BadRequest(w, "invalid uuid")
+		return
+	}
+
+	var req teapublisher.ArtifactVersionCreate
+	if err := decodeJSON(r, &req); err != nil {
+		httpx.BadRequest(w, "invalid JSON body: "+err.Error())
+		return
+	}
+	formats, ok := validateArtifactFields(w, req.Type, req.Formats)
+	if !ok {
+		return
+	}
+
+	now := time.Now()
+	a, err := s.repo.CreateArtifactVersion(r.Context(), uuid, req.PreviousVersion, repo.ArtifactInput{
+		Name:            req.Name,
+		Type:            req.Type,
+		CreatedDate:     &now,
+		DistributionIDs: req.DistributionIDs,
+		Formats:         formats,
+	})
+	if errors.Is(err, repo.ErrNotFound) {
+		httpx.NotFound(w)
+		return
+	}
+	if errors.Is(err, repo.ErrVersionConflict) {
+		httpx.Conflict(w, err.Error())
+		return
+	}
 	if err != nil {
 		httpx.InternalError(w, r, err)
 		return

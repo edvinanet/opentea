@@ -32,6 +32,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 
 	// Artifacts.
 	mux.HandleFunc("POST /publisher/v1/artifacts", s.requireScope(cicd, s.createArtifact))
+	mux.HandleFunc("POST /publisher/v1/artifacts/{uuid}/versions", s.requireScope(cicd, s.createArtifactVersion))
 	mux.HandleFunc("POST /publisher/v1/artifacts/{uuid}/{version}/files", s.requireScope(cicd, s.uploadArtifactFile))
 	mux.HandleFunc("POST /publisher/v1/artifacts/{uuid}/{version}/signature/files", s.requireScope(cicd, s.uploadArtifactSignatureFile))
 	mux.HandleFunc("POST /publisher/v1/artifacts/{uuid}/{version}/evidence/prepare", s.requireScope(cicd, s.prepareArtifactEvidence))

@@ -31,24 +31,78 @@ type ArtifactInput struct {
 	Formats         []ArtifactFormatInput
 }
 
-// CreateArtifact creates a new artifact at version 1 (the version sequence
-// for a given uuid is only advanced by future "create new revision" flows,
-// which Phase 1 doesn't need).
+// CreateArtifact creates a brand new artifact identity at version 1. See
+// CreateArtifactVersion for adding a new revision to an already-existing
+// artifact uuid.
 func (r *Repo) CreateArtifact(ctx context.Context, in ArtifactInput) (tea.Artifact, error) {
 	uuid := idgen.New()
 	const version = 1
+	return runInTx(ctx, r, func(tx dbtx) (tea.Artifact, error) {
+		if err := insertArtifactTx(ctx, tx, uuid, version, in); err != nil {
+			return tea.Artifact{}, err
+		}
+		return getArtifactByVersionTx(ctx, tx, uuid, version)
+	})
+}
 
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return tea.Artifact{}, err
-	}
-	defer func() { _ = tx.Rollback() }()
+// ErrVersionConflict is returned by CreateArtifactVersion when a caller
+// supplies previousVersion and it no longer matches the artifact's actual
+// current latest version -- someone else already created a newer version
+// since the caller last read this artifact's state.
+var ErrVersionConflict = errors.New("repo: artifact is not at the expected previous version")
 
+// CreateArtifactVersion adds a new, server-numbered revision to an
+// already-existing artifact uuid -- current-highest-version + 1, per TEA
+// 1.0's own artifact.version field description ("starting at 1 and
+// incremented by 1 for each new revision of the same artifact UUID",
+// spec/openapi.yaml). Returns ErrNotFound if uuid has no existing version
+// at all (this is "add a revision", not "create"; see CreateArtifact for
+// that). Nothing from the prior version is carried forward automatically
+// -- in carries every field fresh, exactly like CreateArtifact's own
+// input, since the same spec text says a new revision "cover[s] ...
+// changes to any published field."
+//
+// If previousVersion is non-nil, the call is rejected with
+// ErrVersionConflict unless it equals the artifact's actual current latest
+// version -- optimistic concurrency for a caller that wants to detect
+// "someone else already advanced this artifact since I last read its
+// state" rather than silently landing on an unexpected version number.
+// Not required for correctness: this database serializes every write
+// through a single connection (internal/db.Open's own doc comment), so two
+// concurrent calls can never allocate the same version number even
+// without it -- this guards a caller's assumptions, not the database's
+// integrity (docs/security-review-publisher-design-260828.md finding 4).
+func (r *Repo) CreateArtifactVersion(ctx context.Context, uuid string, previousVersion *int, in ArtifactInput) (tea.Artifact, error) {
+	return runInTx(ctx, r, func(tx dbtx) (tea.Artifact, error) {
+		var maxVersion sql.NullInt64
+		if err := tx.QueryRowContext(ctx, `SELECT MAX(version) FROM artifact WHERE uuid = ?`, uuid).Scan(&maxVersion); err != nil {
+			return tea.Artifact{}, err
+		}
+		if !maxVersion.Valid {
+			return tea.Artifact{}, ErrNotFound
+		}
+		current := int(maxVersion.Int64)
+		if previousVersion != nil && *previousVersion != current {
+			return tea.Artifact{}, fmt.Errorf("%w: current version is %d, not %d", ErrVersionConflict, current, *previousVersion)
+		}
+
+		version := current + 1
+		if err := insertArtifactTx(ctx, tx, uuid, version, in); err != nil {
+			return tea.Artifact{}, err
+		}
+		return getArtifactByVersionTx(ctx, tx, uuid, version)
+	})
+}
+
+// insertArtifactTx inserts one new artifact revision at the given (uuid,
+// version) -- shared by CreateArtifact (a fresh uuid, always version 1) and
+// CreateArtifactVersion (an existing uuid, a server-computed next version).
+func insertArtifactTx(ctx context.Context, tx dbtx, uuid string, version int, in ArtifactInput) error {
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO artifact (uuid, version, name, type, created_date) VALUES (?, ?, ?, ?, ?)`,
 		uuid, version, in.Name, in.Type, formatTimePtr(in.CreatedDate),
 	); err != nil {
-		return tea.Artifact{}, err
+		return err
 	}
 
 	for _, distID := range in.DistributionIDs {
@@ -56,7 +110,7 @@ func (r *Repo) CreateArtifact(ctx context.Context, in ArtifactInput) (tea.Artifa
 			`INSERT INTO artifact_distribution (artifact_uuid, artifact_version, distribution_id) VALUES (?, ?, ?)`,
 			uuid, version, distID,
 		); err != nil {
-			return tea.Artifact{}, err
+			return err
 		}
 	}
 
@@ -66,14 +120,11 @@ func (r *Repo) CreateArtifact(ctx context.Context, in ArtifactInput) (tea.Artifa
 			`INSERT INTO artifact_format (id, artifact_uuid, artifact_version, media_type, description) VALUES (?, ?, ?, ?, ?)`,
 			formatID, uuid, version, f.MediaType, f.Description,
 		); err != nil {
-			return tea.Artifact{}, err
+			return err
 		}
 	}
 
-	if err := tx.Commit(); err != nil {
-		return tea.Artifact{}, err
-	}
-	return r.GetArtifactByVersion(ctx, uuid, version)
+	return nil
 }
 
 // ImportArtifactFormatInput mirrors ArtifactFormatInput but adds URL/

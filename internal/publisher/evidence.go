@@ -21,7 +21,12 @@ import (
 // see its doc comment for why only jws-detached is actually accepted:
 // verification below only ever does one thing (raw Ed25519 over the
 // digest bytes), so accepting a label this handler doesn't really verify
-// would let a caller store evidence mislabeled as a format it isn't.
+// would let a caller store evidence mislabeled as a format it isn't. The
+// exact bytes that "one thing" covers -- and why jws-detached here is a
+// restricted profile, not real RFC 7797 JWS -- are now pinned down
+// precisely, with a published byte-exact test vector, in
+// design/publisher-service.md §9.7 (docs/security-review-publisher-design-260828.md
+// finding 5).
 var validSignatureFormats = map[string]bool{
 	string(trust.SignatureFormatJWSDetached): true,
 }

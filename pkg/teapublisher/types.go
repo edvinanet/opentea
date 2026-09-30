@@ -91,6 +91,23 @@ type ArtifactCreate struct {
 	Formats         []ArtifactFormatCreate `json:"formats"`
 }
 
+// ArtifactVersionCreate is the request body for createArtifactVersion:
+// same shape as ArtifactCreate -- nothing is carried forward automatically
+// from the artifact's prior version, since TEA 1.0's own artifact.version
+// field description says a new revision "cover[s] ... changes to any
+// published field" (spec/openapi.yaml), so every field is supplied fresh
+// each time, just like ArtifactCreate's own body. PreviousVersion is the
+// one addition: optional optimistic concurrency, see
+// repo.CreateArtifactVersion's doc comment
+// (docs/security-review-publisher-design-260828.md finding 4).
+type ArtifactVersionCreate struct {
+	Name            string                 `json:"name,omitempty"`
+	Type            string                 `json:"type"`
+	DistributionIDs []string               `json:"distributionIds,omitempty"`
+	Formats         []ArtifactFormatCreate `json:"formats"`
+	PreviousVersion *int                   `json:"previousVersion,omitempty"`
+}
+
 // CLEEventCreate is the request body for the createProductCLEEvent /
 // createProductReleaseCLEEvent / component and component-release
 // equivalents: same as tea.CLEEvent, minus the server-assigned,

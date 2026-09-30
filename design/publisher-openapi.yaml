@@ -1,11 +1,40 @@
 openapi: 3.1.0
 info:
   title: TEA Publisher API
-  version: 0.11.0-draft
+  version: 0.13.0-draft
   description: |
-    **Status: draft v0.11, for discussion. opentea's own server-side implementation
+    **Status: draft v0.13, for discussion. opentea's own server-side implementation
     exists (`internal/publisher`) but this document is still a draft, not approved by
     CycloneDX or any TEA working group.**
+
+    v0.13: `signatureFormat` is now a real enum (was a bare string), and
+    `objectDigestValue`/`signatureValue`'s descriptions spell out the exact bytes signed —
+    closing another gap from the same external security review (finding 5,
+    docs/security-review-publisher-design-260828.md): it was ambiguous whether a signature
+    covered the hex digest's ASCII characters or its 32 decoded bytes, and whether
+    `jws-detached` meant real RFC 7797 JWS framing. No behavior changed — this only makes
+    explicit, in the schema itself, what `internal/publisher`/`internal/admin` already do;
+    `design/publisher-service.md` §9.7 has the full byte-exact recipe plus a published test
+    vector. Algorithm/certificate constraints (Ed25519 only, self-signed only, this phase)
+    and the "signature covers a digest envelope, not the object directly" rule are now
+    explicit in the schema text rather than only in code comments.
+
+    v0.12: new `createArtifactVersion` operation (`POST /artifacts/{artifactUuid}/versions`)
+    — another fix from the external security review of this document and
+    `design/publisher-service.md` (docs/security-review-publisher-design-260828.md finding
+    4): `createArtifact` could only ever mint a brand new artifact identity at version 1,
+    with no way to express "artifact uuid X, version 2" for a correction to one that
+    already exists, even though `design/publisher-service.md` §6's own "SBOM correction"
+    scenario assumes this is possible. Version is server-assigned
+    (current-highest-version + 1, matching TEA 1.0's own `artifact.version` field
+    description in `spec/openapi.yaml`); nothing is carried forward automatically from the
+    prior version, since that same spec text says a new revision "cover[s] ... changes to
+    any published field" — the request body supplies every field fresh, exactly like
+    `createArtifact`'s own. Concurrent calls can never allocate the same version number
+    (this target serializes every write through a single database connection); an optional
+    `previousVersion` request field additionally lets a caller detect "someone else already
+    advanced this artifact since I last read its state" and get a `409` instead of silently
+    landing on an unexpected version number.
 
     v0.11: TEA 1.0 conformance — new `uploadArtifactSignatureFile` operation, alongside a
     fix to `formats[].url`/`formats[].signatureUrl` semantics on the consumer API side
@@ -384,6 +413,48 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/artifact' }
+
+  /artifacts/{artifactUuid}/versions:
+    post:
+      operationId: createArtifactVersion
+      tags: [Artifacts]
+      summary: >-
+        Create a new version of an already-existing artifact uuid — the gap identified by
+        external security review (v0.12, docs/security-review-publisher-design-260828.md
+        finding 4): `createArtifact` above can only ever mint a brand new artifact identity,
+        with no way to express "artifact uuid X, version 2" for a correction to one that
+        already exists (`design/publisher-service.md` §6 scenario 3, "SBOM correction").
+        Version is server-assigned: current-highest-version + 1 (TEA 1.0's own
+        `artifact.version` field description, `spec/openapi.yaml` — "starting at 1 and
+        incremented by 1 for each new revision"). Nothing is carried forward automatically
+        from the prior version — the same spec text says a new revision "cover[s] ...
+        changes to any published field", so every field (`name`, `type`, `distributionIds`,
+        `formats`) is supplied fresh, exactly like `createArtifact`'s own body. `404` if
+        `artifactUuid` has no existing version at all (this is "add a revision", not
+        "create" — use `createArtifact` for that). Concurrent calls against the same
+        `artifactUuid` can never allocate the same version number (this target serializes
+        all writes through a single database connection), but a caller that also wants to
+        detect "someone else already advanced this artifact since I last read its state"
+        may supply `previousVersion`; a mismatch is rejected with `409`, not silently
+        superseded.
+      parameters:
+        - $ref: '#/components/parameters/ArtifactUuid'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/artifact-version-create' }
+      responses:
+        '201':
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/artifact' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: >-
+            `previousVersion` was supplied and no longer matches the artifact's current
+            latest version.
 
   /artifacts/{artifactUuid}/{version}/files:
     post:
@@ -1459,6 +1530,31 @@ components:
           items: { $ref: '#/components/schemas/artifact-format-create' }
       required: [type, formats]
 
+    artifact-version-create:
+      type: object
+      description: >-
+        Request body for createArtifactVersion. Same shape as artifact-create — nothing is
+        inherited from the artifact's prior version, see the operation's own summary — plus
+        one addition: an optional previousVersion for optimistic concurrency.
+      properties:
+        name: { type: string }
+        type: { $ref: '#/components/schemas/artifact-type' }
+        distributionIds:
+          type: array
+          items: { $ref: '#/components/schemas/uuid' }
+        formats:
+          type: array
+          items: { $ref: '#/components/schemas/artifact-format-create' }
+        previousVersion:
+          type: integer
+          minimum: 1
+          description: >-
+            If supplied, the request is rejected with 409 unless this artifact's current
+            latest version equals this value — lets a caller detect that another version was
+            created since it last read this artifact's state, instead of silently creating
+            version N+2 on top of an unexpected N+1.
+      required: [type, formats]
+
     cle-event-create:
       type: object
       description: Same as `cle-event`, minus the server-assigned id.
@@ -1503,28 +1599,42 @@ components:
             matching prepare operation. The server independently re-derives this from the
             object's actual current state and rejects a mismatch (§9.1 step 3) — this
             field is the caller's own record of what it believed it was signing, checked
-            against reality, never trusted on its own.
+            against reality, never trusted on its own. This is a **digest envelope**: what
+            `signatureValue` actually covers is the 32 raw bytes this hex string decodes
+            to, never the hex ASCII characters themselves and never the canonical JSON
+            directly (design/publisher-service.md §9.7's structure v1, step 3 — includes a
+            published byte-exact test vector).
         objectMediaType: { type: string }
         objectLocation: { type: string, format: uri }
         signatureFormat:
           type: string
+          enum: [jws-detached, cms-detached, dsse-envelope, cose-sign1]
           description: >-
-            Which format depends on the signing mode (design/publisher-service.md §9.5):
-            `jws-detached` fits an ephemeral, self-signed software key (the only format
-            opentea's Phase 1 actually verifies today) — the lightweight, same-session
-            case. `cms-detached` is the natural fit for a Web PKI certificate,
-            HSM/PKCS#11-backed or air-gapped signing, since that's what most such tooling
-            already produces natively — reserved in `internal/trust.SignatureFormat`'s
-            vocabulary, not yet implemented anywhere. `dsse-envelope`/`cose-sign1` remain
-            reserved, no concrete use case identified yet.
+            Which format depends on the signing mode (design/publisher-service.md §9.5).
+            **`jws-detached` is the only value any target server implements today**, and —
+            despite the label — is *not* RFC 7797 JWS compact serialization: it is a raw
+            Ed25519 signature (RFC 8032) over the digest envelope above, with no JWS
+            protected header or structure of any kind (design/publisher-service.md §9.7,
+            step 4, explains why the label is reused anyway). It fits an ephemeral,
+            self-signed software key — the lightweight, same-session case (Mode 1).
+            `cms-detached` is the natural fit for a Web PKI certificate, HSM/PKCS#11-backed
+            or air-gapped signing (Mode 2), since that's what most such tooling already
+            produces natively — reserved in `internal/trust.SignatureFormat`'s vocabulary,
+            accepted by no validator anywhere in this codebase yet. `dsse-envelope`/
+            `cose-sign1` remain reserved, no concrete use case identified yet. A server
+            receiving any value it doesn't implement rejects the submission outright — it
+            never stores evidence labeled with a format it didn't actually verify.
         signatureValue:
           type: string
           description: >-
-            Base64-encoded signature over the digest bytes, in signatureFormat's encoding.
-            Algorithm follows from the signing certificate's own key type — Ed25519 for
-            opentea's Phase 1 ephemeral certificates, whatever the Web PKI certificate
-            actually uses (commonly RSA or ECDSA) for §9.5's Mode 2 — not fixed by this
-            schema.
+            Base64-*standard*-encoded signature over the digest envelope above, in
+            signatureFormat's encoding. For `jws-detached` (the only format implemented
+            today): Ed25519 only — the signing certificate's public key must be Ed25519,
+            and self-signed (`internal/trust.ParseCertificatePublicKey` hard-rejects every
+            other key type; there is no chain validation against an external trust store in
+            this phase). Whatever a Web PKI certificate actually uses (commonly RSA or
+            ECDSA) applies only to `cms-detached`/Mode 2, not fixed by this schema, and not
+            implemented by any target server yet.
         certificatePem:
           type: string
           description: The leaf (signing) certificate.
@@ -1543,7 +1653,12 @@ components:
       properties:
         digestToSign:
           type: string
-          description: Hex SHA-256 of RFC 8785-canonicalized artifact — sign exactly these bytes.
+          description: >-
+            Hex SHA-256 of RFC 8785-canonicalized artifact. The signature submitted back
+            (evidence-submission.signatureValue) must cover the 32 raw bytes this hex
+            string decodes to, not the hex characters themselves — see
+            design/publisher-service.md §9.7's structure v1 for the exact byte-exact
+            recipe and a published test vector.
         artifact: { $ref: '#/components/schemas/artifact' }
 
     collection-draft-artifact-list:
@@ -1667,7 +1782,12 @@ components:
       properties:
         digestToSign:
           type: string
-          description: Hex SHA-256 of RFC 8785-canonicalized wouldBeCollection — sign exactly these bytes.
+          description: >-
+            Hex SHA-256 of RFC 8785-canonicalized wouldBeCollection. The signature
+            submitted back (evidence-submission.signatureValue) must cover the 32 raw
+            bytes this hex string decodes to, not the hex characters themselves — see
+            design/publisher-service.md §9.7's structure v1 for the exact byte-exact
+            recipe and a published test vector.
         wouldBeCollection: { $ref: '#/components/schemas/collection' }
 
     # commit-request was removed: approval moved to its own tracked decision (approve/

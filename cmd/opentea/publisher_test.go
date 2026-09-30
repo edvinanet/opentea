@@ -384,6 +384,91 @@ func TestPublisherUploadArtifactFileByMediaType(t *testing.T) {
 	}
 }
 
+// TestPublisherCreateArtifactVersion is the regression test for
+// docs/security-review-publisher-design-260828.md finding 4: there was no
+// operation to add a new version to an already-existing artifact uuid,
+// only mint a brand new identity. Covers the missing-uuid 404, a
+// successful version-2 creation with completely different fields than
+// version 1 (nothing carried forward), and the optional previousVersion
+// optimistic-concurrency check (stale -> 409, correct -> 201).
+func TestPublisherCreateArtifactVersion(t *testing.T) {
+	srv := newTestServer(t)
+	cicd := createPublisherCredential(t, srv, "cicd-cred", model.PublisherScopeCICD)
+
+	// Unknown artifact uuid -> 404.
+	unknownUUID := "00000000-0000-4000-8000-000000000000"
+	if status, body := publisherRequest(t, srv, http.MethodPost, "/publisher/v1/artifacts/"+unknownUUID+"/versions", cicd, map[string]any{
+		"type":    "BOM",
+		"formats": []map[string]any{{"mediaType": "application/vnd.cyclonedx+json"}},
+	}); status != http.StatusNotFound {
+		t.Fatalf("createArtifactVersion for unknown uuid: status=%d body=%s, want 404", status, body)
+	}
+
+	status, raw := publisherRequest(t, srv, http.MethodPost, "/publisher/v1/artifacts", cicd, map[string]any{
+		"name":    "sbom-draft.json",
+		"type":    "BOM",
+		"formats": []map[string]any{{"mediaType": "application/vnd.cyclonedx+json"}},
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("createArtifact: status=%d body=%s", status, raw)
+	}
+	var v1 tea.Artifact
+	decodeInto(t, raw, &v1)
+
+	versionsPath := "/publisher/v1/artifacts/" + v1.UUID + "/versions"
+
+	// A stale previousVersion is rejected with 409, not silently accepted.
+	if status, body := publisherRequest(t, srv, http.MethodPost, versionsPath, cicd, map[string]any{
+		"type":            "BOM",
+		"formats":         []map[string]any{{"mediaType": "application/vnd.cyclonedx+xml"}},
+		"previousVersion": 5,
+	}); status != http.StatusConflict {
+		t.Fatalf("createArtifactVersion with stale previousVersion: status=%d body=%s, want 409", status, body)
+	}
+
+	// The correct previousVersion (1) succeeds; nothing from v1 is carried
+	// forward -- completely different name/type/format set.
+	status, raw = publisherRequest(t, srv, http.MethodPost, versionsPath, cicd, map[string]any{
+		"name":            "sbom-corrected.json",
+		"type":            "VULNERABILITIES",
+		"formats":         []map[string]any{{"mediaType": "application/vnd.cyclonedx+xml"}},
+		"previousVersion": 1,
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("createArtifactVersion: status=%d body=%s", status, raw)
+	}
+	var v2 tea.Artifact
+	decodeInto(t, raw, &v2)
+	if v2.UUID != v1.UUID {
+		t.Fatalf("v2.UUID = %q, want the same identity as v1 (%q)", v2.UUID, v1.UUID)
+	}
+	if v2.Version != 2 {
+		t.Fatalf("v2.Version = %d, want 2", v2.Version)
+	}
+	if v2.Name != "sbom-corrected.json" || v2.Type != "VULNERABILITIES" || len(v2.Formats) != 1 || v2.Formats[0].MediaType != "application/vnd.cyclonedx+xml" {
+		t.Fatalf("v2 = %+v, want fresh fields, nothing carried forward from v1", v2)
+	}
+
+	// v1 is independently still fetchable and untouched, via the real
+	// /tea/v1 consumer API, not just the repo layer.
+	teaStatus, _, teaBody := teaRequest(t, srv, http.MethodGet, "/tea/v1/artifact/"+v1.UUID+"/1", "")
+	if teaStatus != http.StatusOK {
+		t.Fatalf("GET /tea/v1 artifact v1: status=%d body=%s", teaStatus, teaBody)
+	}
+	var readBackV1 tea.Artifact
+	decodeInto(t, teaBody, &readBackV1)
+	if readBackV1.Name != "sbom-draft.json" || readBackV1.Type != "BOM" {
+		t.Fatalf("readBackV1 = %+v, want v1 unchanged by creating v2", readBackV1)
+	}
+
+	// A missing type/no formats body is rejected the same way createArtifact's is.
+	if status, body := publisherRequest(t, srv, http.MethodPost, versionsPath, cicd, map[string]any{
+		"type": "BOM",
+	}); status != http.StatusBadRequest {
+		t.Fatalf("createArtifactVersion with no formats: status=%d body=%s, want 400", status, body)
+	}
+}
+
 // TestPublisherUploadArtifactFileRejectedAfterEvidence covers
 // security-review fix 1 (docs/security-review-publisher-design-260828.md):
 // once evidence has been submitted for an artifact version, uploading a

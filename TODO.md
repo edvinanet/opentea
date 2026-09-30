@@ -1258,23 +1258,115 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       this session) a genuinely fully clean `go test ./... -race -count=1` run across the
       whole module -- the first time in this entire session that command's output doesn't
       end in this exact DNS test's `FAIL`.
-- [ ] **[security review finding 4] Publisher API: create a new version of an existing
+- [x] ~~**[security review finding 4] Publisher API: create a new version of an existing
       artifact** — `createArtifact` always mints a fresh UUID at version 1
       (`internal/repo/artifact.go`'s `CreateArtifact`); there's no `/publisher/v1` operation
       to add version 2 under an existing artifact identity, even though
       `design/publisher-service.md` §3's own SBOM-correction scenario assumes this is
       possible. Needs a design pass: version allocation/concurrency semantics, which
       metadata carries forward, whether a new format set on an existing version is a new
-      version or a pre-finalization update (finding 4's own framing).
-- [ ] **[security review finding 5] Publisher API: byte-exact signing format specification**
-      — `digestToSign`/`signatureValue` say "sign the digest bytes" but leave real
-      ambiguity open: ASCII hex vs. decoded bytes, whether JWS/CMS wrap the digest or the
-      canonical JSON, required protected headers/signed attributes, accepted algorithm
-      identifiers. opentea's own Phase 1 only ever produces/verifies one concrete case
-      (raw Ed25519 over hex-decoded digest bytes, `internal/trust.Sign`/`Verify`), so this
-      hasn't bitten anything yet, but a second implementation (or opentea's own Web
+      version or a pre-finalization update (finding 4's own framing).~~ **Fixed
+      2026-09-29**: new `POST /publisher/v1/artifacts/{uuid}/versions` (`createArtifactVersion`,
+      `design/publisher-openapi.yaml` v0.12, `design/publisher-service.md` v0.28) closes the
+      gap. Design questions resolved directly from TEA 1.0's own `artifact.version` field
+      description (`spec/openapi.yaml`, read in the sibling checkout), rather than invented
+      fresh: version allocation is server-assigned current-highest + 1 ("starting at 1 and
+      incremented by 1 for each new revision"); nothing carries forward from the prior
+      version automatically, since that same text says a revision "cover[s] ... changes to
+      any published field" -- the request body supplies every field fresh, exactly like
+      `createArtifact`'s own. The "new representation vs. pre-finalization update" question
+      was already answered by security-review fix 1 (2026-08-31, this same review document):
+      `uploadArtifactFile` already permits replacing a format's content freely on a version
+      that has no evidence submitted yet (a pre-finalization update) and rejects it once
+      evidence exists (409) -- a new artifact version is for content changes *after* that
+      point, not a parallel mechanism. Concurrency needed no new primitive: this database
+      already serializes every write through a single connection
+      (`internal/db.Open`, unchanged) -- the same guarantee `createCLEEvent`'s existing
+      `MAX(id)+1` allocation already relies on -- so two concurrent calls can never allocate
+      the same version number; confirmed and documented rather than re-derived. Added an
+      optional `previousVersion` request field anyway (not for database safety, but so a
+      caller that wants it can detect "someone else already advanced this artifact since I
+      last read its state" as an explicit `409` instead of silently landing on an unexpected
+      version). Implementation: `internal/repo/artifact.go`'s `CreateArtifactVersion` (new
+      `ErrVersionConflict` sentinel; shares its actual INSERT logic with `CreateArtifact` via
+      a new `insertArtifactTx` helper -- pure refactor, no behavior change to the existing
+      path); `pkg/teapublisher.ArtifactVersionCreate`; `internal/publisher/artifact.go`'s new
+      `createArtifactVersion` handler (shares field validation with `createArtifact` via a
+      new `validateArtifactFields` helper), registered at the same `cicd` scope as every
+      other artifact-write operation. Deliberately scoped to `/publisher/v1` only, matching
+      this finding's own text -- `/admin/v1` has the identical gap but wasn't raised by this
+      review and wasn't touched. Verified: new regression tests
+      `TestCreateArtifactVersion`/`TestCreateArtifactVersionUnknownUUID`/
+      `TestCreateArtifactVersionPreviousVersionMismatch` (`internal/repo/artifact_test.go`)
+      and `TestPublisherCreateArtifactVersion` (`cmd/opentea/publisher_test.go`, real HTTP
+      through `/publisher/v1`, cross-checked via a real, independent `/tea/v1` read of both
+      the new and the untouched original version) -- confirmed to fail against the pre-fix
+      code (`git stash` on just this fix's files: a build failure for the repo tests, a `404`
+      route-not-found for the HTTP test), pass after. Full suite, `-race`, `golangci-lint`,
+      `go vet`, `gofmt` clean, plus a manual smoke test against a live built binary covering
+      all five cases end to end (stale `previousVersion` → 409, correct `previousVersion` →
+      201 version 2, unknown uuid → 404, both versions independently correct via `/tea/v1`).
+- [x] ~~**[security review finding 5] Publisher API: byte-exact signing format
+      specification** — `digestToSign`/`signatureValue` say "sign the digest bytes" but
+      leave real ambiguity open: ASCII hex vs. decoded bytes, whether JWS/CMS wrap the
+      digest or the canonical JSON, required protected headers/signed attributes, accepted
+      algorithm identifiers. opentea's own Phase 1 only ever produces/verifies one concrete
+      case (raw Ed25519 over hex-decoded digest bytes, `internal/trust.Sign`/`Verify`), so
+      this hasn't bitten anything yet, but a second implementation (or opentea's own Web
       PKI/HSM mode, `design/publisher-service.md` §9.5) would have nothing precise to
-      interoperate against. Needs published byte-exact test vectors, not just prose.
+      interoperate against. Needs published byte-exact test vectors, not just prose.~~
+      **Fixed 2026-09-30**: new `design/publisher-service.md` §9.7 ("The exact to-be-signed
+      bytes: a versioned structure and a published test vector", v0.29) precisely specifies
+      "structure v1" — the one scheme Phase 1 actually implements — as five numbered steps
+      (canonicalize → SHA-256 digest, hex-transported → **sign the 32 raw decoded digest
+      bytes, never the hex characters, never the canonical JSON directly** → for
+      `jws-detached`, a raw Ed25519 signature, base64-standard, explicitly *not* real RFC
+      7797 JWS framing despite the label (which is reused from `tea-trust-architecture`'s
+      own `evidence-bundle-schema.json` vocabulary to stay aligned with that external
+      schema, not because real JWS is implemented) → Ed25519-only/self-signed-only
+      algorithm and certificate allowlist, matching what `internal/trust.ParseCertificatePublicKey`
+      already hard-enforces in code. No behavior changed anywhere — every rule was already
+      true of `internal/trust`/`internal/publisher`/`internal/admin`'s existing code; this
+      makes it explicit, versioned, and interoperability-testable rather than implicit
+      across scattered comments. `design/publisher-openapi.yaml` (v0.13) changed to match:
+      `signatureFormat` is now a real `enum` (was a bare `string`), and
+      `objectDigestValue`/`digestToSign`/`signatureValue`'s descriptions state the
+      digest-envelope rule precisely instead of the ambiguous "sign exactly these bytes."
+      Added a published, byte-exact test vector (fixed Ed25519 seed `0x00..0x1f`, a
+      concrete `tea.Artifact`, its exact canonical JSON/digest/signature) backed by a
+      permanent passing test, `TestArtifactEvidenceVectorV1`
+      (`internal/trust/vectors_test.go`) — not a regression test for a prior defect (nothing
+      was actually broken), but the source of truth §9.7's published vector is copied from,
+      so the two can't silently drift apart; confirmed self-consistent (verifies) and
+      deterministic (signing twice over the same inputs produces byte-identical output, as
+      RFC 8032 Ed25519 guarantees). JWS/CMS format profiles and RSA/ECDSA/other algorithm
+      support remain explicitly deferred (nothing implements them; inventing full profiles
+      for formats this codebase doesn't use would be speculative, not a real gap closure).
+      **Domain separation** — also on the review's required-changes list — was deliberately
+      *not* added in this pass (see the new, separate TODO item just below): it would
+      change the actual digest formula across both artifact and collection evidence
+      (`internal/trust.Canonicalize`+`SHA256Hex` is shared machinery, used by both
+      `internal/publisher/evidence.go` and `internal/admin/evidencebundle.go`), a real
+      behavior change to an already-shipped subsystem, not just this draft document — and
+      the project's own external `tea-trust-architecture` spec may already define a
+      specific context string worth matching rather than inventing independently. Verified:
+      `go build`/`go vet`/`gofmt` clean, full suite clean, `golangci-lint` clean, `-race`
+      clean, and the YAML validated via `js-yaml` (no Python `pyyaml` available in this
+      environment) confirming the schema still parses and the new `enum` renders correctly.
+- [ ] **Domain separation for evidence-bundle digests** — `internal/trust.Canonicalize`+
+      `SHA256Hex` (shared by artifact evidence, `internal/publisher/evidence.go`, and
+      collection evidence, `internal/admin/evidencebundle.go`) digests canonical JSON with
+      no prefix distinguishing "this is a TEA evidence digest for object type X, protocol
+      version Y" from any other SHA-256-of-canonical-JSON this or another protocol might
+      ever compute — flagged by external security review (finding 5,
+      docs/security-review-publisher-design-260828.md's "define a domain-separation
+      context containing at least protocol, object type, and protocol version").
+      Deliberately scoped out of that finding's fix (`design/publisher-service.md` §9.7,
+      2026-09-30): adding it changes the actual digest formula for an already-shipped
+      subsystem (Trust Architecture Phase 1), spans both artifact and collection evidence,
+      and opentea's own external `github.com/oej/tea-trust-architecture` spec may already
+      define a specific context string to match rather than inventing one independently —
+      check that spec first, before designing this from scratch.
 - [ ] **[security review finding 6] Publisher API: finer-grained capability model** — the
       shipped `full`/`cicd` credential scopes (`internal/publisher`, `model.PublisherScope*`)
       are a coarse first cut, not the per-operation capability vocabulary the review

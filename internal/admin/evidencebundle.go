@@ -66,7 +66,11 @@ type evidenceBundleRefMaterial struct {
 // caller store evidence mislabeled as (say) "cms-detached" while
 // containing no CMS structure at all, misleading any consumer that trusts
 // the label (found by external security review). Widen this only in step
-// with adding a real per-format parser/verifier below.
+// with adding a real per-format parser/verifier below. The exact bytes
+// that verification covers -- and why jws-detached here is a restricted
+// profile, not real RFC 7797 JWS -- are now pinned down precisely, with a
+// published byte-exact test vector, in design/publisher-service.md §9.7
+// (docs/security-review-publisher-design-260828.md finding 5).
 var validSignatureFormats = map[string]bool{
 	string(trust.SignatureFormatJWSDetached): true,
 }

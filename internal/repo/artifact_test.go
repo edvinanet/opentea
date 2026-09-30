@@ -5,6 +5,7 @@ package repo
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
 
@@ -72,6 +73,107 @@ func TestArtifactSetFileInvalidFormatIndex(t *testing.T) {
 	}
 	if _, err := r.SetArtifactFormatFile(ctx, a.UUID, a.Version, 5, "hash"); err != ErrNotFound {
 		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+}
+
+// TestCreateArtifactVersion is the regression test for
+// docs/security-review-publisher-design-260828.md finding 4: there was no
+// way to add a new revision to an existing artifact uuid at all, only mint
+// a brand new one. Confirms the new version is server-numbered
+// (current-highest + 1), that nothing is carried forward from the prior
+// version's fields (a completely different name/type/format set), and that
+// both the new and the original version remain independently fetchable.
+func TestCreateArtifactVersion(t *testing.T) {
+	ctx := context.Background()
+	r := newTestRepo(t)
+
+	v1, err := r.CreateArtifact(ctx, ArtifactInput{
+		Name:    "sbom-draft.json",
+		Type:    "BOM",
+		Formats: []ArtifactFormatInput{{MediaType: "application/vnd.cyclonedx+json"}},
+	})
+	if err != nil {
+		t.Fatalf("CreateArtifact: %v", err)
+	}
+
+	v2, err := r.CreateArtifactVersion(ctx, v1.UUID, nil, ArtifactInput{
+		Name:    "sbom-corrected.json",
+		Type:    "BOM",
+		Formats: []ArtifactFormatInput{{MediaType: "application/vnd.cyclonedx+xml"}},
+	})
+	if err != nil {
+		t.Fatalf("CreateArtifactVersion: %v", err)
+	}
+	if v2.UUID != v1.UUID {
+		t.Fatalf("UUID = %q, want the same identity as v1 (%q)", v2.UUID, v1.UUID)
+	}
+	if v2.Version != 2 {
+		t.Fatalf("Version = %d, want 2", v2.Version)
+	}
+	if v2.Name != "sbom-corrected.json" || len(v2.Formats) != 1 || v2.Formats[0].MediaType != "application/vnd.cyclonedx+xml" {
+		t.Fatalf("v2 = %+v, want fresh fields, nothing carried forward from v1", v2)
+	}
+
+	// v1 is untouched.
+	stillV1, err := r.GetArtifactByVersion(ctx, v1.UUID, 1)
+	if err != nil {
+		t.Fatalf("GetArtifactByVersion(1): %v", err)
+	}
+	if stillV1.Name != "sbom-draft.json" {
+		t.Fatalf("v1.Name = %q, want it unchanged by creating v2", stillV1.Name)
+	}
+
+	// A third version continues the sequence.
+	v3, err := r.CreateArtifactVersion(ctx, v1.UUID, nil, ArtifactInput{
+		Type:    "BOM",
+		Formats: []ArtifactFormatInput{{MediaType: "application/vnd.cyclonedx+json"}},
+	})
+	if err != nil {
+		t.Fatalf("CreateArtifactVersion (v3): %v", err)
+	}
+	if v3.Version != 3 {
+		t.Fatalf("Version = %d, want 3", v3.Version)
+	}
+}
+
+func TestCreateArtifactVersionUnknownUUID(t *testing.T) {
+	r := newTestRepo(t)
+	_, err := r.CreateArtifactVersion(context.Background(), "00000000-0000-4000-8000-000000000000", nil, ArtifactInput{
+		Type:    "BOM",
+		Formats: []ArtifactFormatInput{{MediaType: "application/json"}},
+	})
+	if err != ErrNotFound {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+}
+
+// TestCreateArtifactVersionPreviousVersionMismatch is the regression test
+// for the optimistic-concurrency half of finding 4: a caller supplying a
+// stale previousVersion must be rejected, not silently land on an
+// unexpected version number.
+func TestCreateArtifactVersionPreviousVersionMismatch(t *testing.T) {
+	ctx := context.Background()
+	r := newTestRepo(t)
+
+	a, err := r.CreateArtifact(ctx, ArtifactInput{Type: "BOM", Formats: []ArtifactFormatInput{{MediaType: "application/json"}}})
+	if err != nil {
+		t.Fatalf("CreateArtifact: %v", err)
+	}
+
+	stale := 5
+	_, err = r.CreateArtifactVersion(ctx, a.UUID, &stale, ArtifactInput{Type: "BOM", Formats: []ArtifactFormatInput{{MediaType: "application/json"}}})
+	if !errors.Is(err, ErrVersionConflict) {
+		t.Fatalf("err = %v, want ErrVersionConflict", err)
+	}
+
+	// The correct previousVersion (1) succeeds.
+	correct := 1
+	v2, err := r.CreateArtifactVersion(ctx, a.UUID, &correct, ArtifactInput{Type: "BOM", Formats: []ArtifactFormatInput{{MediaType: "application/json"}}})
+	if err != nil {
+		t.Fatalf("CreateArtifactVersion with correct previousVersion: %v", err)
+	}
+	if v2.Version != 2 {
+		t.Fatalf("Version = %d, want 2", v2.Version)
 	}
 }
 

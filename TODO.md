@@ -1373,18 +1373,48 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       proposes (`artifact.evidence.submit`, `collection.approve`, etc., mirroring
       `internal/authz`'s existing read-side capability naming). Revisit once a real
       deployment needs something between "can do everything" and "can do everything except
-      approve/reject and identity-defining creates."
+      approve/reject and identity-defining creates." **2026-09-30**: investigated fixing
+      just the finding's other half -- "approve/reject credentials must represent
+      authenticated human principals rather than workload identities" (today a `full`-scope
+      bearer credential, the *same kind* CI/CD automation holds one tier down, can
+      approve/reject; nothing distinguishes a human from a leaked/stolen service token) --
+      deliberately not implemented this pass. See the next entry below
+      ("Publisher API: derive approval actor from authenticated identity") for what was
+      found and why it's a real, separate design question rather than a quick fix.
 - [ ] **[security review finding 7] Publisher API: evidence storage level doesn't match the
       signing flow** — `prepareArtifactEvidence`/`submitArtifactEvidence` sign the artifact
-      as a whole, but the consumer spec's `evidenceBundle`/`evidenceBundleRef` extension
-      fields live on `artifact-format`, not `artifact` (`pkg/tea/trust.go`,
-      `internal/repo/evidencebundle.go`'s `OwnerType` is `"ARTIFACT"`, an
-      opentea-internal choice, not a spec-defined owner type). Unclear for a multi-format
-      artifact (e.g. SBOM as both XML and JSON) whether one signature covers every format
-      or only one. Resolve by either moving evidence to the `artifact` object at the spec
-      level, or scoping prepare/submit per-format with a stable format identifier (also
-      needed for finding 14's fix to go further than upload addressing).
-- [ ] **[security review finding 9/10] Publisher API OpenAPI draft: completeness and
+      as a whole, but `evidenceBundle`/`evidenceBundleRef` -- **correction, 2026-09-30: these
+      are oej's own `tea-trust-architecture` overlay vocabulary, not part of core TEA /
+      `spec/openapi.yaml` at all** -- live on `artifact-format`, not `artifact`
+      (`pkg/tea/types.go`'s `ArtifactFormat`/`Collection`, `internal/bundle/schema.json`,
+      `design/publisher-openapi.yaml`; `internal/repo/evidencebundle.go`'s `OwnerType` is
+      `"ARTIFACT"`, an opentea-internal choice). Unclear for a multi-format artifact (e.g.
+      SBOM as both XML and JSON) whether one signature covers every format or only one.
+      **2026-09-30 investigation**: confirmed nothing in `/tea/v1` actually populates
+      `ArtifactFormat.EvidenceBundle` today (no live consumer-facing bug -- evidence wiring
+      into `/tea/v1` responses is Phase 4, "not yet built" per `Collection.EvidenceBundle`'s
+      own doc comment), so this is a schema/architecture question to settle before that
+      wiring lands, not an active defect. Also: finding 4's `createArtifactVersion` fix
+      (2026-09-29) already closes one of the review's listed ambiguities as a side effect --
+      "a subsequent version may contain a different format set" can no longer happen
+      silently, since the format set is fixed at artifact-version-creation time and a
+      different set requires a whole new version (and therefore fresh evidence). Two
+      resolution paths remain open, deliberately **not implemented this pass** (explicit
+      decision: these fields aren't part of core TEA, so this doesn't block TEA 1.0
+      conformance, and the right placement is oej's call as the overlay's author, not
+      something to decide unilaterally):
+      - **(a) Move `evidenceBundle`/`evidenceBundleRef` to the `artifact` object** --
+        matches what's actually signed today (the whole `tea.Artifact`, confirmed by
+        finding 5's published §9.7 test vector); the smaller, more consistent change.
+      - **(b) Make signing genuinely per-format instead** -- matches where the fields
+        currently live; requires per-format canonicalization, a stable format identifier
+        threaded through `prepare`/`submit` (also needed for finding 14's fix to go further
+        than upload addressing), and a new `evidence_bundle` owner granularity
+        (`internal/repo/evidencebundle.go`) below the whole artifact.
+      Check whether `github.com/oej/tea-trust-architecture` (specifically
+      `08-evidence-bundle.md` Sec 10, cited by `internal/bundle/schema.json`) already fixes
+      this placement before choosing between them.
+- [x] ~~**[security review finding 9/10] Publisher API OpenAPI draft: completeness and
       schema-reuse accuracy** — `design/publisher-openapi.yaml` still omits
       component/componentRelease CLE endpoints and the componentRelease collection-draft
       path variants (explicitly marked as omitted-for-brevity, not a scope decision —
@@ -1393,7 +1423,51 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       calls "reused verbatim" from the consumer spec actually differ (e.g. the publisher
       `uuid`/`date-time` schemas drop the consumer schema's format patterns) — some
       differences are editorial, some weaken validation. Needs a pass reconciling the draft
-      against both what's actually implemented and the consumer spec's real schemas.
+      against both what's actually implemented and the consumer spec's real schemas.~~
+      **Fixed 2026-09-30** (`design/publisher-openapi.yaml` v0.14): added the component/
+      componentRelease CLE-event operations and the full componentReleaseUuid
+      collection-draft operation family (put/get/delete/approve/reject/prepareCommit/
+      cancelPrepare/commit) — all genuinely already implemented
+      (`internal/publisher/router.go`), confirmed against the real Go routes before
+      documenting rather than assumed from the old comment's own claim. **CLE
+      *definitions* turned out to be a real, separate gap while checking this** — unlike
+      CLE events and collection drafts, `/publisher/v1` has no write operation for CLE
+      definitions at all, for any owner type (`internal/admin` does, `internal/publisher`
+      doesn't) — nothing was fabricated in the OpenAPI doc for a capability that doesn't
+      exist; tracked instead as a new, separate TODO.md item just below. Re-verified every
+      one of the 23 schemas the document claims "reused verbatim" against current upstream
+      (`main` faee30e, 2026-09-30, TEA v1.0.0 — the prior Beta-2-era snapshot had drifted
+      significantly) via a whitespace-normalized structural diff script (`js-yaml`, no
+      `pyyaml` available in this environment): fixed missing descriptions, the
+      `uuid`/`date-time`/`checksum` validation patterns the review named specifically,
+      missing `required` lists, and two outright-missing pieces
+      (`cle-event.versions`/`cle-event-create.versions`, and a whole missing
+      `cle-version-specifier` schema `cle-event.versions` referenced). `error-response`
+      turned out to match *neither* the consumer spec *nor* what `/publisher/v1` actually
+      emits (`internal/httpx.messageBody`'s plain `{"message": ...}`, confirmed by reading
+      every error path `internal/publisher` calls) — corrected to describe reality and
+      removed from the "verbatim" list, since it never belonged there. One deliberate,
+      now-`x-deviation`-documented exception remains: `checksum-type` keeps `MD5`, dropped
+      by current upstream but still what opentea's own `pkg/tea/enums.go` actually emits —
+      whether `pkg/tea/enums.go` itself should drop it is the new, separate TODO.md item
+      after next. Post-fix structural diff confirms zero remaining differences from
+      upstream across all 23 schemas except that one documented deviation and (by
+      deliberate editorial choice, noted in the doc) upstream's worked `examples` arrays,
+      which this draft doesn't copy. Verified: YAML re-parses cleanly (`js-yaml`), all 32
+      operations have unique `operationId`s, all 189 `$ref`s in the file resolve to a real
+      target (checked programmatically) — no code changed, so no Go build/test/lint
+      re-run was needed.
+- [ ] **Publisher API: CLE definitions have no `/publisher/v1` write operation at all**
+      (found 2026-09-30, while verifying finding 9/10's fix against the real
+      implementation) — `internal/admin/router.go` has `POST .../cle/definitions` for all
+      four owner types (product/productRelease/component/componentRelease), but
+      `internal/publisher` has no equivalent anywhere — only CLE *events* are writable
+      through the Publisher API. `design/publisher-openapi.yaml` previously (wrongly)
+      implied this was just undocumented, not actually missing; now corrected to say so
+      plainly. Needs its own pass: add `createCLEDefinitionForOwner`-equivalent handlers
+      and routes to `internal/publisher` (mirroring `internal/admin/cle.go`'s existing
+      ones closely), a `cle-definition-create` request schema, and four new OpenAPI
+      operations once the real implementation exists to document.
 - [ ] **[security review finding 11] Publisher API: caller-supplied creation timestamps**
       — `productRelease-create`/`release-create`'s `createdDate` and CLE's `published` are
       required request fields a caller can backdate or future-date; the consumer spec
@@ -1661,7 +1735,35 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       Layer B/D bearer credential's identity rather than trust an asserted field. Needs its
       own design pass (does the credential's subject claim always map 1:1 to a human actor,
       or does a shared service-account credential need an additional asserted-but-verified
-      sub-identity) before touching the OpenAPI schema.
+      sub-identity) before touching the OpenAPI schema. **2026-09-30**: revisited while
+      scoping docs/security-review-publisher-design-260828.md finding 6's "approve/reject
+      must represent authenticated human principals, not workload identities." The obvious
+      fix -- require the target's own `opentea_session` admin-GUI cookie (`internal/authn`,
+      the same mechanism `internal/admin`/`internal/webadmin` already use) on
+      `/publisher/v1/.../approve`+`/reject` instead of a bearer `PublisherCredential` --
+      runs straight into this entry's own open question, now concretely confirmed rather
+      than hypothetical: `internal/openteapublisher` (the separate manufacturer-facing
+      platform) has its own internal, staff-account-based approval workflow
+      (`internal/openteapublisher/approval.go`'s `ApprovalRequest`/`ApprovalDecision`), but
+      when that internal process completes, it calls the *target's* `/publisher/v1/.../approve`
+      using one single, static, shared bearer credential per target
+      (`internal/openteapublisher/target.go`'s `Target.BearerToken` — one field, not
+      per-staff). A session-cookie requirement on the target would make `cmd/openteapublisher`
+      structurally unable to complete the protocol-level decision at all — a human would
+      have to abandon openteapublisher's own approval UI and log into the *target* opentea
+      server's own admin GUI directly, a real behavioral regression to the mediated-approval
+      flow, not a config change. Two real paths forward, neither chosen yet: (a) accept that
+      regression — session-cookie auth on the target, `cmd/openteapublisher`'s internal
+      ApprovalRequest becomes a pre-check/business gate only, the actual protocol decision
+      always happens on the target's own admin GUI; or (b) give `cmd/openteapublisher` a way
+      to present a *per-staff*, individually-attributable credential to the target instead of
+      one shared `Target.BearerToken` (this entry's original "asserted-but-verified
+      sub-identity" framing) — bigger design surface (how is a per-staff credential issued,
+      does it need its own lifecycle separate from the target relationship's own credential,
+      does the target need a new credential *kind* to distinguish it from an ordinary
+      workload `cicd`/`full` credential). Explicitly not designed further here — needs its
+      own pass, and a real decision about `cmd/openteapublisher`'s intended long-term role in
+      the approval flow, before either path should be implemented.
 - [ ] **Publisher platform: domain-ownership verification** (found 2026-08-29, during a DNS
       access-management discussion for the publisher platform) — before letting a
       manufacturer publish under a given domain, the publisher platform needs to verify they

@@ -1,11 +1,38 @@
 openapi: 3.1.0
 info:
   title: TEA Publisher API
-  version: 0.13.0-draft
+  version: 0.14.0-draft
   description: |
-    **Status: draft v0.13, for discussion. opentea's own server-side implementation
+    **Status: draft v0.14, for discussion. opentea's own server-side implementation
     exists (`internal/publisher`) but this document is still a draft, not approved by
     CycloneDX or any TEA working group.**
+
+    v0.14: two fixes from the same external security review
+    (docs/security-review-publisher-design-260828.md), both about this draft's accuracy as
+    a contract rather than any change to `internal/publisher`'s actual behavior:
+
+    - **Finding 9** ("intentionally incomplete but presented as a protocol contract"):
+      added the component/componentRelease CLE-event operations and the full
+      componentReleaseUuid collection-draft/approve/reject/prepareCommit/cancelPrepare/
+      commit operation family -- all genuinely implemented already
+      (`internal/publisher/router.go`), previously just undocumented "for brevity."
+      CLE *definitions* (as opposed to CLE events) turned out to be a real, separate gap,
+      not a documentation one -- `/publisher/v1` has no write operation for them at all,
+      for any owner type (unlike `/admin/v1`, which does) -- so nothing was fabricated for
+      them here; tracked as its own `TODO.md` item instead.
+    - **Finding 10** (the "reused verbatim" claim was false for most of the schemas it
+      covered): every schema in that list re-verified against current upstream (`main`
+      faee30e, 2026-09-30 -- the prior "2026-08-27, v0.4.0 Beta 2" snapshot had drifted,
+      both from upstream's move to v1.0 and from gaps in the original comparison itself)
+      and corrected to match exactly -- missing descriptions, the `uuid`/`date-time`/
+      `checksum` validation patterns the review named specifically, missing requiredness,
+      and two outright-missing fields (`cle-event.versions`, a whole missing
+      `cle-version-specifier` schema). `error-response` turned out not to match either the
+      consumer spec *or* what `/publisher/v1` actually emits -- corrected to describe
+      reality (a plain `{"message": ...}` body, `internal/httpx.messageBody`), and removed
+      from the "verbatim" claim since it never was. One deliberate, now-documented
+      deviation remains: `checksum-type` keeps `MD5`, which upstream has since dropped,
+      because opentea's own `pkg/tea/enums.go` still emits it.
 
     v0.13: `signatureFormat` is now a real enum (was a bare string), and
     `objectDigestValue`/`signatureValue`'s descriptions spell out the exact bytes signed —
@@ -164,12 +191,13 @@ info:
 
     Schemas reused **verbatim**, no changes at all (see each schema's own description for
     the "as of" spec snapshot this was checked against): `uuid`, `date-time`, `identifier`,
-    `identifier-type`, `checksum`, `checksum-type`, `collection-update-reason`,
+    `identifier-type`, `checksum`, `collection-update-reason`,
     `collection-update-reason-type`, `collection-belongs-to-type`, `artifact-type`,
     `cle-event-type`, `component-ref`, `product`, `component`, `productRelease`, `release`
-    (the component-release schema — the consumer spec itself names it `release`, not
-    `componentRelease`, kept as-is here), `release-distribution`, `artifact`, `cle-event`,
-    `cle-support-definition`, `cle-definitions`, `cle`, `error-response`.
+    (the component-release schema — the consumer spec itself names it `component-release`
+    as of TEA 1.0 (kebab-case; `release` pre-1.0) — kept as `release` here, see the
+    schemas-section top comment), `release-distribution`, `artifact`, `cle-version-specifier`,
+    `cle-event`, `cle-support-definition`, `cle-definitions`, `cle`.
 
     Deviations, each also marked `x-deviation` on the schema itself:
 
@@ -201,6 +229,20 @@ info:
        bytes (`uploadArtifactFile` below), matching opentea's own existing
        `/admin/v1` behavior — a caller-supplied checksum before any file exists would be
        meaningless.
+    5. **`checksum-type` keeps `MD5`**, which current upstream (`main` faee30e, 2026-09-30)
+       has dropped from its own enum. Kept because it's what opentea's own
+       `pkg/tea/enums.go` (`ChecksumTypeMD5`) still actually accepts and emits on
+       `/tea/v1` today — this draft describes opentea's real wire behavior, not a
+       hypothetical fully-current server. Whether `pkg/tea/enums.go` itself should drop MD5
+       to match upstream is tracked separately in `TODO.md`.
+    6. **`error-response` does not match the consumer spec's schema of the same name at
+       all**, and was wrongly claimed "reused verbatim" until this revision (external
+       security review, docs/security-review-publisher-design-260828.md finding 10):
+       `/publisher/v1` isn't governed by `spec/openapi.yaml`, and its every error path
+       (`internal/httpx.BadRequest`/`Forbidden`/`Conflict`/`Unauthorized`/`InternalError`)
+       writes a plain `{"message": "..."}` body, never the consumer spec's `{error,
+       message}` shape with `error` from a fixed enum. This schema's own description now
+       states that plainly; see the schema itself, not this list, for its actual shape.
 
     Schemas with **no consumer-spec equivalent at all** — not alterations of an existing
     object, because the consumer spec is read-only by design and never modeled a write or
@@ -656,10 +698,57 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/cle-event' }
 
-  # (componentUuid/componentReleaseUuid CLE-event equivalents, and the four owner types'
-  # own /cle/definitions operations, follow the same shape as the two above — omitted
-  # here to keep this draft's length manageable; not a design decision to leave them out
-  # of the real spec.)
+  /components/{componentUuid}/cle/events:
+    post:
+      operationId: createComponentCLEEvent
+      tags: [Lifecycle]
+      summary: Record a lifecycle event for a component. Same shape as the product-level operation above.
+      parameters:
+        - $ref: '#/components/parameters/ComponentUuid'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/cle-event-create' }
+      responses:
+        '201':
+          description: Recorded.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/cle-event' }
+
+  /componentReleases/{componentReleaseUuid}/cle/events:
+    post:
+      operationId: createComponentReleaseCLEEvent
+      tags: [Lifecycle]
+      summary: Record a lifecycle event for a component release. Same shape as the product-level operation above.
+      parameters:
+        - $ref: '#/components/parameters/ComponentReleaseUuid'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/cle-event-create' }
+      responses:
+        '201':
+          description: Recorded.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/cle-event' }
+
+  # CLE *definitions* (as opposed to CLE *events*, above) have no /publisher/v1 write
+  # operation at all, for any of the four owner types -- genuinely unimplemented
+  # (internal/publisher has no createCLEDefinitionForOwner-equivalent route; compare
+  # internal/admin/router.go's four POST .../cle/definitions routes, which do exist on
+  # the JSON admin API), not merely undocumented. Previously this comment claimed CLE
+  # definitions were "omitted here to keep this draft's length manageable, not a design
+  # decision to leave them out of the real spec" -- false for definitions specifically
+  # (true for the component/componentReleaseUuid CLE-event and collectionDraft variants
+  # above/below, which really were implemented-but-undocumented; external security
+  # review, docs/security-review-publisher-design-260828.md finding 9, prompted checking
+  # this claim against the real implementation rather than continuing to assume it).
+  # Tracked as its own TODO.md item -- not fabricated here as a phantom operation the
+  # server doesn't actually serve.
 
   # ---------------------------------------------------------------- Collections (staging + atomic commit)
   # A collection's uuid always equals its owning release's uuid (spec/openapi.yaml's own
@@ -667,9 +756,17 @@ paths:
   # Product Release object" — verified verbatim). A new version never gets a new UUID, so
   # there is nothing to reserve or allocate ahead of time, and a draft is naturally a
   # singleton per owner: keyed by the owning release's UUID directly, not a separately-
-  # issued draft id. (componentReleaseUuid equivalents of the three operations below
-  # follow the identical shape — omitted here to keep this draft's length manageable, not
-  # a design decision to leave them out of the real spec.)
+  # issued draft id. componentReleaseUuid equivalents of all eight operations below are
+  # genuinely implemented (internal/publisher/router.go's
+  # registerCollectionDraftRoutes("componentReleases", ...)) and now documented after
+  # these, not sketched separately -- their existing operationIds
+  # (putCollectionDraft/getCollectionDraft/etc.) stay as-is for the product-release
+  # variants below (renaming them, and every one of their many cross-references
+  # throughout this document's prose, is a separate, purely-mechanical concern); the
+  # component-release siblings use explicit ComponentRelease-suffixed operationIds
+  # instead, since OpenAPI operationIds must be unique document-wide
+  # (docs/security-review-publisher-design-260828.md finding 9 -- previously these were
+  # dropped from this draft entirely, not merely under a generic name).
   /productReleases/{productReleaseUuid}/collectionDraft:
     put:
       operationId: putCollectionDraft
@@ -910,6 +1007,162 @@ paths:
           description: Signature verification failed, or the draft's digest no longer matches (it changed since prepareCommit) — nothing was published.
         '404': { $ref: '#/components/responses/NotFound' }
 
+  # componentReleaseUuid equivalents of the eight productReleaseUuid operations above --
+  # identical shape and behavior throughout, only the owning release type differs
+  # (internal/publisher/router.go's registerCollectionDraftRoutes drives both variants
+  # off the same Go handlers, parameterized by ownerType). See each operation above for
+  # full reasoning; summaries here are deliberately short rather than repeating it.
+  /componentReleases/{componentReleaseUuid}/collectionDraft:
+    put:
+      operationId: putComponentReleaseCollectionDraft
+      tags: [Collections]
+      summary: Same as putCollectionDraft above, for a component release's collection draft.
+      parameters:
+        - $ref: '#/components/parameters/ComponentReleaseUuid'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/collection-draft-artifact-list' }
+      responses:
+        '200':
+          description: Updated (or newly created) draft.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/collection-draft' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The draft is locked by an outstanding prepareCollectionCommit (§9.5).
+    get:
+      operationId: getComponentReleaseCollectionDraft
+      tags: [Collections]
+      summary: Same as getCollectionDraft above, for a component release's collection draft.
+      parameters:
+        - $ref: '#/components/parameters/ComponentReleaseUuid'
+      responses:
+        '200':
+          description: Draft state.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/collection-draft' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      operationId: deleteComponentReleaseCollectionDraft
+      tags: [Collections]
+      summary: Same as deleteCollectionDraft above, for a component release's collection draft.
+      parameters:
+        - $ref: '#/components/parameters/ComponentReleaseUuid'
+      responses:
+        '204': { description: Deleted. }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /componentReleases/{componentReleaseUuid}/collectionDraft/approve:
+    post:
+      operationId: approveComponentReleaseCollectionDraft
+      tags: [Collections]
+      summary: >-
+        Same as approveCollectionDraft above, for a component release's collection draft
+        -- same human-actor requirement (§14.3).
+      parameters:
+        - $ref: '#/components/parameters/ComponentReleaseUuid'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/approval-decision' }
+      responses:
+        '200':
+          description: Updated draft, now approved at its current revision.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/collection-draft' }
+        '403':
+          description: actor equals the draft's own draftedBy — self-approval is rejected.
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The draft is locked by an outstanding prepareCollectionCommit.
+
+  /componentReleases/{componentReleaseUuid}/collectionDraft/reject:
+    post:
+      operationId: rejectComponentReleaseCollectionDraft
+      tags: [Collections]
+      summary: Same as rejectCollectionDraft above, for a component release's collection draft.
+      parameters:
+        - $ref: '#/components/parameters/ComponentReleaseUuid'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/approval-decision' }
+      responses:
+        '200':
+          description: Updated draft, now rejected at its current revision.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/collection-draft' }
+        '403':
+          description: actor equals the draft's own draftedBy.
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The draft is locked by an outstanding prepareCollectionCommit.
+
+  /componentReleases/{componentReleaseUuid}/collectionDraft/prepareCommit:
+    post:
+      operationId: prepareComponentReleaseCollectionCommit
+      tags: [Collections]
+      summary: >-
+        Same as prepareCollectionCommit above, for a component release's collection draft
+        -- builds the would-be `collection` (uuid is always componentReleaseUuid) and
+        returns its digest to sign, locking the draft.
+      parameters:
+        - $ref: '#/components/parameters/ComponentReleaseUuid'
+      responses:
+        '200':
+          description: The would-be collection and its digest to sign. The draft is now locked.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/prepare-commit-response' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: No current approval on record for this draft (see summary).
+
+  /componentReleases/{componentReleaseUuid}/collectionDraft/cancelPrepare:
+    post:
+      operationId: cancelPrepareComponentReleaseCollectionCommit
+      tags: [Collections]
+      summary: Same as cancelPrepareCollectionCommit above, for a component release's collection draft.
+      parameters:
+        - $ref: '#/components/parameters/ComponentReleaseUuid'
+      responses:
+        '204': { description: Lock released. }
+        '404':
+          description: No such draft, or no lock currently held.
+
+  /componentReleases/{componentReleaseUuid}/collectionDraft/commit:
+    post:
+      operationId: commitComponentReleaseCollectionDraft
+      tags: [Collections]
+      summary: >-
+        Same as commitCollectionDraft above, for a component release's collection draft --
+        atomic signing verification + publish; approval was already checked by
+        prepareCollectionCommit.
+      parameters:
+        - $ref: '#/components/parameters/ComponentReleaseUuid'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/evidence-submission' }
+      responses:
+        '201':
+          description: Published — the real `collection`, matching exactly what /tea/v1 would now serve for it.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/collection' }
+        '400':
+          description: Signature verification failed, or the draft's digest no longer matches (it changed since prepareCommit) — nothing was published.
+        '404': { $ref: '#/components/responses/NotFound' }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -933,6 +1186,11 @@ components:
       schema: { $ref: '#/components/schemas/uuid' }
     ComponentUuid:
       name: componentUuid
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/uuid' }
+    ComponentReleaseUuid:
+      name: componentReleaseUuid
       in: path
       required: true
       schema: { $ref: '#/components/schemas/uuid' }
@@ -962,28 +1220,62 @@ components:
   schemas:
     # ================================================================
     # Reused VERBATIM from spec/openapi.yaml (CycloneDX/transparency-exchange-api,
-    # checked against `main` 2026-08-27, TEA v0.4.0 Beta 2). No field, name, or
-    # requiredness changed from the consumer spec's own definition. Where opentea's own
+    # re-checked against `main` faee30e, 2026-09-30, TEA v1.0.0 -- the previous "checked
+    # against 2026-08-27, v0.4.0 Beta 2" snapshot had drifted significantly (upstream moved
+    # to v1.0 in between: product-release/component-release gained productName/
+    # componentName/releaseDate/preRelease; the "verbatim" claim itself turned out false for
+    # most of this list even as of its own snapshot -- external security review,
+    # docs/security-review-publisher-design-260828.md finding 10 -- missing descriptions,
+    # uuid/checksum/date-time validation patterns, requiredness). No field, description,
+    # validation constraint, or requiredness now differs from the consumer spec's own
+    # current definition, one exception noted on checksum-type itself. Where opentea's own
     # pkg/tea/enums.go names differ cosmetically from the spec's own enum value strings,
     # the spec's own strings are used here (this file describes the wire, not the Go
-    # implementation).
+    # implementation). Schema *key names* below deliberately still read `productRelease`/
+    # `release`, the pre-1.0 names -- upstream renamed these to `product-release`/
+    # `component-release`; renaming every one of this draft's own $ref sites to match is a
+    # larger, separate, purely-mechanical pass (tracked in TODO.md), not done here. Content
+    # matches the current `product-release`/`component-release` schemas exactly regardless
+    # of the key name used to reach it. Upstream's own worked `examples` arrays are
+    # deliberately not copied onto these schemas -- editorial brevity for this draft
+    # document, not a validation or requiredness change; re-verified by a whitespace-
+    # normalized structural diff against upstream that ignores exactly `examples` and
+    # nothing else.
     # ================================================================
 
     uuid:
       type: string
+      description: A UUID in lower case (RFC 9562)
       format: uuid
+      pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 
     date-time:
       type: string
+      description: >-
+        Timestamp, RFC 3339 in UTC with the `Z` designator. Offsets are not accepted;
+        servers shall convert to UTC before emitting. Fractional seconds are optional and
+        preserved as sent. All timestamps in this specification use this schema.
       format: date-time
+      pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$'
+      example: '2024-03-20T15:30:00Z'
 
     identifier-type:
       type: string
-      enum: [CPE, PURL, TEI, COMPLIANCE_DOCUMENT]
+      description: >-
+        Enumeration of identifier types.
+
+        `COMPLIANCE_DOCUMENT` marks a TEA Component or TEA Component Release as carrying a
+        compliance document (for example a SOC 2 report), so that it can be discovered with
+        `idType=COMPLIANCE_DOCUMENT` on `/components` and `/componentReleases`; the
+        document itself is published as a TEA Artifact of the component release. It shall
+        not be used on products, product releases, distributions, or CLE events.
+      enum: [CPE, TEI, PURL, COMPLIANCE_DOCUMENT]
 
     identifier:
       type: object
-      description: An identifier with a specified type
+      description: >-
+        An identifier of a TEA object with a specified type. `COMPLIANCE_DOCUMENT` is
+        valid only on TEA Components and TEA Component Releases (see `identifier-type`).
       properties:
         idType:
           description: 'Type of identifier, e.g. `TEI`, `PURL`, `CPE`'
@@ -991,9 +1283,14 @@ components:
         idValue:
           description: Identifier value
           type: string
+      required: [idType, idValue]
 
     checksum-type:
       type: string
+      description: Checksum algorithm
+      x-deviation: >-
+        Keeps MD5, which current upstream (`main` faee30e, 2026-09-30) has dropped from
+        this enum -- see info.description, deviation 5.
       enum:
         - MD5
         - SHA-1
@@ -1010,21 +1307,56 @@ components:
 
     checksum:
       type: object
+      description: >-
+        Integrity digest for identified content bytes. `algValue` is the lowercase
+        hexadecimal encoding of the digest produced by `algType` over those bytes.
+        The hex length shall match the algorithm's digest size (for example 40 for
+        SHA-1, 64 for SHA-256 / SHA3-256 / BLAKE2b-256 / BLAKE3, 96 for SHA-384 /
+        SHA3-384 / BLAKE2b-384, 128 for SHA-512 / SHA3-512 / BLAKE2b-512).
       properties:
         algType:
           description: Checksum algorithm
           $ref: '#/components/schemas/checksum-type'
         algValue:
           type: string
-          description: Checksum value
+          description: >-
+            Lowercase hexadecimal digest value for `algType`. Do not use Base64 or
+            uppercase hex.
+          pattern: '^[0-9a-f]+$'
+          minLength: 40
+          maxLength: 128
+          example: '9da736a1cdd27231e70187cbc67398d29ca0b714f885e7032da9f1fb247693c1'
       required: [algType, algValue]
 
     collection-belongs-to-type:
       type: string
-      enum: [PRODUCT_RELEASE, COMPONENT_RELEASE]
+      description: Indicates whether a collection belongs to a component release or a product release
+      enum: [COMPONENT_RELEASE, PRODUCT_RELEASE]
 
     collection-update-reason-type:
       type: string
+      description: >-
+        Type of TEA collection update.
+
+        `VEX_UPDATED` covers adding or revising an artifact of type `VULNERABILITIES`,
+        including a revision whose external `url` or `signatureUrl` changed. VEX and VDR
+        share that type. `ARTIFACT_UPDATED` covers a new revision of an artifact whose
+        type is not `VULNERABILITIES`, including a revision whose external `url` or
+        `signatureUrl` changed. Replacing an embedded artifact revision solely because its
+        published `url` or `signatureUrl` changed is `VEX_UPDATED` when the artifact type
+        is `VULNERABILITIES`, and `ARTIFACT_UPDATED` otherwise. Removing an artifact,
+        including one of type `VULNERABILITIES`, counts as `ARTIFACT_REMOVED`.
+
+        The first Collection version shall use `INITIAL_RELEASE`. In subsequent versions,
+        adding or revising an artifact of type `VULNERABILITIES` counts as `VEX_UPDATED`.
+        When multiple change kinds occur, the server shall select `updateReason.type`
+        using the precedence rule below.
+
+        When a collection version other than the first contains changes of more than one
+        kind, the server shall set `updateReason.type` to the first applicable value in
+        this order: `VEX_UPDATED`, `ARTIFACT_REMOVED`, `ARTIFACT_ADDED`, `ARTIFACT_UPDATED`.
+        `comment` can describe the other changes. A client that needs the complete set of
+        changes should compare the version with the previous one.
       enum: [INITIAL_RELEASE, VEX_UPDATED, ARTIFACT_UPDATED, ARTIFACT_ADDED, ARTIFACT_REMOVED]
 
     collection-update-reason:
@@ -1037,9 +1369,11 @@ components:
         comment:
           type: string
           description: Free text description
+      required: [type]
 
     artifact-type:
       type: string
+      description: Type of TEA Artifact.
       enum:
         - ATTESTATION
         - BOM
@@ -1063,7 +1397,8 @@ components:
         release:
           description: >-
             Optional UUID of a specific release included in the product in the case where
-            the product always include a specific release of a component.
+            the product always include a specific release of a component. The product name
+            should include a version identifier in this case.
           $ref: '#/components/schemas/uuid'
       required: [uuid]
 
@@ -1076,7 +1411,11 @@ components:
           $ref: '#/components/schemas/uuid'
         name:
           type: string
-          description: Product name
+          description: >-
+            Product name. Within a TEA server, product names should be unique among
+            products. Uniqueness is an implementation recommendation, not a hard API
+            requirement. Product and component names are separate namespaces; a product
+            and a component may share the same name.
         identifiers:
           type: array
           description: List of identifiers for the product, like TEI, CPE, PURL or other identifiers
@@ -1092,7 +1431,11 @@ components:
           $ref: '#/components/schemas/uuid'
         name:
           type: string
-          description: Component name
+          description: >-
+            Component name. Within a TEA server, component names should be unique among
+            components. Uniqueness is an implementation recommendation, not a hard API
+            requirement. Product and component names are separate namespaces; a product
+            and a component may share the same name.
         identifiers:
           type: array
           description: List of identifiers for the component
@@ -1101,10 +1444,16 @@ components:
 
     productRelease:
       type: object
-      description: A specific release of a TEA product
+      description: >-
+        A specific release of a TEA product. Named `product-release` in the consumer spec
+        itself (kebab-case, since TEA 1.0) — kept as `productRelease` here (the pre-1.0
+        name) for this draft's own internal $ref stability; see this file's top-level
+        schemas comment.
       properties:
         uuid:
-          description: A unique identifier for the TEA Product Release
+          description: >-
+            A unique identifier for the TEA Product Release. Within an API base it
+            shall not also identify a Component Release; see `doc/tea-uuid-scope.md`.
           $ref: '#/components/schemas/uuid'
         product:
           description: UUID of the TEA Product this release belongs to
@@ -1112,9 +1461,11 @@ components:
         productName:
           description: Name of the TEA Product this release belongs to
           type: string
+          example: 'Apache Log4j 2'
         version:
-          description: Version number of the product release
+          description: Human-readable version string of the product release
           type: string
+          example: '2.24.3'
         createdDate:
           description: Timestamp when this Product Release was created in TEA (for sorting purposes)
           $ref: '#/components/schemas/date-time'
@@ -1124,28 +1475,35 @@ components:
         preRelease:
           type: boolean
           description: >-
-            A flag indicating pre-release (or beta) status. May be disabled after creation,
-            but can't be enabled after creation.
+            A flag indicating pre-release (or beta) status.
+            May be disabled after the creation of the release object, but can't be enabled after creation of an object.
         identifiers:
           type: array
-          description: List of identifiers for the product release
+          description: >-
+            Array of identifiers for the product release (`idType` is `CPE`, `TEI` or
+            `PURL`; `COMPLIANCE_DOCUMENT` is not valid here)
           items: { $ref: '#/components/schemas/identifier' }
         components:
           type: array
           description: >-
-            List of component references that compose this product release, optionally
-            pinned to a specific component release.
+            Array of component references that compose this product release. A component
+            reference can optionally include the UUID of a specific component release to
+            pin the exact version.
           items: { $ref: '#/components/schemas/component-ref' }
-      required: [uuid, version, createdDate, components]
+      required: [uuid, version, createdDate, components, product]
 
     release:
       type: object
       description: >-
-        A TEA Component Release. Named `release` in the consumer spec itself (not
-        `componentRelease`) — kept as-is here rather than renamed for local clarity.
+        A TEA Component Release. Named `component-release` in the consumer spec itself
+        (kebab-case, since TEA 1.0; before that, `release`) — kept as `release` here (the
+        pre-1.0 name) for this draft's own internal $ref stability; see this file's
+        top-level schemas comment.
       properties:
         uuid:
-          description: A unique identifier for the TEA Component Release
+          description: >-
+            A unique identifier of the TEA Component Release. Within an API base it
+            shall not also identify a Product Release; see `doc/tea-uuid-scope.md`.
           $ref: '#/components/schemas/uuid'
         component:
           description: UUID of the TEA Component this release belongs to
@@ -1153,9 +1511,11 @@ components:
         componentName:
           description: Name of the TEA Component this release belongs to
           type: string
+          example: tomcat
         version:
-          description: Version number
+          description: Human-readable version string
           type: string
+          example: '1.2.3'
         createdDate:
           description: Timestamp when this Release was created in TEA (for sorting purposes)
           $ref: '#/components/schemas/date-time'
@@ -1165,31 +1525,52 @@ components:
         preRelease:
           type: boolean
           description: >-
-            A flag indicating pre-release (or beta) status. May be disabled after creation,
-            but can't be enabled after creation.
+            A flag indicating pre-release (or beta) status.
+            May be disabled after the creation of the release object, but can't be enabled after creation of an object.
         identifiers:
           type: array
-          description: List of identifiers for the component
+          description: Array of identifiers for the component release
           items: { $ref: '#/components/schemas/identifier' }
         distributions:
           type: array
           description: List of different formats of this component release
           items: { $ref: '#/components/schemas/release-distribution' }
-      required: [uuid, version, createdDate]
+      required: [uuid, version, createdDate, component]
 
     release-distribution:
       type: object
-      description: One downloadable artifact (binary, installer, etc.) belonging to a component release.
       properties:
-        distributionId: { type: string }
-        description: { type: string }
+        distributionId:
+          description: A unique identifier for the TEA Distribution object (uuid)
+          $ref: '#/components/schemas/uuid'
+        description:
+          type: string
+          description: Free-text description of the distribution
         identifiers:
           type: array
+          description: Array of identifiers specific to this distribution
           items: { $ref: '#/components/schemas/identifier' }
-        url: { type: string, format: uri }
-        signatureUrl: { type: string, format: uri }
+        url:
+          type: string
+          description: >-
+            Direct download URL for the distribution. This is always a location outside
+            the TEA API. A TEA access token is sent only to the TEA server's own API base
+            URL, never to an external URL: distribution locations are either openly
+            accessible, pre-signed, or require credentials the client arranges
+            separately.
+          format: uri
+        signatureUrl:
+          type: string
+          description: >-
+            Direct download URL for the distribution's external signature. As with `url`,
+            this is always a location outside the TEA API. A TEA access token is sent only
+            to the TEA server's own API base URL, never to an external URL.
+          format: uri
         checksums:
           type: array
+          description: >-
+            Array of checksums for the distribution payload retrieved from `url`
+            (the distribution bytes, not the signature at `signatureUrl`).
           items: { $ref: '#/components/schemas/checksum' }
       required: [distributionId]
 
@@ -1230,66 +1611,106 @@ components:
       description: A security-related document
       properties:
         uuid:
-          description: Together with version, uniquely identifies the TEA Artifact.
+          description: >-
+            The UUID of the TEA Artifact object. Together with *version* uniquely
+            identifies the TEA Artifact.
           $ref: '#/components/schemas/uuid'
         version:
           type: integer
-          default: 1
-          description: Together with uuid, uniquely identifies the TEA Artifact.
+          description: >-
+            Revision number, starting at 1 and incremented by 1 for each new revision of
+            the same artifact UUID. Together with `uuid` uniquely identifies the TEA
+            Artifact. Successive revisions cover content changes and changes to any
+            published field, including external `url` or `signatureUrl` values. Each
+            published revision is immutable. For a fixed artifact UUID, version, and
+            format, the server shall ensure that successful content retrieval through its
+            download endpoint, including retrieval after following redirects, yields
+            unchanged artifact bytes after HTTP transfer coding and content coding are
+            removed, and that successful signature retrieval through its signature
+            download endpoint yields unchanged signature bytes on the same terms. Changing
+            only a download response's `Location`, or only its HTTP content coding, while
+            preserving those bytes, does not require a new artifact or collection version.
         name:
           type: string
-          description: Name of TEA Artifact
+          description: A human-readable name for the artefact
         type:
           description: Type of TEA Artifact
           $ref: '#/components/schemas/artifact-type'
         createdDate:
-          description: The date when the TEA Artifact revision was created.
+          description: The date and time the TEA Artifact revision was created.
           $ref: '#/components/schemas/date-time'
         distributionIds:
           type: array
           description: >-
-            List of TEA Component Release distributions this Artifact applies to. If
-            absent or empty, applies to all distributions.
-          items: { $ref: '#/components/schemas/uuid' }
+            Array of TEA Component Release distributions that this TEA Artifact applies
+            to. If absent or empty, the TEA Artifact applies to all distributions.
+          items:
+            $ref: '#/components/schemas/uuid'
+            description: >-
+              The distribution IDs of the TEA component release distributions that this
+              TEA Artifact applies to.
         formats:
           type: array
-          description: List of objects with the same content, but in different formats.
+          minItems: 1
+          description: >-
+            List of objects with the same content, but in different formats. The order of
+            the list has no significance.
           items: { $ref: '#/components/schemas/artifact-format' }
-      required: [uuid, type, formats]
+      required: [uuid, type, formats, createdDate, version]
 
     collection:
       type: object
-      description: A collection of security-related documents
+      description: >-
+        A collection of security-related documents.
+
+        Every component release and product release has a collection. If no artifacts have
+        been published when the release first becomes retrievable, the server serves
+        version 1 with an empty `artifacts` list and `updateReason.type: INITIAL_RELEASE`.
+        That version is immutable like any other; the first artifacts are published as
+        version 2.
       x-deviation: >-
         evidenceBundle/evidenceBundleRef are not in CycloneDX's own spec/openapi.yaml — see
         artifact-format's x-deviation; same extension, same reasoning.
       properties:
         uuid:
           description: >-
-            UUID of the TEA Collection object. Matches the UUID of the associated
-            Component Release or Product Release object.
+            UUID of the TEA Collection object. A TEA Collection shall use the same UUID as
+            its parent Product Release or Component Release. Within an API base, a Product
+            Release and a Component Release shall not share a UUID. Consequently,
+            Collections belonging to different parent releases have different UUIDs.
+            Versions of the same Collection retain the same UUID. See
+            `doc/tea-uuid-scope.md`.
           $ref: '#/components/schemas/uuid'
         version:
           type: integer
-          description: TEA Collection version, incremented each time its content changes. Starts at 1.
-        date:
+          description: >-
+            TEA Collection version, incremented by 1 each time its content changes.
+            Versions start with 1. Content changes include replacing an embedded artifact
+            with a newer revision (for example one published because an external `url` or
+            `signatureUrl` changed). If a Collection adopts that new artifact revision, the
+            server shall publish a new Collection version. Previously published Collection
+            versions shall remain unchanged. Classification of that adoption follows
+            `collection-update-reason-type`.
+        createdDate:
           description: The date when the TEA Collection version was created.
           $ref: '#/components/schemas/date-time'
         belongsTo:
-          description: Whether this collection belongs to a Component Release or a Product Release
+          description: Indicates whether this collection belongs to a Component Release or a Product Release
           $ref: '#/components/schemas/collection-belongs-to-type'
         updateReason:
           description: Reason for the update/release of the TEA Collection object.
           $ref: '#/components/schemas/collection-update-reason'
         artifacts:
           type: array
-          description: List of TEA Artifact objects.
+          description: Array of TEA Artifact objects (may be empty).
           items: { $ref: '#/components/schemas/artifact' }
         evidenceBundle: { $ref: '#/components/schemas/evidence-bundle' }
         evidenceBundleRef: { $ref: '#/components/schemas/evidence-bundle-ref' }
+      required: [uuid, version, createdDate, belongsTo, updateReason, artifacts]
 
     cle-event-type:
       type: string
+      description: The type of CLE lifecycle event
       enum:
         - released
         - endOfDevelopment
@@ -1301,9 +1722,30 @@ components:
         - componentRenamed
         - withdrawn
 
+    cle-version-specifier:
+      type: object
+      description: >-
+        Which versions an event affects. Exactly one of `version` or `range`. `range` is an
+        ECMA-428 version specification (`vers`). `version` names a single version without a
+        `vers` scheme and is a TEA extension: it maps to `vers:<scheme>/<version>` when the
+        ecosystem is known.
+      properties:
+        version:
+          type: string
+          description: A specific version string
+        range:
+          type: string
+          description: A version range in vers format (e.g. "vers:npm/>=1.0.0|<2.0.0")
+
     cle-event:
       type: object
-      description: A discrete lifecycle event from the CLE specification
+      description: >-
+        A discrete lifecycle event from the CLE specification (ECMA-428).
+
+        CLE timestamps in TEA responses use the shared `date-time` schema: UTC with the
+        `Z` designator, fractional seconds preserved. A `+00:00` offset in an upstream CLE
+        document denotes the same instant and is re-expressed as `Z`. Any other offset is
+        not UTC and is not valid CLE.
       properties:
         id:
           type: integer
@@ -1311,20 +1753,46 @@ components:
         type:
           description: The type of lifecycle event
           $ref: '#/components/schemas/cle-event-type'
-        effective: { type: string, format: date-time }
-        published: { type: string, format: date-time }
-        version: { type: string, description: Version string (used by released event type) }
-        supportId: { type: string }
-        license: { type: string }
-        supersededByVersion: { type: string }
+        effective:
+          description: When the event takes effect.
+          $ref: '#/components/schemas/date-time'
+        published:
+          description: When the event was first published.
+          $ref: '#/components/schemas/date-time'
+        version:
+          type: string
+          description: Version string (used by released event type)
+        versions:
+          type: array
+          description: List of version specifiers affected by this event
+          items: { $ref: '#/components/schemas/cle-version-specifier' }
+        supportId:
+          type: string
+          description: Reference to a support policy ID defined in the definitions section
+        license:
+          type: string
+          description: License identifier (used by released event type)
+        supersededByVersion:
+          type: string
+          description: Version string that supersedes the affected versions (used by supersededBy event type)
         identifiers:
           type: array
+          description: >-
+            New identifiers for the component (`componentRenamed` only), in the TEA
+            `identifier` shape. Corresponds to CLE `identifiers[]` with `type` / `value`.
           items: { $ref: '#/components/schemas/identifier' }
-        eventId: { type: integer, description: ID of the event being withdrawn }
-        reason: { type: string }
-        description: { type: string }
+        eventId:
+          type: integer
+          description: ID of the event being withdrawn (used by withdrawn event type)
+        reason:
+          type: string
+          description: Human-readable explanation (used by withdrawn event type)
+        description:
+          type: string
+          description: Human-readable description of the event
         references:
           type: array
+          description: List of URLs to supporting documentation
           items: { type: string, format: uri }
       required: [id, type, effective, published]
 
@@ -1332,38 +1800,102 @@ components:
       type: object
       description: A support policy definition from CLE
       properties:
-        id: { type: string }
-        description: { type: string }
-        url: { type: string, format: uri }
+        id:
+          type: string
+          description: Unique identifier for the support policy
+        description:
+          type: string
+          description: Human-readable description of the policy
+        url:
+          type: string
+          format: uri
+          description: URL to detailed documentation about this support policy
       required: [id, description]
 
     cle-definitions:
       type: object
-      description: Container for reusable policy definitions referenced by events
+      description: Container for reusable CLE policy definitions
       properties:
         support:
           type: array
+          description: List of support policies
           items: { $ref: '#/components/schemas/cle-support-definition' }
 
     cle:
       type: object
       description: >-
-        Common Lifecycle Enumeration (CLE) object based on ECMA-428 TC54 TG3 CLE
-        Specification v1.0.0.
+        Lifecycle events for the object this endpoint is called on, as a TEA projection of
+        the Common Lifecycle Enumeration (ECMA-428, 1st edition).
+
+        This is not a CLE document. The document envelope (`$schema`, `identifier`,
+        `updatedAt`, and `index` / `next` page chaining) is not carried: the TEA object the
+        response belongs to supplies the identity, and TEA has its own pagination. The event
+        vocabulary, ordering and semantics are those of ECMA-428; the field shapes are TEA's.
+        A consumer that needs a CLE document applies the mapping rules below and adds the
+        envelope; a producer that holds a CLE document applies them in reverse. Publishers
+        that need a bit-identical CLE 1.0.0 document publish it as a TEA Artifact in a
+        release collection, as artifact type `OTHER` until a dedicated type exists; the
+        same artifact may be referenced from more than one collection. The CLE endpoints
+        are not a substitute for that document.
+
+        Mapping to ECMA-428:
+        - `identifiers[]` on `componentRenamed` uses the TEA `identifier` shape (`idType`,
+          `idValue`); CLE uses `type` / `value` with the same meaning.
+        - A version specifier `{ version }` names one version without a `vers` scheme,
+          because a TEA server does not always know the package ecosystem. It corresponds to
+          the CLE range `vers:<scheme>/<version>` once the scheme is known. `{ range }` is a
+          CLE range as-is.
+        - `cle-event` is one flat object. The fields ECMA-428 requires or permits for each
+          event type apply as written there; servers shall populate the required ones and
+          omit fields that do not belong to the type.
+
+        Selection. Servers shall return in `events` a subset of the events of the CLE data
+        they hold for the component or product, and shall not alter an event beyond the
+        mapping above. On a release endpoint, servers may omit events scoped to other
+        versions: events whose `versions` do not cover the release's `version`, and
+        `released` events whose `version` differs from it. Events that name no version,
+        other than `withdrawn` events, apply to the component as a whole and are retained.
+        Inclusion of `withdrawn` events follows the rule below. Servers shall not otherwise
+        reduce the set, and in particular shall not collapse it to the latest event per
+        type. Servers shall not renumber event `id` values. Servers shall include a
+        `withdrawn` event if, and only if, they include the event it withdraws.
+        `definitions.support` shall contain at least the policies referenced by the
+        included events.
+
+        `events` shall be ordered by `id` descending, as in ECMA-428. A server that provides CLE
+        for an object answers `200`, with an empty `events` array when no event has been
+        recorded yet. A server that does not provide CLE for the object answers `404` with
+        `error: NOT_IMPLEMENTED`; `error: OBJECT_UNKNOWN` means the object itself is unknown.
       properties:
         events:
           type: array
+          description: >-
+            Array of CLE Event objects representing lifecycle events. Events shall be ordered
+            by id descending (newest events with highest IDs first).
           items: { $ref: '#/components/schemas/cle-event' }
-        definitions: { $ref: '#/components/schemas/cle-definitions' }
+        definitions:
+          description: Container for reusable policy definitions referenced by events
+          $ref: '#/components/schemas/cle-definitions'
       required: [events]
 
     error-response:
       type: object
-      description: Error response
+      description: >-
+        Error response actually emitted by `/publisher/v1` -- not the consumer spec's
+        schema of the same name. See info.description, deviation 6.
+      x-deviation: >-
+        `/publisher/v1` (internal/publisher) is not governed by spec/openapi.yaml at all,
+        and its every error path (internal/httpx.BadRequest/Forbidden/Conflict/
+        Unauthorized/InternalError) writes this project's own, unrelated
+        `{"message": "..."}` shape (internal/httpx.messageBody), never the consumer spec's
+        `{error, message}` shape with `error` from a fixed enum. Previously claimed
+        "reused verbatim" -- false; see info.description, deviation 6.
       additionalProperties: false
       properties:
-        error: { type: string }
-      required: [error]
+        message:
+          type: string
+          description: Human-readable explanation. Not a fixed enum -- free text.
+      required: [message]
 
     # ================================================================
     # Trust-architecture extension (already-adopted precedent, not new — see
@@ -1561,9 +2093,12 @@ components:
       x-deviation: 'Omits id — server-assigned, auto-incrementing. See info.description, deviation 2.'
       properties:
         type: { $ref: '#/components/schemas/cle-event-type' }
-        effective: { type: string, format: date-time }
-        published: { type: string, format: date-time }
+        effective: { $ref: '#/components/schemas/date-time' }
+        published: { $ref: '#/components/schemas/date-time' }
         version: { type: string }
+        versions:
+          type: array
+          items: { $ref: '#/components/schemas/cle-version-specifier' }
         supportId: { type: string }
         license: { type: string }
         supersededByVersion: { type: string }

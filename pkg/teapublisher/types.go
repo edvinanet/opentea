@@ -46,6 +46,18 @@ type ComponentCreate struct {
 	Identifiers []tea.Identifier `json:"identifiers"`
 }
 
+// ComponentSearchResults is the response body for findComponents.
+// HasNext reports whether more than the server's own fixed limit actually
+// matched -- not full cursor-based pagination (this is a best-effort
+// find-before-create search aid, not an authoritative paginated list; see
+// repo.SearchComponents's own doc comment), but enough to stop silently
+// truncating with no signal at all (docs/security-review-publisher-design-260828.md
+// finding 12, "paginate and constrain component search").
+type ComponentSearchResults struct {
+	Results []tea.Component `json:"results"`
+	HasNext bool            `json:"hasNext"`
+}
+
 // ProductReleaseCreate is the request body for createProductRelease: same
 // as tea.ProductRelease, minus the server-assigned UUID, the path-implied
 // product, and the components list (linked separately via linkComponent).

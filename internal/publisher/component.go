@@ -22,12 +22,12 @@ const findComponentsLimit = 1000
 // name, to avoid duplicate rows for the same real component.
 func (s *Server) findComponents(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query().Get("q")
-	components, err := s.repo.SearchComponents(r.Context(), q, findComponentsLimit)
+	components, hasNext, err := s.repo.SearchComponents(r.Context(), q, findComponentsLimit)
 	if err != nil {
 		httpx.InternalError(w, r, err)
 		return
 	}
-	httpx.WriteJSON(w, http.StatusOK, components)
+	httpx.WriteJSON(w, http.StatusOK, teapublisher.ComponentSearchResults{Results: components, HasNext: hasNext})
 }
 
 // createComponent implements createComponent. Rejects (409) if any
@@ -35,7 +35,11 @@ func (s *Server) findComponents(w http.ResponseWriter, r *http.Request) {
 // server-enforced, not just the find-before-create convention
 // findComponents documents (design/publisher-openapi.yaml v0.10, found by
 // external security review: docs/security-review-publisher-design-260828.md
-// finding 12).
+// finding 12). The 409 body is that *existing* component itself, not just a
+// message -- a caller forced to separately re-search for what it just
+// collided with would be repeating the exact find-then-create race this
+// mechanism exists to close (finding 12's own required change: "return 409
+// Conflict with the existing component").
 func (s *Server) createComponent(w http.ResponseWriter, r *http.Request) {
 	var req teapublisher.ComponentCreate
 	if err := decodeJSON(r, &req); err != nil {
@@ -48,7 +52,7 @@ func (s *Server) createComponent(w http.ResponseWriter, r *http.Request) {
 	}
 	c, err := s.repo.CreateComponent(r.Context(), req.Name, req.Identifiers)
 	if errors.Is(err, repo.ErrComponentIdentifierConflict) {
-		httpx.Conflict(w, "an identifier in this request already belongs to another component")
+		httpx.WriteJSON(w, http.StatusConflict, c)
 		return
 	}
 	if writeIdentifierValidationError(w, err) {

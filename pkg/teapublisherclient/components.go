@@ -16,15 +16,18 @@ import (
 // rows for the same real component. The target additionally enforces
 // identifiers uniqueness server-side on CreateComponent (409 on conflict,
 // design/publisher-openapi.yaml v0.10) -- this search is a courtesy for
-// picking a good match, not what prevents duplicates.
-func (c *Client) FindComponents(ctx context.Context, q string) ([]tea.Component, error) {
+// picking a good match, not what prevents duplicates. hasNext reports
+// whether the target's own fixed limit actually truncated the match set
+// (docs/security-review-publisher-design-260828.md finding 12) -- not a
+// cursor a caller can resume from, just a "narrow your query" signal.
+func (c *Client) FindComponents(ctx context.Context, q string) (components []tea.Component, hasNext bool, err error) {
 	path := "/components"
 	if q != "" {
 		path += "?q=" + url.QueryEscape(q)
 	}
-	var components []tea.Component
-	err := c.do(ctx, "GET", path, nil, &components)
-	return components, err
+	var results teapublisher.ComponentSearchResults
+	err = c.do(ctx, "GET", path, nil, &results)
+	return results.Results, results.HasNext, err
 }
 
 // CreateComponent creates a component (POST /components). Returns an

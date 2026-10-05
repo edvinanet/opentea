@@ -27,7 +27,13 @@ var ErrComponentIdentifierConflict = errors.New("repo: an identifier in this req
 
 // CreateComponent creates a new component with a fresh generated UUID.
 // Returns ErrComponentIdentifierConflict if any of identifiers already
-// belongs to another component.
+// belongs to another component -- the returned tea.Component is then that
+// *existing* component (not the zero value), not one just created, so a
+// caller can hand it straight back to its own caller (external security
+// review, docs/security-review-publisher-design-260828.md finding 12:
+// "return 409 with the existing component" -- a creator forced to
+// separately search for what it just collided with is exactly the
+// find-then-create race this whole mechanism exists to avoid repeating).
 func (r *Repo) CreateComponent(ctx context.Context, name string, identifiers []tea.Identifier) (tea.Component, error) {
 	uuid := idgen.New()
 
@@ -37,10 +43,14 @@ func (r *Repo) CreateComponent(ctx context.Context, name string, identifiers []t
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if conflict, err := componentIdentifierConflictTx(ctx, tx, identifiers); err != nil {
+	if conflictUUID, err := componentIdentifierConflictTx(ctx, tx, identifiers); err != nil {
 		return tea.Component{}, err
-	} else if conflict {
-		return tea.Component{}, ErrComponentIdentifierConflict
+	} else if conflictUUID != "" {
+		existing, err := getComponentTx(ctx, tx, conflictUUID)
+		if err != nil {
+			return tea.Component{}, err
+		}
+		return existing, ErrComponentIdentifierConflict
 	}
 
 	if _, err := tx.ExecContext(ctx, `INSERT INTO component (uuid, name) VALUES (?, ?)`, uuid, name); err != nil {
@@ -59,25 +69,25 @@ func (r *Repo) CreateComponent(ctx context.Context, name string, identifiers []t
 	return tea.Component{UUID: uuid, Name: name, Identifiers: identifiers}, nil
 }
 
-// componentIdentifierConflictTx reports whether any of identifiers already
-// belongs to an existing component -- uses idx_identifier_lookup
-// (owner_type, id_type, id_value), the same index name/identifier read
-// paths already rely on.
-func componentIdentifierConflictTx(ctx context.Context, q dbtx, identifiers []tea.Identifier) (bool, error) {
+// componentIdentifierConflictTx returns the UUID of an existing component
+// that already owns one of identifiers, or "" if none does -- uses
+// idx_identifier_lookup (owner_type, id_type, id_value), the same index
+// name/identifier read paths already rely on.
+func componentIdentifierConflictTx(ctx context.Context, q dbtx, identifiers []tea.Identifier) (string, error) {
 	for _, id := range identifiers {
-		var exists int
+		var ownerUUID string
 		err := q.QueryRowContext(ctx,
-			`SELECT 1 FROM identifier WHERE owner_type = ? AND id_type = ? AND id_value = ?`,
+			`SELECT owner_uuid FROM identifier WHERE owner_type = ? AND id_type = ? AND id_value = ?`,
 			OwnerComponent, id.IDType, id.IDValue,
-		).Scan(&exists)
+		).Scan(&ownerUUID)
 		if err == nil {
-			return true, nil
+			return ownerUUID, nil
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
-			return false, err
+			return "", err
 		}
 	}
-	return false, nil
+	return "", nil
 }
 
 // ImportComponent mirrors ImportProduct -- see there for the identity/
@@ -206,14 +216,24 @@ func (r *Repo) QueryComponents(ctx context.Context, idType, idValue, sortField, 
 // find-before-create workflow (design/publisher-openapi.yaml). Simplest
 // useful implementation of the OpenAPI's free-text q search --
 // QueryComponents' idType/idValue is an exact-match identifier filter, not
-// this. An empty q matches everything (still capped by limit).
-func (r *Repo) SearchComponents(ctx context.Context, q string, limit int) ([]tea.Component, error) {
+// this (and the actual integrity mechanism findComponents's own doc comment
+// points callers at: CreateComponent's server-side uniqueness check, not
+// this search -- see its own doc comment). An empty q matches everything
+// (still capped by limit). hasNext reports whether more than limit
+// components actually matched -- external security review,
+// docs/security-review-publisher-design-260828.md finding 12 ("paginate and
+// constrain component search"): this was previously silently truncated at
+// the caller's limit with no way to tell. Not full cursor-based pagination
+// (internal/pagination's heavier machinery, built for /tea/v1's read API) --
+// this is a best-effort search aid, not an authoritative paginated list, so
+// a plain "there were more, narrow your query" signal is proportionate.
+func (r *Repo) SearchComponents(ctx context.Context, q string, limit int) (components []tea.Component, hasNext bool, err error) {
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT uuid, name FROM component WHERE instr(lower(name), lower(?)) > 0 OR ? = '' ORDER BY name LIMIT ?`,
-		q, q, limit,
+		q, q, limit+1,
 	)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -221,22 +241,27 @@ func (r *Repo) SearchComponents(ctx context.Context, q string, limit int) ([]tea
 	for rows.Next() {
 		var c tea.Component
 		if err := rows.Scan(&c.UUID, &c.Name); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		out = append(out, c)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, false, err
+	}
+
+	if len(out) > limit {
+		out = out[:limit]
+		hasNext = true
 	}
 
 	for i := range out {
 		ids, err := listIdentifiers(ctx, r.db, OwnerComponent, out[i].UUID)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		out[i].Identifiers = ids
 	}
-	return out, nil
+	return out, hasNext, nil
 }
 
 // DeleteComponent deletes the component identified by uuid, cascading to

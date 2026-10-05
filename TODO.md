@@ -1510,6 +1510,42 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       `publisher_test.go`) — no assertions there depended on the old caller-supplied
       value, confirmed before editing. Full suite, `-race`, `golangci-lint`, `go vet`,
       `gofmt` clean.
+- [x] ~~**[security review finding 12] Component deduplication is advisory and
+      race-prone** — `findComponents` tells clients to search before creating, but two
+      clients can search concurrently, both find no match, and both create duplicates.
+      Required changes: define a canonical component identity/uniqueness key, enforce it
+      server-side, return `409` with the existing component (or make creation idempotent
+      by identifier), paginate/constrain component search, and stop treating free-text
+      search as an integrity decision.~~ **Fixed in two passes.** The core, genuinely
+      race-closing fix — server-side identifier-uniqueness enforcement inside
+      `CreateComponent`'s own transaction, `409` on conflict — shipped earlier
+      (`design/publisher-openapi.yaml` v0.10, before this session's pass through this
+      review began; see `internal/repo/component.go`'s `ErrComponentIdentifierConflict`
+      and `internal/publisher/component.go`'s `createComponent`). **2026-10-05**: closed
+      the two still-open required changes found while re-checking this finding against
+      the real implementation. (1) The `409` now returns the *existing* component itself,
+      not just a message (`internal/repo.CreateComponent` returns it alongside the
+      sentinel error; `componentIdentifierConflictTx` renamed/reworked to return the
+      conflicting UUID, not just a bool) — a caller no longer has to separately re-search
+      for what it just collided with. (2) `findComponents` gained a `hasNext` signal
+      (new `teapublisher.ComponentSearchResults{Results, HasNext}`, replacing a bare
+      array) so a match set larger than the server's fixed 1000-row limit is no longer
+      silently truncated with no indication — not full cursor-based pagination
+      (`internal/pagination`'s heavier machinery, built for `/tea/v1`'s authoritative read
+      API), a proportionate fix for what's a best-effort search aid, not an authoritative
+      list. Also corrected a false claim found along the way: the `q` parameter's own
+      description claimed it matched "name/identifiers," but `SearchComponents` only ever
+      matched `name` — corrected the doc, not the behavior, since real exact-identifier
+      lookup already exists as the `createComponent` 409 check itself, not something this
+      search needs to duplicate. `design/publisher-openapi.yaml` v0.16. Verified: extended
+      `TestPublisherCreateComponentIdentifierConflict` to assert the 409 body is the
+      correct existing component; new `TestPublisherFindComponentsHasNext`
+      (`cmd/opentea/publisher_test.go`) creates 1001 same-named components and confirms
+      `hasNext` is set and results are capped at 1000 — confirmed to fail to even build
+      against the pre-fix code (undefined `teapublisher.ComponentSearchResults`), passes
+      after. Updated `pkg/teapublisherclient.FindComponents`'s signature (now returns
+      `hasNext` too) and its own test. Full suite, `-race`, `golangci-lint`, `go vet`,
+      `gofmt` clean.
 - [ ] **[security review finding 13] Publisher API: idempotency for write operations** —
       already an open question before the review (`design/publisher-service.md` §11 #13,
       §14.4), but the review confirms it's now also a real gap in the shipped

@@ -1,11 +1,25 @@
 openapi: 3.1.0
 info:
   title: TEA Publisher API
-  version: 0.15.0-draft
+  version: 0.16.0-draft
   description: |
-    **Status: draft v0.15, for discussion. opentea's own server-side implementation
+    **Status: draft v0.16, for discussion. opentea's own server-side implementation
     exists (`internal/publisher`) but this document is still a draft, not approved by
     CycloneDX or any TEA working group.**
+
+    v0.16: closes the two remaining required changes from finding 12 of the same
+    external security review (docs/security-review-publisher-design-260828.md) -- the
+    core fix (server-side uniqueness enforcement, 409 on conflict) already shipped in
+    v0.10, before this round of fixes began. `createComponent`'s `409` now returns the
+    *existing* component it collided with, not just a message, so a caller doesn't have
+    to separately re-search for what it just found (`internal/repo.CreateComponent`
+    now returns that component alongside the sentinel error). `findComponents` gained a
+    `hasNext` signal (new `component-search-results` response, replacing a bare array)
+    so a match set larger than the server's fixed limit is no longer silently
+    truncated -- not full cursor-based pagination, a proportionate fix for what's a
+    best-effort search aid, not an authoritative list (see the operation's own summary).
+    Also corrected a false claim found while fixing this: `q` only ever matched `name`,
+    never `identifiers` despite the parameter's own description claiming otherwise.
 
     v0.15: fixes finding 11 of the same external security review
     (docs/security-review-publisher-design-260828.md) -- **a real behavior change**,
@@ -383,20 +397,31 @@ paths:
     get:
       operationId: findComponents
       tags: [Components]
-      summary: Search existing components (find-before-create, to avoid duplicate rows for the same real component).
+      summary: >-
+        Search existing components (find-before-create, to avoid duplicate rows for the
+        same real component) — a courtesy for picking a good match, not the integrity
+        mechanism; see createComponent below for that (v0.16, external security review,
+        docs/security-review-publisher-design-260828.md finding 12).
       parameters:
         - name: q
           in: query
-          description: Free-text match against name/identifiers.
+          description: >-
+            Free-text match against name only (not identifiers — exact identifier lookup
+            is createComponent's own 409 check below, not this search; q never decides
+            whether a create is allowed).
           schema: { type: string }
       responses:
         '200':
-          description: Matching components.
+          description: >-
+            Matching components, up to the server's own fixed limit. hasNext is true if
+            more actually matched than were returned (finding 12: "paginate and
+            constrain component search" -- not full cursor-based pagination, a plain
+            truncation signal, since this is a best-effort search aid, not an
+            authoritative paginated list; narrow `q` and retry rather than expecting a
+            resumable token).
           content:
             application/json:
-              schema:
-                type: array
-                items: { $ref: '#/components/schemas/component' }
+              schema: { $ref: '#/components/schemas/component-search-results' }
     post:
       operationId: createComponent
       tags: [Components]
@@ -424,7 +449,13 @@ paths:
         '409':
           description: >-
             One or more of the submitted `identifiers` already belongs to another
-            component.
+            component -- the body is that *existing* component (v0.16, finding 12's own
+            required change: "return 409 Conflict with the existing component"), not just
+            an error message, so the caller doesn't have to separately re-search for
+            what it just collided with.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/component' }
 
   /components/{componentUuid}/releases:
     post:
@@ -2164,6 +2195,23 @@ components:
     # ================================================================
     # New in this API — no consumer-spec equivalent (see info.description).
     # ================================================================
+
+    component-search-results:
+      type: object
+      description: >-
+        Response body for findComponents (v0.16, external security review,
+        docs/security-review-publisher-design-260828.md finding 12). Not a
+        consumer-spec-style paginated-list response (no `nextPageToken`, no cursor to
+        resume from) -- see findComponents' own summary for why a plain truncation
+        signal is the proportionate fix here, not full pagination.
+      properties:
+        results:
+          type: array
+          items: { $ref: '#/components/schemas/component' }
+        hasNext:
+          type: boolean
+          description: True if more components matched than were returned.
+      required: [results, hasNext]
 
     evidence-submission:
       type: object

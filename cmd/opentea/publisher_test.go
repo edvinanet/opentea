@@ -18,6 +18,7 @@ import (
 	"github.com/oej/opentea/internal/model"
 	"github.com/oej/opentea/internal/trust"
 	"github.com/oej/opentea/pkg/tea"
+	"github.com/oej/opentea/pkg/teapublisher"
 )
 
 // publisherUploadFile POSTs a multipart file upload to /publisher/v1 with a
@@ -656,7 +657,9 @@ func TestPublisherUploadArtifactSignatureFile(t *testing.T) {
 // TestPublisherCreateComponentIdentifierConflict covers security-review fix
 // 12 (docs/security-review-publisher-design-260828.md): createComponent
 // enforces identifier uniqueness server-side rather than relying on
-// find-before-create.
+// find-before-create, and (v0.16, this session) the 409 body is the
+// existing component itself, not just a message -- so a caller doesn't have
+// to separately re-search for what it just collided with.
 func TestPublisherCreateComponentIdentifierConflict(t *testing.T) {
 	srv := newTestServer(t)
 	full := createPublisherCredential(t, srv, "full-cred", model.PublisherScopeFull)
@@ -665,19 +668,63 @@ func TestPublisherCreateComponentIdentifierConflict(t *testing.T) {
 		"name":        "acme-widget-core",
 		"identifiers": []map[string]any{{"idType": "PURL", "idValue": "pkg:generic/acme-widget-core"}},
 	}
-	if status, raw := publisherRequest(t, srv, http.MethodPost, "/publisher/v1/components", full, body); status != http.StatusCreated {
+	status, raw := publisherRequest(t, srv, http.MethodPost, "/publisher/v1/components", full, body)
+	if status != http.StatusCreated {
 		t.Fatalf("first createComponent: status=%d body=%s", status, raw)
 	}
-	// Same identifier, different name -- still a conflict.
+	var first tea.Component
+	decodeInto(t, raw, &first)
+
+	// Same identifier, different name -- still a conflict; the 409 body is
+	// the first component (its real uuid/name), not the second request's.
 	body["name"] = "acme-widget-core-fork"
-	if status, raw := publisherRequest(t, srv, http.MethodPost, "/publisher/v1/components", full, body); status != http.StatusConflict {
+	status, raw = publisherRequest(t, srv, http.MethodPost, "/publisher/v1/components", full, body)
+	if status != http.StatusConflict {
 		t.Fatalf("duplicate identifier: status=%d body=%s, want 409", status, raw)
 	}
+	var conflicting tea.Component
+	decodeInto(t, raw, &conflicting)
+	if conflicting.UUID != first.UUID || conflicting.Name != "acme-widget-core" {
+		t.Fatalf("409 body = %+v, want the existing component %+v", conflicting, first)
+	}
+
 	// No identifiers at all -- nothing to conflict on, both succeed.
 	if status, raw := publisherRequest(t, srv, http.MethodPost, "/publisher/v1/components", full, map[string]any{"name": "no-identifiers-a"}); status != http.StatusCreated {
 		t.Fatalf("no-identifiers create 1: status=%d body=%s", status, raw)
 	}
 	if status, raw := publisherRequest(t, srv, http.MethodPost, "/publisher/v1/components", full, map[string]any{"name": "no-identifiers-a"}); status != http.StatusCreated {
 		t.Fatalf("no-identifiers create 2: status=%d body=%s", status, raw)
+	}
+}
+
+// TestPublisherFindComponentsHasNext is the regression test for
+// docs/security-review-publisher-design-260828.md finding 12's "paginate
+// and constrain component search": findComponents used to return a bare
+// array, silently truncated at the server's own fixed limit with no way
+// for a caller to tell more existed. Creates one more component than
+// internal/publisher.findComponentsLimit allows and confirms hasNext is set.
+func TestPublisherFindComponentsHasNext(t *testing.T) {
+	srv := newTestServer(t)
+	full := createPublisherCredential(t, srv, "full-cred", model.PublisherScopeFull)
+
+	const limit = 1000 // internal/publisher.findComponentsLimit
+	for i := 0; i < limit+1; i++ {
+		body := map[string]any{"name": "dup-search-target"}
+		if status, raw := publisherRequest(t, srv, http.MethodPost, "/publisher/v1/components", full, body); status != http.StatusCreated {
+			t.Fatalf("createComponent %d: status=%d body=%s", i, status, raw)
+		}
+	}
+
+	status, raw := publisherRequest(t, srv, http.MethodGet, "/publisher/v1/components?q=dup-search-target", full, nil)
+	if status != http.StatusOK {
+		t.Fatalf("findComponents: status=%d body=%s", status, raw)
+	}
+	var results teapublisher.ComponentSearchResults
+	decodeInto(t, raw, &results)
+	if len(results.Results) != limit {
+		t.Fatalf("len(results) = %d, want %d (capped at the limit)", len(results.Results), limit)
+	}
+	if !results.HasNext {
+		t.Fatal("hasNext = false, want true: limit+1 matching components exist")
 	}
 }

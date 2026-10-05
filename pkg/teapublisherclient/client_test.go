@@ -225,10 +225,10 @@ func TestFindComponentsQueryEscaping(t *testing.T) {
 	var gotRawQuery string
 	client := newFakeServer(t, func(w http.ResponseWriter, r *http.Request) {
 		gotRawQuery = r.URL.RawQuery
-		_ = json.NewEncoder(w).Encode([]tea.Component{})
+		_ = json.NewEncoder(w).Encode(teapublisher.ComponentSearchResults{})
 	})
 
-	if _, err := client.FindComponents(context.Background(), "acme widget"); err != nil {
+	if _, _, err := client.FindComponents(context.Background(), "acme widget"); err != nil {
 		t.Fatalf("FindComponents: %v", err)
 	}
 	if gotRawQuery != "q=acme+widget" {

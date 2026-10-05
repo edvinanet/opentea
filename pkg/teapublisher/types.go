@@ -205,8 +205,16 @@ type ArtifactVersionRef struct {
 
 // CollectionDraftArtifactList is the request body for putCollectionDraft:
 // create-or-replace the draft's artifact list (design/publisher-service.md
-// §7.7). Idempotent; callable repeatedly as artifacts arrive over however
-// many sessions assembly takes.
+// §7.7). Callable repeatedly as artifacts arrive over however many sessions
+// assembly takes -- but **not actually idempotent** despite being a PUT:
+// every call bumps the draft's revision and resets any recorded approval to
+// "none," even a byte-identical retry of the previous call (external
+// security review, docs/security-review-publisher-design-260828.md finding
+// 13, calling this out explicitly). ExpectedRevision is optimistic
+// concurrency against a *different* caller's unseen edit, not a fix for
+// that -- see repo.ErrDraftRevisionConflict's own doc comment for the
+// distinction and why true retry-safety needs a real idempotency-key
+// mechanism this project hasn't built (tracked in TODO.md).
 type CollectionDraftArtifactList struct {
 	// Actor is the identity of the staff member or CI/CD system making
 	// this change, as asserted by the publisher software from its own
@@ -220,6 +228,11 @@ type CollectionDraftArtifactList struct {
 	Actor        string               `json:"actor"`
 	Artifacts    []ArtifactVersionRef `json:"artifacts,omitempty"`
 	UpdateReason *tea.UpdateReason    `json:"updateReason,omitempty"`
+	// ExpectedRevision, if set, rejects the call with a 409 unless it
+	// equals the draft's actual current revision (0 meaning "I expect no
+	// draft to exist yet") -- see repo.PutCollectionDraft's own doc
+	// comment.
+	ExpectedRevision *int `json:"expectedRevision,omitempty"`
 }
 
 // CollectionDraftDiff is CollectionDraft.DiffAgainstCurrent: added/removed

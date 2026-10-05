@@ -50,6 +50,22 @@ type EvidenceBundleInput struct {
 // bundle referencing an unregistered fingerprint would defeat the reuse
 // check entirely. Returns ErrNotFound if the owning artifact/collection
 // (OwnerType, OwnerUUID, OwnerVersion) doesn't exist.
+//
+// A fingerprint collision against an evidence bundle that is otherwise
+// byte-identical to in (same owner, digest, signature, and certificate) is
+// not treated as reuse -- it's a retried submitArtifactEvidence/
+// commitCollectionDraft call whose first response the caller never saw
+// (lost connection, timeout, etc.), re-signing nothing and re-submitting
+// the exact bytes it already sent; the stored bundle is returned instead
+// of an error (external security review,
+// docs/security-review-publisher-design-260828.md finding 13: "retried
+// evidence submission creating duplicate evidence bundles" -- here, erroring
+// confusingly rather than duplicating, but the retry-safety gap is the same
+// one). An ephemeral key is still never reused across two *different*
+// signing events: any other field differing (a different owner, a
+// resubmission after the owner's content actually changed, or a genuinely
+// different signature) still hits ErrFingerprintReused -- only an exact
+// match is replayed.
 func (r *Repo) CreateEvidenceBundle(ctx context.Context, in EvidenceBundleInput) (tea.EvidenceBundle, error) {
 	return runInTx(ctx, r, func(tx dbtx) (tea.EvidenceBundle, error) {
 		exists, err := ownerExistsTx(ctx, tx, in.OwnerType, in.OwnerUUID, in.OwnerVersion)
@@ -65,6 +81,11 @@ func (r *Repo) CreateEvidenceBundle(ctx context.Context, in EvidenceBundleInput)
 			in.CertificateFingerprint, in.CertificateTrustDomain,
 		); err != nil {
 			if isUniqueConstraintError(err) {
+				if existing, ok, err := identicalEvidenceBundleByFingerprintTx(ctx, tx, in); err != nil {
+					return tea.EvidenceBundle{}, err
+				} else if ok {
+					return existing, nil
+				}
 				return tea.EvidenceBundle{}, ErrFingerprintReused
 			}
 			return tea.EvidenceBundle{}, err
@@ -95,6 +116,45 @@ func (r *Repo) CreateEvidenceBundle(ctx context.Context, in EvidenceBundleInput)
 
 		return getEvidenceBundleTx(ctx, tx, id)
 	})
+}
+
+// identicalEvidenceBundleByFingerprintTx looks up the evidence bundle
+// already registered under in.CertificateFingerprint and reports whether it
+// is byte-identical to in on every field that matters for "this is the same
+// submission, not a new one" -- owner identity, object digest, signature,
+// and certificate. A NULL/missing evidence_bundle_uuid (the fingerprint row
+// exists but its bundle insert hasn't committed -- never actually
+// observable given this database's single-writer-connection serialization,
+// but checked rather than assumed) reports ok=false, falling through to the
+// ordinary ErrFingerprintReused error.
+func identicalEvidenceBundleByFingerprintTx(ctx context.Context, q dbtx, in EvidenceBundleInput) (existing tea.EvidenceBundle, ok bool, err error) {
+	var bundleUUID sql.NullString
+	if err := q.QueryRowContext(ctx,
+		`SELECT evidence_bundle_uuid FROM used_fingerprint WHERE fingerprint = ?`,
+		in.CertificateFingerprint,
+	).Scan(&bundleUUID); err != nil {
+		return tea.EvidenceBundle{}, false, err
+	}
+	if !bundleUUID.Valid {
+		return tea.EvidenceBundle{}, false, nil
+	}
+
+	existing, err = getEvidenceBundleTx(ctx, q, bundleUUID.String)
+	if errors.Is(err, ErrNotFound) {
+		return tea.EvidenceBundle{}, false, nil
+	}
+	if err != nil {
+		return tea.EvidenceBundle{}, false, err
+	}
+
+	identical := existing.OwnerType == in.OwnerType &&
+		existing.OwnerUUID == in.OwnerUUID &&
+		existing.OwnerVersion == in.OwnerVersion &&
+		existing.Object.Digest.Value == in.ObjectDigestValue &&
+		existing.Signature.Format == in.SignatureFormat &&
+		existing.Signature.Value == in.SignatureValue &&
+		existing.Certificate.Certificate == in.CertificateValue
+	return existing, identical, nil
 }
 
 // GetEvidenceOwnerObject fetches the actual TEA object -- a tea.Artifact or

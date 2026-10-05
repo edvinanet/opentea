@@ -47,7 +47,7 @@ func TestPutGetDeleteCollectionDraft(t *testing.T) {
 	artifactUUID, artifactVersion := createTestArtifactForEvidence(t, ctx, r)
 
 	draft, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci-pipeline", "",
-		[]ArtifactRef{{UUID: artifactUUID, Version: artifactVersion}}, nil, testDraftTTL)
+		[]ArtifactRef{{UUID: artifactUUID, Version: artifactVersion}}, nil, testDraftTTL, nil)
 	if err != nil {
 		t.Fatalf("PutCollectionDraft: %v", err)
 	}
@@ -66,7 +66,7 @@ func TestPutGetDeleteCollectionDraft(t *testing.T) {
 
 	// Editing bumps revision and leaves approval at none.
 	draft2, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci-pipeline", "",
-		[]ArtifactRef{{UUID: artifactUUID, Version: artifactVersion}}, nil, testDraftTTL)
+		[]ArtifactRef{{UUID: artifactUUID, Version: artifactVersion}}, nil, testDraftTTL, nil)
 	if err != nil {
 		t.Fatalf("PutCollectionDraft (2nd): %v", err)
 	}
@@ -95,12 +95,61 @@ func TestPutCollectionDraftUnknownOwnerOrArtifactNotFound(t *testing.T) {
 	r := newTestRepo(t)
 	prUUID := createTestProductReleaseForDraft(t, ctx, r)
 
-	if _, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, "00000000-0000-0000-0000-000000000000", "ci", "", nil, nil, testDraftTTL); !errors.Is(err, ErrNotFound) {
+	if _, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, "00000000-0000-0000-0000-000000000000", "ci", "", nil, nil, testDraftTTL, nil); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unknown owner: err = %v, want ErrNotFound", err)
 	}
 	if _, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci", "",
-		[]ArtifactRef{{UUID: "00000000-0000-0000-0000-000000000000", Version: 1}}, nil, testDraftTTL); !errors.Is(err, ErrNotFound) {
+		[]ArtifactRef{{UUID: "00000000-0000-0000-0000-000000000000", Version: 1}}, nil, testDraftTTL, nil); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unknown artifact: err = %v, want ErrNotFound", err)
+	}
+}
+
+// TestPutCollectionDraftExpectedRevisionConflict is the regression test for
+// docs/security-review-publisher-design-260828.md finding 13's "ETag/
+// If-Match, expected revision, or equivalent for draft replacement":
+// PutCollectionDraft previously had no way for a caller to detect that a
+// different caller already replaced the draft since it last read the
+// draft's state. expectedRevision=0 must mean "I expect no draft yet" (so
+// a genuinely fresh create still succeeds); a stale non-zero value, and a
+// correct one, are both exercised.
+func TestPutCollectionDraftExpectedRevisionConflict(t *testing.T) {
+	ctx := context.Background()
+	r := newTestRepo(t)
+	prUUID := createTestProductReleaseForDraft(t, ctx, r)
+	artifactUUID, artifactVersion := createTestArtifactForEvidence(t, ctx, r)
+	refs := []ArtifactRef{{UUID: artifactUUID, Version: artifactVersion}}
+
+	// expectedRevision=0 against a release with no draft yet -- correct,
+	// succeeds.
+	zero := 0
+	draft, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci-pipeline", "", refs, nil, testDraftTTL, &zero)
+	if err != nil {
+		t.Fatalf("PutCollectionDraft with expectedRevision=0 on a fresh release: %v", err)
+	}
+	if draft.Revision != 1 {
+		t.Fatalf("Revision = %d, want 1", draft.Revision)
+	}
+
+	// Stale expectedRevision (the draft is now at revision 1, not 0) --
+	// rejected, nothing changed.
+	if _, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci-pipeline", "", refs, nil, testDraftTTL, &zero); !errors.Is(err, ErrDraftRevisionConflict) {
+		t.Fatalf("stale expectedRevision=0: err = %v, want ErrDraftRevisionConflict", err)
+	}
+
+	// Correct expectedRevision (1) -- succeeds, bumps to revision 2.
+	one := 1
+	draft2, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci-pipeline", "", refs, nil, testDraftTTL, &one)
+	if err != nil {
+		t.Fatalf("PutCollectionDraft with correct expectedRevision=1: %v", err)
+	}
+	if draft2.Revision != 2 {
+		t.Fatalf("Revision = %d, want 2", draft2.Revision)
+	}
+
+	// No expectedRevision at all (nil) -- always allowed, matching every
+	// existing call site's unconditional-replace behavior unchanged.
+	if _, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci-pipeline", "", refs, nil, testDraftTTL, nil); err != nil {
+		t.Fatalf("PutCollectionDraft with nil expectedRevision: %v", err)
 	}
 }
 
@@ -108,7 +157,7 @@ func TestDecideCollectionDraftSelfApprovalRejected(t *testing.T) {
 	ctx := context.Background()
 	r := newTestRepo(t)
 	prUUID := createTestProductReleaseForDraft(t, ctx, r)
-	if _, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci-pipeline", "", nil, nil, testDraftTTL); err != nil {
+	if _, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci-pipeline", "", nil, nil, testDraftTTL, nil); err != nil {
 		t.Fatalf("PutCollectionDraft: %v", err)
 	}
 
@@ -140,7 +189,7 @@ func TestDecideCollectionDraftSelfApprovalRejectedByCredentialEvenWithDifferentA
 		t.Fatalf("CreatePublisherCredential: %v", err)
 	}
 
-	if _, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "alice", sameCred.UUID, nil, nil, testDraftTTL); err != nil {
+	if _, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "alice", sameCred.UUID, nil, nil, testDraftTTL, nil); err != nil {
 		t.Fatalf("PutCollectionDraft: %v", err)
 	}
 
@@ -159,7 +208,7 @@ func TestDecideCollectionDraftThenEditResetsApproval(t *testing.T) {
 	ctx := context.Background()
 	r := newTestRepo(t)
 	prUUID := createTestProductReleaseForDraft(t, ctx, r)
-	if _, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci-pipeline", "", nil, nil, testDraftTTL); err != nil {
+	if _, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci-pipeline", "", nil, nil, testDraftTTL, nil); err != nil {
 		t.Fatalf("PutCollectionDraft: %v", err)
 	}
 	approved, err := r.DecideCollectionDraft(ctx, BelongsToProductRelease, prUUID, "reviewer", "", "looks good", true, time.Hour)
@@ -170,7 +219,7 @@ func TestDecideCollectionDraftThenEditResetsApproval(t *testing.T) {
 		t.Fatalf("Approval = %+v", approved.Approval)
 	}
 
-	edited, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci-pipeline", "", nil, nil, testDraftTTL)
+	edited, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci-pipeline", "", nil, nil, testDraftTTL, nil)
 	if err != nil {
 		t.Fatalf("PutCollectionDraft (edit after approve): %v", err)
 	}
@@ -183,7 +232,7 @@ func TestPrepareCollectionCommitRequiresApproval(t *testing.T) {
 	ctx := context.Background()
 	r := newTestRepo(t)
 	prUUID := createTestProductReleaseForDraft(t, ctx, r)
-	if _, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci-pipeline", "", nil, nil, testDraftTTL); err != nil {
+	if _, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci-pipeline", "", nil, nil, testDraftTTL, nil); err != nil {
 		t.Fatalf("PutCollectionDraft: %v", err)
 	}
 
@@ -212,7 +261,7 @@ func TestCollectionDraftLockRejectsPutAndDecide(t *testing.T) {
 	ctx := context.Background()
 	r := newTestRepo(t)
 	prUUID := createTestProductReleaseForDraft(t, ctx, r)
-	if _, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci-pipeline", "", nil, nil, testDraftTTL); err != nil {
+	if _, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci-pipeline", "", nil, nil, testDraftTTL, nil); err != nil {
 		t.Fatalf("PutCollectionDraft: %v", err)
 	}
 	if _, err := r.DecideCollectionDraft(ctx, BelongsToProductRelease, prUUID, "reviewer", "", "", true, time.Hour); err != nil {
@@ -222,7 +271,7 @@ func TestCollectionDraftLockRejectsPutAndDecide(t *testing.T) {
 		t.Fatalf("PrepareCollectionCommit: %v", err)
 	}
 
-	if _, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci-pipeline", "", nil, nil, testDraftTTL); !errors.Is(err, ErrDraftLocked) {
+	if _, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci-pipeline", "", nil, nil, testDraftTTL, nil); !errors.Is(err, ErrDraftLocked) {
 		t.Fatalf("PutCollectionDraft while locked: err = %v, want ErrDraftLocked", err)
 	}
 	if _, err := r.DecideCollectionDraft(ctx, BelongsToProductRelease, prUUID, "reviewer2", "", "", true, time.Hour); !errors.Is(err, ErrDraftLocked) {
@@ -237,7 +286,7 @@ func TestCollectionDraftLockRejectsPutAndDecide(t *testing.T) {
 	}
 
 	// Lock released -- put now succeeds again.
-	if _, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci-pipeline", "", nil, nil, testDraftTTL); err != nil {
+	if _, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci-pipeline", "", nil, nil, testDraftTTL, nil); err != nil {
 		t.Fatalf("PutCollectionDraft after cancel: %v", err)
 	}
 }
@@ -246,7 +295,7 @@ func TestCommitCollectionDraftWithoutPrepareRejected(t *testing.T) {
 	ctx := context.Background()
 	r := newTestRepo(t)
 	prUUID := createTestProductReleaseForDraft(t, ctx, r)
-	if _, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci-pipeline", "", nil, nil, testDraftTTL); err != nil {
+	if _, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci-pipeline", "", nil, nil, testDraftTTL, nil); err != nil {
 		t.Fatalf("PutCollectionDraft: %v", err)
 	}
 	if _, err := r.DecideCollectionDraft(ctx, BelongsToProductRelease, prUUID, "reviewer", "", "", true, time.Hour); err != nil {
@@ -265,7 +314,7 @@ func TestCollectionDraftFullHappyPath(t *testing.T) {
 	artifactUUID, artifactVersion := createTestArtifactForEvidence(t, ctx, r)
 
 	if _, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci-pipeline", "",
-		[]ArtifactRef{{UUID: artifactUUID, Version: artifactVersion}}, nil, testDraftTTL); err != nil {
+		[]ArtifactRef{{UUID: artifactUUID, Version: artifactVersion}}, nil, testDraftTTL, nil); err != nil {
 		t.Fatalf("PutCollectionDraft: %v", err)
 	}
 	if _, err := r.DecideCollectionDraft(ctx, BelongsToProductRelease, prUUID, "reviewer", "", "lgtm", true, time.Hour); err != nil {
@@ -342,7 +391,7 @@ func TestCommitCollectionDraftPublishesPreparedDate(t *testing.T) {
 	artifactUUID, artifactVersion := createTestArtifactForEvidence(t, ctx, r)
 
 	if _, err := r.PutCollectionDraft(ctx, BelongsToProductRelease, prUUID, "ci-pipeline", "",
-		[]ArtifactRef{{UUID: artifactUUID, Version: artifactVersion}}, nil, testDraftTTL); err != nil {
+		[]ArtifactRef{{UUID: artifactUUID, Version: artifactVersion}}, nil, testDraftTTL, nil); err != nil {
 		t.Fatalf("PutCollectionDraft: %v", err)
 	}
 	if _, err := r.DecideCollectionDraft(ctx, BelongsToProductRelease, prUUID, "reviewer", "", "lgtm", true, time.Hour); err != nil {

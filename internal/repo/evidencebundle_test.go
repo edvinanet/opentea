@@ -113,6 +113,48 @@ func TestCreateEvidenceBundleRejectsFingerprintReuseStandalone(t *testing.T) {
 	}
 }
 
+// TestCreateEvidenceBundleIdempotentReplay is the regression test for
+// docs/security-review-publisher-design-260828.md finding 13 ("retried
+// evidence submission creating duplicate evidence bundles"): resubmitting
+// the exact same evidence (same owner, digest, signature, certificate --
+// the caller's network connection dropped before it saw the first
+// response, say) must return the already-stored bundle, not
+// ErrFingerprintReused -- the ephemeral key wasn't reused across two
+// different signing events, the same bytes were just submitted twice.
+// Confirms the replayed bundle is the *same* row (same UUID), not a new
+// one, and that a genuinely different submission under the same
+// fingerprint (content actually changed) is still rejected.
+func TestCreateEvidenceBundleIdempotentReplay(t *testing.T) {
+	ctx := context.Background()
+	r := newTestRepo(t)
+	uuid, version := createTestArtifactForEvidence(t, ctx, r)
+	in := testEvidenceBundleInput(uuid, version, "fp-replay")
+
+	first, err := r.CreateEvidenceBundle(ctx, in)
+	if err != nil {
+		t.Fatalf("first CreateEvidenceBundle: %v", err)
+	}
+
+	// Exact retry: same fingerprint, same everything else -- must replay,
+	// not error.
+	replayed, err := r.CreateEvidenceBundle(ctx, in)
+	if err != nil {
+		t.Fatalf("retried CreateEvidenceBundle: err = %v, want a successful replay", err)
+	}
+	if replayed.UUID != first.UUID {
+		t.Fatalf("replayed.UUID = %q, want the same bundle %q (not a new one)", replayed.UUID, first.UUID)
+	}
+
+	// Same fingerprint, but the owner actually differs -- a genuinely
+	// different signing event under a key that must never be reused,
+	// still rejected.
+	otherUUID, otherVersion := createTestArtifactForEvidence(t, ctx, r)
+	different := testEvidenceBundleInput(otherUUID, otherVersion, "fp-replay")
+	if _, err := r.CreateEvidenceBundle(ctx, different); !errors.Is(err, ErrFingerprintReused) {
+		t.Fatalf("different owner, same fingerprint: err = %v, want ErrFingerprintReused", err)
+	}
+}
+
 // TestCreateEvidenceBundleRejectsFingerprintReuseInsideWithTx exercises the
 // same conflict check composed inside an outer Repo.WithTx, the other half
 // of the dbtx hazard coverage (see the standalone-path test above and

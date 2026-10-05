@@ -1554,7 +1554,72 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       `ErrFingerprintReused` (a confusing error for an intended retry), and a lost
       `commitCollectionDraft` response leaves the caller with no way to check whether
       publication actually happened. Needs `Idempotency-Key` support and a defined replay
-      window before CI/CD integrations can retry safely.
+      window before CI/CD integrations can retry safely. **Partial progress, 2026-10-05**
+      (`design/publisher-openapi.yaml` v0.17): three of the review's five required
+      changes closed; the big one -- a general `Idempotency-Key` mechanism for
+      create/submit/commit operations -- deliberately **not** built, since its own
+      required sub-parts ("a defined idempotency retention period and replay response,"
+      "request-body hash conflict detection") are genuine, undecided product questions
+      (how long is a key remembered, what happens on a hash mismatch under the same key),
+      not something to invent unilaterally; this remains open, tracked below under its own
+      heading rather than silently dropped.
+      - **`submitArtifactEvidence` now safely replays an identical retry** instead of
+        erroring. `internal/repo.CreateEvidenceBundle` previously treated ANY fingerprint
+        collision as `ErrFingerprintReused`, even when the "colliding" submission was
+        byte-identical to the one already stored (owner, digest, signature, certificate
+        all match) -- the exact shape of a retry whose first response the caller never
+        saw, not a genuine ephemeral-key-reuse violation across two different signing
+        events. New `identicalEvidenceBundleByFingerprintTx` checks for that exact-match
+        case and returns the existing bundle instead of erroring; a fingerprint collision
+        against *different* content (confirmed still rejected: two different owners
+        signed under the same key) is unaffected. `commitCollectionDraft`'s own evidence
+        step benefits identically, since it calls the same repo method -- but commit as a
+        whole is not itself safely retriable this way (its draft-deletion step means a
+        bare retry after a real success hits 404 regardless, see below), so this is
+        specifically a `submitArtifactEvidence` fix, documented as such, not oversold as
+        more.
+      - **`putCollectionDraft`/`putComponentReleaseCollectionDraft` gained
+        `expectedRevision`** (optimistic concurrency, `409 ErrDraftRevisionConflict` on
+        mismatch, `0` meaning "I expect no draft yet") -- mirrors `createArtifactVersion`'s
+        `previousVersion` (finding 4) exactly, same shape, same explicitly-documented
+        limit: this protects against a *different* caller's unseen edit, it does not by
+        itself make a network retry of your *own* lost response safe (that still needs a
+        real idempotency-key mechanism). The wire type's own doc comment
+        (`teapublisher.CollectionDraftArtifactList`) and the OpenAPI operation's summary
+        both now say plainly what they previously claimed the opposite of: despite being
+        a `PUT`, this was never actually idempotent -- every call bumps `revision` and
+        resets `approval`, even an identical retry.
+      - **"A stable operation/result query for uncertain outcomes"** answered for
+        `commitCollectionDraft` without building a new operation: `getCollectionDraft`
+        returning `404` (the draft is gone on the success path) plus the real, new
+        collection becoming independently readable on `/tea/v1` is sufficient, given
+        commit's own already-atomic all-or-nothing guarantee -- documented in the
+        operation's own summary. A bare retry of `commitCollectionDraft` itself is
+        explicitly *not* the way to check -- it would 404 whether or not the first attempt
+        succeeded, so it doesn't distinguish the two cases either.
+      - **Still fully open, not addressed**: a general `Idempotency-Key` header mechanism
+        for `createProduct`/`createComponent`/`createArtifact`/`createProductRelease`/
+        `createComponentRelease` (every plain create endpoint still allocates a fresh
+        identity on every call, retried or not) and for `commitCollectionDraft` itself.
+        Needs its own design pass covering: key storage/retention period, replay-response
+        shape, and request-body-hash conflict detection (what happens when the same key is
+        reused with a *different* body) -- real product decisions, not implementation
+        details.
+      Verified: new regression tests `TestCreateEvidenceBundleIdempotentReplay`
+      (`internal/repo/evidencebundle_test.go`), `TestPutCollectionDraftExpectedRevisionConflict`
+      (`internal/repo/collectiondraft_test.go`), and their real-HTTP-round-trip
+      counterparts `TestPublisherSubmitArtifactEvidenceIdempotentReplay`/
+      `TestPublisherPutCollectionDraftExpectedRevisionConflict`
+      (`cmd/opentea/publisher_test.go`) -- confirmed the whole change set fails to even
+      build against the pre-fix code (`go vet` after `git stash` on just these files:
+      wrong argument counts throughout), passes after. Confirmed existing fingerprint-
+      reuse-across-different-owners tests
+      (`TestCreateEvidenceBundleRejectsFingerprintReuseStandalone`/`...InsideWithTx`,
+      `cmd/opentea/trust_evidencebundle_test.go`'s `...RejectsFingerprintReuse`) still
+      correctly reject that genuinely-different case. Full suite, `-race`,
+      `golangci-lint`, `go vet`, `gofmt` clean (one `gocyclo` complexity warning on the
+      touched `PutCollectionDraft` fixed by extracting its artifact-existence loop into
+      `requireArtifactsExistTx`, a pure refactor).
 - [ ] **[security review finding 15] Publisher API: standard error-response schema** —
       `internal/publisher` handlers mostly reuse `httpx`'s existing `{"message": ...}` shape
       (`BadRequest`/`Conflict`/etc.), which doesn't distinguish, say, a stale-digest 400 from

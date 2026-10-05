@@ -1,11 +1,34 @@
 openapi: 3.1.0
 info:
   title: TEA Publisher API
-  version: 0.16.0-draft
+  version: 0.17.0-draft
   description: |
-    **Status: draft v0.16, for discussion. opentea's own server-side implementation
+    **Status: draft v0.17, for discussion. opentea's own server-side implementation
     exists (`internal/publisher`) but this document is still a draft, not approved by
     CycloneDX or any TEA working group.**
+
+    v0.17: partial progress on finding 13 of the same external security review
+    (docs/security-review-publisher-design-260828.md) -- "write operations lack
+    idempotency and optimistic concurrency." Three of its five required changes are
+    addressed; the largest, a general `Idempotency-Key` mechanism for create/submit/commit
+    operations (with its own retention-period and replay-response policy questions), is
+    deliberately **not** built here -- see `TODO.md` for why and what's still open.
+    What *did* land:
+    - `submitArtifactEvidence` now safely replays an identical retry (same artifact
+      version, digest, signature, certificate) instead of erroring on the ephemeral
+      key's reuse check -- "retried evidence submission creating duplicate evidence
+      bundles," fixed as a safe replay, not a duplicate.
+    - `putCollectionDraft`/`putComponentReleaseCollectionDraft` gained `expectedRevision`
+      (optimistic concurrency, `409` on mismatch) -- "ETag/If-Match, expected revision,
+      or equivalent for draft replacement." The draft's own summary now also says
+      plainly what it always should have: despite being a `PUT`, it was never actually
+      idempotent (every call bumps `revision` and resets `approval`), and
+      `expectedRevision` protects against a *different* caller's unseen edit, not a
+      retry of your own lost response.
+    - `commitCollectionDraft`'s summary now states the answer to "a stable operation/
+      result query for uncertain outcomes": no new operation, check observable state
+      instead (`getCollectionDraft` returning `404` plus the published collection on
+      `/tea/v1`) -- sufficient because of commit's own atomicity guarantee.
 
     v0.16: closes the two remaining required changes from finding 12 of the same
     external security review (docs/security-review-publisher-design-260828.md) -- the
@@ -696,6 +719,18 @@ paths:
         verify-before-store contract (`internal/admin/evidencebundle.go`). No
         consumer-spec equivalent (see info.description) — produces an `evidence-bundle`,
         reusing the trust-architecture extension already present on `artifact-format`.
+
+        **Retrying an identical submission is safe (v0.17)**: resubmitting the exact same
+        `evidence-submission` (same artifact version, digest, signature, and certificate)
+        after a lost response returns the already-stored `evidence-bundle` again, rather
+        than failing — the target recognizes its own certificate fingerprint as an exact
+        replay, not a new signing event reusing an ephemeral key (external security
+        review, docs/security-review-publisher-design-260828.md finding 13: "retried
+        evidence submission creating duplicate evidence bundles" — fixed as a safe
+        replay instead, not a duplicate or a confusing error). Signing *different*
+        content under the same key, or any other field differing, is still rejected —
+        ephemeral keys are still never reused across two genuinely different signing
+        events.
       parameters:
         - $ref: '#/components/parameters/ArtifactUuid'
         - $ref: '#/components/parameters/ArtifactVersion'
@@ -706,7 +741,7 @@ paths:
             schema: { $ref: '#/components/schemas/evidence-submission' }
       responses:
         '201':
-          description: Verified and stored.
+          description: Verified and stored (or, for an identical retry, the already-stored bundle).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/evidence-bundle' }
@@ -832,17 +867,25 @@ paths:
       summary: >-
         Create-or-replace the draft's artifact list (oej workflow phase 4, "Collection
         Assembly") — each entry must already exist and, per oej's workflow, already be
-        validated (see submitArtifactEvidence above). Idempotent; callable repeatedly as
-        artifacts arrive over however many sessions assembly takes. No separate "start a
-        draft" call — a `PUT` with no prior draft creates one, a `PUT` against an existing
-        one replaces its artifact list. No consumer-spec equivalent (see info.description).
-        References artifacts by (uuid, version) rather than embedding full `artifact`
-        objects the way the read-side `collection.artifacts` does — deliberate: the
-        artifacts already exist and were already validated separately (§7.4), so
-        embedding a second, possibly-stale copy here would invite the two ever
-        disagreeing. The eventual committed `collection` (see commit's response below)
-        embeds full `artifact` objects, exactly matching what `/tea/v1` itself would
-        serve — only the *draft's* request shape differs, and only for this reason.
+        validated (see submitArtifactEvidence above). Callable repeatedly as artifacts
+        arrive over however many sessions assembly takes, but **not actually idempotent
+        despite being a PUT** (external security review,
+        docs/security-review-publisher-design-260828.md finding 13, calling this out by
+        name): every call bumps `revision` and resets `approval` to `none`, even a
+        byte-identical retry of the previous call whose response the caller never saw.
+        `expectedRevision` (v0.17) is optimistic concurrency against a *different*
+        caller's unseen edit, not a fix for that — true retry-safety needs a real
+        idempotency-key mechanism this draft doesn't define yet (see info.description).
+        No separate "start a draft" call — a `PUT` with no prior draft creates one, a
+        `PUT` against an existing one replaces its artifact list. No consumer-spec
+        equivalent (see info.description). References artifacts by (uuid, version) rather
+        than embedding full `artifact` objects the way the read-side `collection.artifacts`
+        does — deliberate: the artifacts already exist and were already validated
+        separately (§7.4), so embedding a second, possibly-stale copy here would invite
+        the two ever disagreeing. The eventual committed `collection` (see commit's
+        response below) embeds full `artifact` objects, exactly matching what `/tea/v1`
+        itself would serve — only the *draft's* request shape differs, and only for this
+        reason.
 
         Bumps `revision` and resets `approval` to `{status: none}` — editing a draft
         invalidates whatever approval decision (§7.9) was on record for its previous
@@ -869,7 +912,9 @@ paths:
         '409':
           description: >-
             The draft is locked by an outstanding prepareCollectionCommit (§9.5) — call
-            cancelPrepare first, or wait for the pending commit to complete.
+            cancelPrepare first, or wait for the pending commit to complete. Or (v0.17):
+            `expectedRevision` was supplied and no longer matches the draft's current
+            actual revision.
     get:
       operationId: getCollectionDraft
       tags: [Collections]
@@ -1043,6 +1088,18 @@ paths:
         creates its evidence bundle, deletes the draft, and records one audit entry. If any
         step fails, none of it happens — no collection can become live, on a server
         implementing this operation correctly, without its evidence.
+
+        **If the response to this call is lost** (external security review,
+        docs/security-review-publisher-design-260828.md finding 13: "a lost commit
+        response leaving the client unable to determine whether publication succeeded"),
+        there is no dedicated status-check operation — check observable state instead,
+        which this operation's own atomicity guarantee makes sufficient: `getCollectionDraft`
+        returns `404` once commit has actually succeeded (the draft is gone), and the
+        collection's real, new version is then independently readable through the normal
+        `/tea/v1` consumer read path. A bare retry of this same call is *not* the way to
+        find out — the draft it needs no longer exists on the success path, so it would
+        fail with `404` whether or not the first attempt actually succeeded; it does not
+        distinguish the two.
       x-open-question: >-
         Whether commit can also carry along newly-validated artifact versions and pending
         CLE updates in the same atomic call (oej's phase 7 lists all three together) —
@@ -2316,6 +2373,19 @@ components:
               uuid: { $ref: '#/components/schemas/uuid' }
               version: { type: integer }
         updateReason: { $ref: '#/components/schemas/collection-update-reason' }
+        expectedRevision:
+          type: integer
+          minimum: 0
+          description: >-
+            If supplied, the request is rejected with `409` unless the draft's current
+            actual revision equals this value (`0` meaning "I expect no draft to exist
+            yet") — lets a caller detect that a *different* caller already replaced the
+            draft since it last read its state, instead of silently overwriting that edit
+            and resetting its approval too (v0.17, external security review,
+            docs/security-review-publisher-design-260828.md finding 13's "ETag/If-Match,
+            expected revision, or equivalent for draft replacement"). This is optimistic
+            concurrency against a concurrent *different* caller, not a fix for retrying
+            your own lost response — see putCollectionDraft's own summary.
 
     collection-draft:
       type: object

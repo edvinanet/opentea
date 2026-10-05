@@ -41,7 +41,7 @@ func (s *Server) putCollectionDraftForOwner(ownerType string) http.HandlerFunc {
 		}
 
 		cred := credentialFromContext(r.Context())
-		draft, err := s.repo.PutCollectionDraft(r.Context(), ownerType, ownerUUID, req.Actor, cred.UUID, refs, req.UpdateReason, s.cfg.PublisherDraftTTL)
+		draft, err := s.repo.PutCollectionDraft(r.Context(), ownerType, ownerUUID, req.Actor, cred.UUID, refs, req.UpdateReason, s.cfg.PublisherDraftTTL, req.ExpectedRevision)
 		writeCollectionDraftResult(w, r, draft, err)
 	}
 }
@@ -316,6 +316,10 @@ func writeCollectionDraftResult(w http.ResponseWriter, r *http.Request, draft te
 	}
 	if errors.Is(err, repo.ErrDraftLocked) {
 		httpx.Conflict(w, "the draft is locked by an outstanding prepareCollectionCommit -- call cancelPrepare first, or wait for the pending commit to complete")
+		return
+	}
+	if errors.Is(err, repo.ErrDraftRevisionConflict) {
+		httpx.Conflict(w, err.Error())
 		return
 	}
 	if err != nil {

@@ -38,6 +38,24 @@ var (
 	// map to 404 per design/publisher-openapi.yaml's cancelPrepare
 	// response ("No such draft, or no lock currently held").
 	ErrLockNotHeld = errors.New("repo: no outstanding prepareCollectionCommit lock is held for this draft")
+	// ErrDraftRevisionConflict is returned by PutCollectionDraft when a
+	// caller supplies expectedRevision and it no longer matches the
+	// draft's actual current revision (409) -- optimistic concurrency for
+	// a caller that wants to detect "someone else already replaced this
+	// draft since I last read its state" rather than silently landing on
+	// an unexpected revision, invalidating an approval it didn't know
+	// about (external security review,
+	// docs/security-review-publisher-design-260828.md finding 13: "ETag/
+	// If-Match, expected revision, or equivalent for draft replacement" --
+	// PUT was never actually idempotent here, since every call bumps
+	// revision and resets approval regardless). Mirrors
+	// CreateArtifactVersion's own previousVersion exactly -- same
+	// optimistic-concurrency shape, same caveat: this protects against a
+	// *different* caller's unseen edit, it does not by itself make a
+	// network retry of a caller's own prior call safe (that needs a real
+	// idempotency-key mechanism, deliberately not built here -- see
+	// TODO.md).
+	ErrDraftRevisionConflict = errors.New("repo: collection draft is not at the expected revision")
 )
 
 // collectionDraftRow is collection_draft's raw column set, before parsing
@@ -132,6 +150,23 @@ func requireReleaseOwnerExistsTx(ctx context.Context, q dbtx, ownerType, ownerUU
 	return err
 }
 
+// requireArtifactsExistTx returns ErrNotFound if any of artifacts doesn't
+// exist, extracted out of PutCollectionDraft purely to keep that function's
+// own cyclomatic complexity down -- no independent reuse yet.
+func requireArtifactsExistTx(ctx context.Context, tx dbtx, artifacts []ArtifactRef) error {
+	for _, a := range artifacts {
+		var exists int
+		err := tx.QueryRowContext(ctx, `SELECT 1 FROM artifact WHERE uuid = ? AND version = ?`, a.UUID, a.Version).Scan(&exists)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // PutCollectionDraft creates or replaces (ownerType, ownerUUID)'s draft
 // artifact list (design/publisher-service.md §7.7): each artifact must
 // already exist (ErrNotFound otherwise), the draft must not be locked by
@@ -145,34 +180,40 @@ func requireReleaseOwnerExistsTx(ctx context.Context, q dbtx, ownerType, ownerUU
 // actor so DecideCollectionDraft can enforce self-approval against the
 // actual credential that drafted, not only the caller-supplied actor
 // string (docs/security-review-260923.md finding #4).
-func (r *Repo) PutCollectionDraft(ctx context.Context, ownerType, ownerUUID, actor, draftedByCredentialUUID string, artifacts []ArtifactRef, updateReason *tea.UpdateReason, ttl time.Duration) (teapublisher.CollectionDraft, error) {
+//
+// If expectedRevision is non-nil, the call is rejected with
+// ErrDraftRevisionConflict unless it equals the draft's actual current
+// revision (0 meaning "I expect no draft to exist yet") -- optimistic
+// concurrency for a caller that wants to detect a concurrent edit it
+// didn't see, rather than silently superseding it (see
+// ErrDraftRevisionConflict's own doc comment for the full reasoning and
+// its limits).
+func (r *Repo) PutCollectionDraft(ctx context.Context, ownerType, ownerUUID, actor, draftedByCredentialUUID string, artifacts []ArtifactRef, updateReason *tea.UpdateReason, ttl time.Duration, expectedRevision *int) (teapublisher.CollectionDraft, error) {
 	return runInTx(ctx, r, func(tx dbtx) (teapublisher.CollectionDraft, error) {
 		if err := requireReleaseOwnerExistsTx(ctx, tx, ownerType, ownerUUID); err != nil {
 			return teapublisher.CollectionDraft{}, err
 		}
-		for _, a := range artifacts {
-			var exists int
-			err := tx.QueryRowContext(ctx, `SELECT 1 FROM artifact WHERE uuid = ? AND version = ?`, a.UUID, a.Version).Scan(&exists)
-			if errors.Is(err, sql.ErrNoRows) {
-				return teapublisher.CollectionDraft{}, ErrNotFound
-			}
-			if err != nil {
-				return teapublisher.CollectionDraft{}, err
-			}
+		if err := requireArtifactsExistTx(ctx, tx, artifacts); err != nil {
+			return teapublisher.CollectionDraft{}, err
 		}
 
 		revision := 1
+		currentRevision := 0
 		existing, err := fetchCollectionDraftRowTx(ctx, tx, ownerType, ownerUUID)
 		switch {
 		case err == nil:
 			if lockHeld(existing) {
 				return teapublisher.CollectionDraft{}, ErrDraftLocked
 			}
+			currentRevision = existing.revision
 			revision = existing.revision + 1
 		case errors.Is(err, ErrNotFound):
 			// No existing draft -- creating one at revision 1.
 		default:
 			return teapublisher.CollectionDraft{}, err
+		}
+		if expectedRevision != nil && *expectedRevision != currentRevision {
+			return teapublisher.CollectionDraft{}, ErrDraftRevisionConflict
 		}
 
 		var reasonType, reasonComment any

@@ -289,6 +289,112 @@ func TestPublisherFullWorkflow(t *testing.T) {
 	}
 }
 
+// TestPublisherSubmitArtifactEvidenceIdempotentReplay is the regression
+// test for docs/security-review-publisher-design-260828.md finding 13
+// ("retried evidence submission creating duplicate evidence bundles"):
+// resubmitting the exact same evidence package (the caller's connection
+// dropped before it saw the first 201, say) must succeed again, not fail
+// with a confusing fingerprint-reuse error -- see
+// internal/repo.TestCreateEvidenceBundleIdempotentReplay for the repo-level
+// proof that it's genuinely the same stored bundle, not a new one; this is
+// the real-HTTP-round-trip confirmation that the fix is actually wired up.
+func TestPublisherSubmitArtifactEvidenceIdempotentReplay(t *testing.T) {
+	srv := newTestServer(t)
+	cicd := createPublisherCredential(t, srv, "cicd-cred", model.PublisherScopeCICD)
+
+	status, raw := publisherRequest(t, srv, http.MethodPost, "/publisher/v1/artifacts", cicd, map[string]any{
+		"type":    "BOM",
+		"formats": []map[string]any{{"mediaType": "application/vnd.cyclonedx+json"}},
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("createArtifact: status=%d body=%s", status, raw)
+	}
+	var artifact tea.Artifact
+	decodeInto(t, raw, &artifact)
+
+	status, raw = publisherRequest(t, srv, http.MethodPost, "/publisher/v1/artifacts/"+artifact.UUID+"/1/evidence/prepare", cicd, nil)
+	if status != http.StatusOK {
+		t.Fatalf("prepareArtifactEvidence: status=%d body=%s", status, raw)
+	}
+	var prepared struct {
+		DigestToSign string `json:"digestToSign"`
+	}
+	decodeInto(t, raw, &prepared)
+	sigValue, certPEM := signDigest(t, prepared.DigestToSign)
+
+	evidenceBody := map[string]any{
+		"objectDigestValue": prepared.DigestToSign,
+		"signatureFormat":   "jws-detached",
+		"signatureValue":    sigValue,
+		"certificatePem":    certPEM,
+	}
+	evidencePath := "/publisher/v1/artifacts/" + artifact.UUID + "/1/evidence"
+
+	status, raw = publisherRequest(t, srv, http.MethodPost, evidencePath, cicd, evidenceBody)
+	if status != http.StatusCreated {
+		t.Fatalf("first submitArtifactEvidence: status=%d body=%s", status, raw)
+	}
+
+	// Exact retry -- must succeed, not hit a fingerprint-reuse error.
+	status, raw = publisherRequest(t, srv, http.MethodPost, evidencePath, cicd, evidenceBody)
+	if status != http.StatusCreated {
+		t.Fatalf("retried submitArtifactEvidence: status=%d body=%s, want 201 (idempotent replay)", status, raw)
+	}
+}
+
+// TestPublisherPutCollectionDraftExpectedRevisionConflict is the regression
+// test for docs/security-review-publisher-design-260828.md finding 13's
+// "ETag/If-Match, expected revision, or equivalent for draft replacement":
+// a stale expectedRevision must be rejected (409), and a correct one must
+// succeed -- real HTTP round trip confirmation of
+// internal/repo.TestPutCollectionDraftExpectedRevisionConflict.
+func TestPublisherPutCollectionDraftExpectedRevisionConflict(t *testing.T) {
+	srv := newTestServer(t)
+	full := createPublisherCredential(t, srv, "full-cred", model.PublisherScopeFull)
+
+	status, raw := publisherRequest(t, srv, http.MethodPost, "/publisher/v1/products", full, map[string]any{"name": "Acme Widget"})
+	if status != http.StatusCreated {
+		t.Fatalf("createProduct: status=%d body=%s", status, raw)
+	}
+	var product tea.Product
+	decodeInto(t, raw, &product)
+
+	status, raw = publisherRequest(t, srv, http.MethodPost, "/publisher/v1/products/"+product.UUID+"/releases", full, map[string]any{"version": "1.0.0"})
+	if status != http.StatusCreated {
+		t.Fatalf("createProductRelease: status=%d body=%s", status, raw)
+	}
+	var release tea.ProductRelease
+	decodeInto(t, raw, &release)
+
+	draftPath := "/publisher/v1/productReleases/" + release.UUID + "/collectionDraft"
+	status, raw = publisherRequest(t, srv, http.MethodPut, draftPath, full, map[string]any{
+		"actor": "ci-pipeline", "expectedRevision": 0,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("putCollectionDraft with expectedRevision=0 on a fresh release: status=%d body=%s", status, raw)
+	}
+
+	// Stale expectedRevision (draft is now at revision 1) -- 409.
+	if status, body := publisherRequest(t, srv, http.MethodPut, draftPath, full, map[string]any{
+		"actor": "ci-pipeline", "expectedRevision": 0,
+	}); status != http.StatusConflict {
+		t.Fatalf("stale expectedRevision=0: status=%d body=%s, want 409", status, body)
+	}
+
+	// Correct expectedRevision (1) -- succeeds.
+	status, raw = publisherRequest(t, srv, http.MethodPut, draftPath, full, map[string]any{
+		"actor": "ci-pipeline", "expectedRevision": 1,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("correct expectedRevision=1: status=%d body=%s", status, raw)
+	}
+	var draft teapublisher.CollectionDraft
+	decodeInto(t, raw, &draft)
+	if draft.Revision != 2 {
+		t.Fatalf("Revision = %d, want 2", draft.Revision)
+	}
+}
+
 // TestPublisherCreateReleaseCreatedDateServerAssigned is the regression test
 // for docs/security-review-publisher-design-260828.md finding 11: createProductRelease/
 // createComponentRelease used to require (and trust) a caller-supplied

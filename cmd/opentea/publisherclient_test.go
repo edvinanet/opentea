@@ -6,7 +6,6 @@ package main
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/oej/opentea/internal/model"
 	"github.com/oej/opentea/pkg/teapublisher"
@@ -35,8 +34,7 @@ func TestPublisherClientFullWorkflow(t *testing.T) {
 	}
 
 	release, err := fullClient.CreateProductRelease(ctx, product.UUID, teapublisher.ProductReleaseCreate{
-		Version:     "1.0.0",
-		CreatedDate: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC),
+		Version: "1.0.0",
 	})
 	if err != nil {
 		t.Fatalf("CreateProductRelease: %v", err)

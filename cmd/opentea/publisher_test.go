@@ -182,7 +182,7 @@ func TestPublisherFullWorkflow(t *testing.T) {
 	decodeInto(t, raw, &product)
 
 	status, raw = publisherRequest(t, srv, http.MethodPost, "/publisher/v1/products/"+product.UUID+"/releases", full, map[string]any{
-		"version": "1.0.0", "createdDate": "2026-07-01T00:00:00Z",
+		"version": "1.0.0",
 	})
 	if status != http.StatusCreated {
 		t.Fatalf("createProductRelease: status=%d body=%s", status, raw)
@@ -288,6 +288,63 @@ func TestPublisherFullWorkflow(t *testing.T) {
 	}
 }
 
+// TestPublisherCreateReleaseCreatedDateServerAssigned is the regression test
+// for docs/security-review-publisher-design-260828.md finding 11: createProductRelease/
+// createComponentRelease used to require (and trust) a caller-supplied
+// createdDate, letting a faulty or malicious publisher back-date or
+// future-date a record TEA 1.0's own spec documents as "the time the object
+// was created in TEA" -- a server-assigned fact, not a manufacturer
+// assertion (unlike releaseDate, which genuinely is one, and is deliberately
+// left untouched by this fix). Submits a createdDate far in the past and
+// confirms the server ignores it, stamping its own current time instead, for
+// both product releases and component releases.
+func TestPublisherCreateReleaseCreatedDateServerAssigned(t *testing.T) {
+	srv := newTestServer(t)
+	full := createPublisherCredential(t, srv, "full-cred", model.PublisherScopeFull)
+	before := time.Now().Add(-time.Minute)
+	backdated := "2020-01-01T00:00:00Z"
+
+	status, raw := publisherRequest(t, srv, http.MethodPost, "/publisher/v1/products", full, map[string]any{"name": "Acme Widget"})
+	if status != http.StatusCreated {
+		t.Fatalf("createProduct: status=%d body=%s", status, raw)
+	}
+	var product tea.Product
+	decodeInto(t, raw, &product)
+
+	status, raw = publisherRequest(t, srv, http.MethodPost, "/publisher/v1/products/"+product.UUID+"/releases", full, map[string]any{
+		"version":     "1.0.0",
+		"createdDate": backdated,
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("createProductRelease: status=%d body=%s", status, raw)
+	}
+	var release tea.ProductRelease
+	decodeInto(t, raw, &release)
+	if release.CreatedDate.Before(before) {
+		t.Fatalf("productRelease.createdDate = %v, want server-assigned (>= %v), not the submitted %q", release.CreatedDate, before, backdated)
+	}
+
+	status, raw = publisherRequest(t, srv, http.MethodPost, "/publisher/v1/components", full, map[string]any{"name": "Acme Component"})
+	if status != http.StatusCreated {
+		t.Fatalf("createComponent: status=%d body=%s", status, raw)
+	}
+	var component tea.Component
+	decodeInto(t, raw, &component)
+
+	status, raw = publisherRequest(t, srv, http.MethodPost, "/publisher/v1/components/"+component.UUID+"/releases", full, map[string]any{
+		"version":     "1.0.0",
+		"createdDate": backdated,
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("createComponentRelease: status=%d body=%s", status, raw)
+	}
+	var componentRelease tea.ComponentRelease
+	decodeInto(t, raw, &componentRelease)
+	if componentRelease.CreatedDate.Before(before) {
+		t.Fatalf("componentRelease.createdDate = %v, want server-assigned (>= %v), not the submitted %q", componentRelease.CreatedDate, before, backdated)
+	}
+}
+
 // TestPublisherSelfApprovalRejectedAcrossDifferentActorNames is the
 // regression test for the finding that maker-checker self-approval
 // prevention only compared caller-supplied "actor" JSON strings, never the
@@ -310,7 +367,7 @@ func TestPublisherSelfApprovalRejectedAcrossDifferentActorNames(t *testing.T) {
 	decodeInto(t, raw, &product)
 
 	status, raw = publisherRequest(t, srv, http.MethodPost, "/publisher/v1/products/"+product.UUID+"/releases", full, map[string]any{
-		"version": "1.0.0", "createdDate": "2026-07-01T00:00:00Z",
+		"version": "1.0.0",
 	})
 	if status != http.StatusCreated {
 		t.Fatalf("createProductRelease: status=%d body=%s", status, raw)

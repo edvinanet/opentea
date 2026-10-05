@@ -6,6 +6,7 @@ package publisher
 import (
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/oej/opentea/internal/httpx"
 	"github.com/oej/opentea/internal/repo"
@@ -36,7 +37,10 @@ func (s *Server) createProduct(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusCreated, p)
 }
 
-// createProductRelease implements createProductRelease.
+// createProductRelease implements createProductRelease. CreatedDate is
+// server-assigned (time.Now()), not taken from the request -- see
+// teapublisher.ProductReleaseCreate's own doc comment for why
+// (docs/security-review-publisher-design-260828.md finding 11).
 func (s *Server) createProductRelease(w http.ResponseWriter, r *http.Request) {
 	productUUID, err := httpx.PathUUID(r, "uuid")
 	if err != nil {
@@ -52,10 +56,6 @@ func (s *Server) createProductRelease(w http.ResponseWriter, r *http.Request) {
 		httpx.BadRequest(w, "version is required")
 		return
 	}
-	if req.CreatedDate.IsZero() {
-		httpx.BadRequest(w, "createdDate is required")
-		return
-	}
 
 	preRelease := false
 	if req.PreRelease != nil {
@@ -63,7 +63,7 @@ func (s *Server) createProductRelease(w http.ResponseWriter, r *http.Request) {
 	}
 	pr, err := s.repo.CreateProductRelease(r.Context(), productUUID, repo.ProductReleaseInput{
 		Version:     req.Version,
-		CreatedDate: req.CreatedDate,
+		CreatedDate: time.Now(),
 		ReleaseDate: req.ReleaseDate,
 		PreRelease:  preRelease,
 		Identifiers: req.Identifiers,

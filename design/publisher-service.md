@@ -1,6 +1,6 @@
 # TEA Publisher — protocol and service design
 
-**Status:** draft v0.29, for discussion. Nothing here is scheduled or approved; no
+**Status:** draft v0.30, for discussion. Nothing here is scheduled or approved; no
 implementation exists yet. This document is the design opentea's `TODO.md` "Reference
 publisher" entry has been blocked on since 2026-07-04.
 
@@ -386,7 +386,7 @@ than repeated here.
   that wants it can detect "someone else already advanced this artifact since I last read
   its state" as an explicit `409`, rather than silently landing on version N+2 instead of
   the N+1 it expected.
-- **v0.29 (this revision)** adds §9.7, precisely specifying the exact bytes Mode 1 signs
+- **v0.29** adds §9.7, precisely specifying the exact bytes Mode 1 signs
   and verifies -- closing another gap from the same external security review
   (docs/security-review-publisher-design-260828.md finding 5): `digestToSign`/
   `signatureValue` said "sign the digest bytes" without saying whether that meant the hex
@@ -396,6 +396,13 @@ than repeated here.
   published, byte-exact test vector. Domain separation (also on the review's list)
   deliberately deferred to its own `TODO.md` item, not decided here -- see §9.7's own
   callout for why.
+- **v0.30 (this revision)** fixes finding 11 of the same external security review -- a
+  real behavior change, not just a documentation one: §18.3's `createProductRelease`
+  form description no longer shows `createdDate` as something a staff member fills in,
+  since the target server now assigns it (`design/publisher-openapi.yaml` v0.15) rather
+  than trusting a caller-supplied value, closing the back-date/future-date risk the
+  review flagged. `releaseDate` is unaffected -- it was always, and remains, the
+  genuinely caller-supplied manufacturer business date.
 
 ## 1. Problem statement
 
@@ -1959,11 +1966,12 @@ remove a target. Serves as this section's baseline for visual style (plain HTML,
   `GetProduct`, `ListReleasesByProduct` — read side, no caching, §17.4). A search/list page,
   a product detail page showing its releases.
 - **Create**: `CreateProduct`/`CreateProductRelease` forms (name + identifiers; version +
-  createdDate + optional releaseDate + identifiers) — requires a "full"-scoped credential
-  (§18.11). `createdDate` is presented as a plain form field the staff member fills in, not
-  hidden as target-assigned — it genuinely is caller-supplied today (security-review finding
-  11, still open in `TODO.md`); the GUI shouldn't imply a guarantee the protocol doesn't
-  provide.
+  optional releaseDate + identifiers) — requires a "full"-scoped credential (§18.11).
+  `createdDate` is **not** a form field — the target server assigns it
+  (`design/publisher-openapi.yaml` v0.15, security-review finding 11, fixed) — this GUI
+  description previously had the staff member fill it in directly, matching what was then
+  genuinely caller-supplied; no longer accurate to describe once the target stopped
+  accepting it.
 
 ### 18.4 Components
 

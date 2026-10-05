@@ -1,11 +1,27 @@
 openapi: 3.1.0
 info:
   title: TEA Publisher API
-  version: 0.14.0-draft
+  version: 0.15.0-draft
   description: |
-    **Status: draft v0.14, for discussion. opentea's own server-side implementation
+    **Status: draft v0.15, for discussion. opentea's own server-side implementation
     exists (`internal/publisher`) but this document is still a draft, not approved by
     CycloneDX or any TEA working group.**
+
+    v0.15: fixes finding 11 of the same external security review
+    (docs/security-review-publisher-design-260828.md) -- **a real behavior change**,
+    unlike v0.13/v0.14's documentation-only fixes: `createProductRelease`/
+    `createComponentRelease` used to require and trust a caller-supplied `createdDate`,
+    letting a faulty or malicious publisher back-date or future-date a record the base
+    `productRelease`/`release` schemas' own description calls "the time the object was
+    created in TEA." `createdDate` is now server-assigned (`time.Now()` at creation),
+    matching `artifact-create`'s already-correct precedent -- removed from
+    `productRelease-create`/`release-create` entirely (deviation 7). `releaseDate` is
+    unaffected: it's the separate, genuinely caller-supplied manufacturer business date,
+    the same distinction finding 11 itself draws. Separately, resolved finding 11's other,
+    genuinely open question -- CLE `published`/`effective` stay caller-supplied, clarified
+    as historical assertions about the real-world event, not server timestamps (see
+    `cle-event-create`'s own description) -- no behavior change there, just a stated
+    answer to a previously-unstated question.
 
     v0.14: two fixes from the same external security review
     (docs/security-review-publisher-design-260828.md), both about this draft's accuracy as
@@ -216,7 +232,7 @@ info:
        reference) versus its base schema. Unavoidable, not a design choice: the consumer
        schemas describe an object that already exists and has a server-assigned identity;
        a create request is inherently the pre-creation subset. Every other field matches
-       its base schema's own requiredness exactly, **with two further exceptions**:
+       its base schema's own requiredness exactly, **with three further exceptions**:
     3. **`productRelease-create` omits `components`**, which the base `productRelease`
        schema requires (present, possibly empty). Deliberate: `design/publisher-service.md`
        §5's "process, not object model" principle — a release is created before its
@@ -243,6 +259,17 @@ info:
        writes a plain `{"message": "..."}` body, never the consumer spec's `{error,
        message}` shape with `error` from a fixed enum. This schema's own description now
        states that plainly; see the schema itself, not this list, for its actual shape.
+    7. **`productRelease-create`/`release-create` also omit `createdDate`** — both
+       previously required it from the caller and trusted the submitted value verbatim,
+       letting a faulty or malicious publisher back-date or future-date a record the base
+       `productRelease`/`release` schemas' own description calls "the time the object was
+       created in TEA" (external security review,
+       docs/security-review-publisher-design-260828.md finding 11; fixed by server-
+       assigning it, `time.Now()` at creation, same as `artifact-create` already
+       correctly did for `artifact.createdDate` — that precedent just hadn't been applied
+       here yet, or captured in this list). `releaseDate` is unaffected: it's the separate,
+       genuinely caller-supplied manufacturer business date, which finding 11 itself draws
+       this exact distinction around.
 
     Schemas with **no consumer-spec equivalent at all** — not alterations of an existing
     object, because the consumer spec is read-only by design and never modeled a write or
@@ -2008,35 +2035,43 @@ components:
     productRelease-create:
       type: object
       description: >-
-        Same as `productRelease`, minus the server-assigned uuid, the path-implied product,
-        and (deviation 3) the components list.
+        Same as `productRelease`, minus the server-assigned uuid, createdDate, and
+        path-implied product, and (deviation 3) the components list.
       x-deviation: >-
-        Omits uuid (server-assigned) and product (path parameter). Omits components,
-        unlike the base schema which requires it — see info.description, deviation 3.
+        Omits uuid and createdDate (both server-assigned -- createdDate was wrongly
+        caller-supplied and required before this revision, letting a faulty or malicious
+        publisher back-date or future-date a record the base schema's own description
+        calls "the time the object was created in TEA"; docs/security-review-publisher-design-260828.md
+        finding 11) and product (path parameter). Omits components, unlike the base schema
+        which requires it — see info.description, deviation 3. releaseDate is NOT affected
+        by this — it is the separate, genuinely caller-supplied manufacturer business date
+        (finding 11 draws this same distinction explicitly).
       properties:
         version: { type: string }
-        createdDate: { type: string, format: date-time }
         releaseDate: { type: string, format: date-time }
         preRelease: { type: boolean }
         identifiers:
           type: array
           items: { $ref: '#/components/schemas/identifier' }
-      required: [version, createdDate]
+      required: [version]
 
     release-create:
       type: object
       description: >-
-        Same as `release`, minus the server-assigned uuid and the path-implied component.
-      x-deviation: 'Omits uuid (server-assigned) and component (path parameter). See info.description, deviation 2.'
+        Same as `release`, minus the server-assigned uuid, createdDate, and the
+        path-implied component.
+      x-deviation: >-
+        Omits uuid and createdDate (both server-assigned; see productRelease-create's own
+        x-deviation for the full reasoning, docs/security-review-publisher-design-260828.md
+        finding 11 -- identical here) and component (path parameter).
       properties:
         version: { type: string }
-        createdDate: { type: string, format: date-time }
         releaseDate: { type: string, format: date-time }
         preRelease: { type: boolean }
         identifiers:
           type: array
           items: { $ref: '#/components/schemas/identifier' }
-      required: [version, createdDate]
+      required: [version]
 
     artifact-format-create:
       type: object
@@ -2089,7 +2124,20 @@ components:
 
     cle-event-create:
       type: object
-      description: Same as `cle-event`, minus the server-assigned id.
+      description: >-
+        Same as `cle-event`, minus the server-assigned id. **Clarification, not a
+        deviation** (external security review,
+        docs/security-review-publisher-design-260828.md finding 11, asked this to be
+        settled one way or the other): `effective`/`published` are caller-supplied
+        historical assertions describing the real-world lifecycle event, not
+        target-server timestamps -- unlike `productRelease`/`release`'s `createdDate`
+        (deviation 7), there is no "time this row was created in TEA" meaning available to
+        contrast them against here; a manufacturer recording a lifecycle fact (e.g. an
+        end-of-life date announced years ago) must be able to assert when it was
+        originally effective/published, which the server has no independent way to know or
+        assign. `cle-event`'s own field descriptions (upstream-verbatim, unchanged) already
+        say "when the event takes effect"/"when the event was first published" -- read as
+        the event's own real-world timeline, not this API call's.
       x-deviation: 'Omits id — server-assigned, auto-incrementing. See info.description, deviation 2.'
       properties:
         type: { $ref: '#/components/schemas/cle-event-type' }

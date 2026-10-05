@@ -1468,7 +1468,7 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       and routes to `internal/publisher` (mirroring `internal/admin/cle.go`'s existing
       ones closely), a `cle-definition-create` request schema, and four new OpenAPI
       operations once the real implementation exists to document.
-- [ ] **[security review finding 11] Publisher API: caller-supplied creation timestamps**
+- [x] ~~**[security review finding 11] Publisher API: caller-supplied creation timestamps**
       — `productRelease-create`/`release-create`'s `createdDate` and CLE's `published` are
       required request fields a caller can backdate or future-date; the consumer spec
       describes `createdDate` as server-assigned. opentea's own implementation already
@@ -1478,7 +1478,38 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       the caller's value as-is. Decide whether `createdDate` should become
       server-assigned everywhere (breaking bundle-import's need to set a historical value)
       or stay caller-supplied with the field explicitly redefined as a manufacturer
-      assertion, not a target-authoritative fact.
+      assertion, not a target-authoritative fact.~~ **Fixed 2026-10-01**: made
+      `createdDate` server-assigned for `createProductRelease`/`createComponentRelease`
+      too, matching `createArtifact`'s already-correct precedent exactly — removed
+      `CreatedDate` from `teapublisher.ProductReleaseCreate`/`ComponentReleaseCreate`
+      (`pkg/teapublisher/types.go`), and both handlers (`internal/publisher/product.go`/
+      `component.go`) now pass `time.Now()` to `repo.CreateProductRelease`/
+      `CreateComponentRelease` instead of a request field — the repo layer itself needed
+      no change (it already just takes whatever `CreatedDate` value its caller supplies;
+      `ImportProductRelease`/`ImportComponentRelease`, bundle import's separate path, is
+      untouched and still needs to set a historical value, exactly the concern flagged
+      above). Scoped to `/publisher/v1` only, matching this finding's own text —
+      `/admin/v1` has the identical caller-supplied `createdDate` pattern but wasn't
+      raised by this review; left alone, not silently fixed as a side effect.
+      `design/publisher-openapi.yaml` (v0.15) updated to match: `createdDate` removed
+      entirely from `productRelease-create`/`release-create` (new deviation 7).
+      `releaseDate` is unaffected either way — confirmed it's the separate, genuinely
+      caller-supplied manufacturer business date the finding itself distinguishes
+      `createdDate` from. Separately, resolved finding 11's other, genuinely open
+      question: CLE `published`/`effective` stay caller-supplied (no code change) —
+      clarified in `cle-event-create`'s description as historical assertions about the
+      real-world lifecycle event, which the server has no independent way to know,
+      unlike `createdDate`'s "time this row was created in TEA" meaning. Verified: new
+      regression test `TestPublisherCreateReleaseCreatedDateServerAssigned`
+      (`cmd/opentea/publisher_test.go`) submits a 2020 `createdDate` for both a product
+      release and a component release and confirms the server ignores it, stamping its
+      own current time — confirmed to fail against the pre-fix code (`git stash` on just
+      this fix's files) with the exact submitted 2020 date echoed back, passes after.
+      Updated two existing tests' request bodies/struct literals that supplied the now-
+      ignored field (`cmd/opentea/cicdapi_test.go`, `publisherclient_test.go`,
+      `publisher_test.go`) — no assertions there depended on the old caller-supplied
+      value, confirmed before editing. Full suite, `-race`, `golangci-lint`, `go vet`,
+      `gofmt` clean.
 - [ ] **[security review finding 13] Publisher API: idempotency for write operations** —
       already an open question before the review (`design/publisher-service.md` §11 #13,
       §14.4), but the review confirms it's now also a real gap in the shipped

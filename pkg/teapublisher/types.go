@@ -49,9 +49,15 @@ type ComponentCreate struct {
 // ProductReleaseCreate is the request body for createProductRelease: same
 // as tea.ProductRelease, minus the server-assigned UUID, the path-implied
 // product, and the components list (linked separately via linkComponent).
+// CreatedDate is also server-assigned (time.Now() at creation, matching
+// ArtifactCreate's own already-correct precedent) -- a caller-supplied
+// value here would let a faulty or malicious publisher back-date or
+// future-date the record TEA 1.0's own createdDate field documents as "the
+// time the object was created in TEA" (docs/security-review-publisher-design-260828.md
+// finding 11). ReleaseDate is the separate, genuinely caller-supplied
+// manufacturer business date -- unaffected by this fix.
 type ProductReleaseCreate struct {
 	Version     string           `json:"version"`
-	CreatedDate time.Time        `json:"createdDate"`
 	ReleaseDate *time.Time       `json:"releaseDate,omitempty"`
 	PreRelease  *bool            `json:"preRelease,omitempty"`
 	Identifiers []tea.Identifier `json:"identifiers,omitempty"`
@@ -61,10 +67,11 @@ type ProductReleaseCreate struct {
 // (the OpenAPI schema is named `release-create`, matching pkg/tea's own
 // tea.ComponentRelease naming for the spec's "release" schema): same as
 // tea.ComponentRelease, minus the server-assigned UUID and the path-implied
-// component.
+// component. CreatedDate is also server-assigned -- see ProductReleaseCreate's
+// own doc comment for why (docs/security-review-publisher-design-260828.md
+// finding 11); the same reasoning applies here unchanged.
 type ComponentReleaseCreate struct {
 	Version     string           `json:"version"`
-	CreatedDate time.Time        `json:"createdDate"`
 	ReleaseDate *time.Time       `json:"releaseDate,omitempty"`
 	PreRelease  *bool            `json:"preRelease,omitempty"`
 	Identifiers []tea.Identifier `json:"identifiers,omitempty"`

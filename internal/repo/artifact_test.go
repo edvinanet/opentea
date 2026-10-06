@@ -63,6 +63,41 @@ func TestArtifactCreateGetAndUploadFile(t *testing.T) {
 	}
 }
 
+// TestSetArtifactFormatFileReplacesNotAccumulates is the regression test
+// for docs/security-review-publisher-design-260828.md finding 14's
+// "whether upload creates or replaces content": a second
+// SetArtifactFormatFile call for the same format previously left two
+// checksum rows behind -- the stale one still pointing at now-orphaned
+// blob content -- instead of cleanly replacing it. Confirms exactly one
+// checksum row survives, with the second upload's value, after two calls.
+func TestSetArtifactFormatFileReplacesNotAccumulates(t *testing.T) {
+	ctx := context.Background()
+	r := newTestRepo(t)
+
+	a, err := r.CreateArtifact(ctx, ArtifactInput{
+		Type:    "BOM",
+		Formats: []ArtifactFormatInput{{MediaType: "application/vnd.cyclonedx+json"}},
+	})
+	if err != nil {
+		t.Fatalf("CreateArtifact: %v", err)
+	}
+
+	if _, err := r.SetArtifactFormatFile(ctx, a.UUID, a.Version, 0, "first-checksum"); err != nil {
+		t.Fatalf("first SetArtifactFormatFile: %v", err)
+	}
+	updated, err := r.SetArtifactFormatFile(ctx, a.UUID, a.Version, 0, "second-checksum")
+	if err != nil {
+		t.Fatalf("second SetArtifactFormatFile: %v", err)
+	}
+
+	if len(updated.Formats[0].Checksums) != 1 {
+		t.Fatalf("Checksums = %+v, want exactly 1 (replaced, not accumulated)", updated.Formats[0].Checksums)
+	}
+	if updated.Formats[0].Checksums[0].AlgValue != "second-checksum" {
+		t.Fatalf("Checksums[0].AlgValue = %q, want the second upload's value", updated.Formats[0].Checksums[0].AlgValue)
+	}
+}
+
 func TestArtifactSetFileInvalidFormatIndex(t *testing.T) {
 	ctx := context.Background()
 	r := newTestRepo(t)

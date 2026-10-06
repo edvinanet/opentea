@@ -129,7 +129,11 @@ func (s *Server) cicdUploadArtifactFile(w http.ResponseWriter, r *http.Request, 
 		httpx.InternalError(w, r, err)
 		return
 	}
-	if err := client.UploadArtifactFile(r.Context(), uuid, version, mediaType, header.Filename, file); err != nil {
+	// The target now also returns the computed checksum/size
+	// (docs/security-review-publisher-design-260828.md finding 14) -- not
+	// surfaced here, since this proxy's own wire contract (bare 204) is a
+	// separate, narrower concern this fix didn't touch; see TODO.md.
+	if _, err := client.UploadArtifactFile(r.Context(), uuid, version, mediaType, header.Filename, file); err != nil {
 		writeClientError(w, r, err)
 		return
 	}
@@ -172,7 +176,7 @@ func (s *Server) cicdUploadArtifactSignatureFile(w http.ResponseWriter, r *http.
 		httpx.InternalError(w, r, err)
 		return
 	}
-	if err := client.UploadArtifactSignatureFile(r.Context(), uuid, version, mediaType, header.Filename, file); err != nil {
+	if _, err := client.UploadArtifactSignatureFile(r.Context(), uuid, version, mediaType, header.Filename, file); err != nil {
 		writeClientError(w, r, err)
 		return
 	}

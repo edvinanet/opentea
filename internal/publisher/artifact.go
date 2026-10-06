@@ -5,6 +5,7 @@ package publisher
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -53,13 +54,42 @@ func (s *Server) createArtifact(w http.ResponseWriter, r *http.Request) {
 		httpx.InternalError(w, r, err)
 		return
 	}
-	httpx.WriteJSON(w, http.StatusCreated, a)
+	writeArtifactCreated(w, r, s, a)
 }
+
+// writeArtifactCreated writes a's ArtifactCreated response (finding 14):
+// a's own creation already succeeded by the time this is called, so a
+// failure looking up its format ids is reported as 500, not rolled back
+// into the create itself -- the artifact and its formats already exist
+// either way, this only affects what this one response body contains.
+func writeArtifactCreated(w http.ResponseWriter, r *http.Request, s *Server, a tea.Artifact) {
+	formatIDs, err := s.repo.ArtifactFormatIDs(r.Context(), a.UUID, a.Version)
+	if err != nil {
+		httpx.InternalError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusCreated, teapublisher.ArtifactCreated{Artifact: a, FormatIDs: formatIDs})
+}
+
+// maxArtifactFormats caps how many formats a single artifact (version) may
+// declare -- external security review, docs/security-review-publisher-design-260828.md
+// finding 14's "maximum format count": previously unbounded. Generously
+// above any real CycloneDX-shaped use case (a handful of serializations of
+// the same document -- JSON, XML, maybe a protobuf or two) while still
+// ruling out an unbounded request inflating this artifact version's row
+// count indefinitely.
+const maxArtifactFormats = 50
 
 // validateArtifactFields validates the type/formats fields shared by
 // createArtifact's and createArtifactVersion's request bodies, converting
 // formats to repo.ArtifactFormatInput on success. Writes the appropriate
-// 400 response and returns ok=false on the first violation.
+// 400 response and returns ok=false on the first violation. Duplicate
+// mediaType values across formats are deliberately still allowed (finding
+// 14's "duplicate media-type handling", resolved this way rather than
+// forbidden): each format now has its own stable, server-assigned id
+// (ArtifactCreated.FormatIDs) a caller can address it by, so a shared
+// mediaType no longer makes any format unreachable the way it did when
+// mediaType was the only addressing option.
 func validateArtifactFields(w http.ResponseWriter, artifactType string, in []teapublisher.ArtifactFormatCreate) (formats []repo.ArtifactFormatInput, ok bool) {
 	if !validArtifactTypes[artifactType] {
 		httpx.BadRequest(w, "type must be a valid artifact-type enum value")
@@ -67,6 +97,10 @@ func validateArtifactFields(w http.ResponseWriter, artifactType string, in []tea
 	}
 	if len(in) == 0 {
 		httpx.BadRequest(w, "at least one format is required")
+		return nil, false
+	}
+	if len(in) > maxArtifactFormats {
+		httpx.BadRequest(w, fmt.Sprintf("formats: at most %d allowed, got %d", maxArtifactFormats, len(in)))
 		return nil, false
 	}
 	formats = make([]repo.ArtifactFormatInput, len(in))
@@ -127,7 +161,7 @@ func (s *Server) createArtifactVersion(w http.ResponseWriter, r *http.Request) {
 		httpx.InternalError(w, r, err)
 		return
 	}
-	httpx.WriteJSON(w, http.StatusCreated, a)
+	writeArtifactCreated(w, r, s, a)
 }
 
 const maxUploadBody = 1 << 30 // 1 GiB cap per uploaded file, matches internal/admin/upload.go
@@ -181,19 +215,11 @@ func (s *Server) uploadArtifactFile(w http.ResponseWriter, r *http.Request) {
 		httpx.BadRequest(w, "invalid multipart form: "+err.Error())
 		return
 	}
-	// Addressed by mediaType, not a positional array index -- format order
-	// is not a durable identifier (found by external security review,
-	// docs/security-review-publisher-design-260828.md finding 14).
-	mediaType := r.FormValue("mediaType")
-	if mediaType == "" {
-		httpx.BadRequest(w, "mediaType is required")
-		return
-	}
-	formatIndex, ok := resolveArtifactFormatIndex(w, artifact, mediaType)
+	formatIndex, ok := s.resolveArtifactFormat(w, r, artifact, uuid, version)
 	if !ok {
 		return
 	}
-	sha256Hex, ok := s.receiveUploadedFile(w, r)
+	sha256Hex, size, ok := s.receiveUploadedFile(w, r)
 	if !ok {
 		return
 	}
@@ -210,7 +236,42 @@ func (s *Server) uploadArtifactFile(w http.ResponseWriter, r *http.Request) {
 		httpx.InternalError(w, r, err)
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	// Returns the checksum and size the server actually computed from the
+	// uploaded bytes, not just 204 -- external security review,
+	// docs/security-review-publisher-design-260828.md finding 14: "checksum
+	// and size returned after upload," previously neither was.
+	httpx.WriteJSON(w, http.StatusOK, teapublisher.ArtifactFileUploaded{SHA256: sha256Hex, Size: size})
+}
+
+// resolveArtifactFormat resolves the target format of an already-parsed
+// multipart upload request against the stable, server-assigned formatId
+// form field if present, falling back to the mediaType form field
+// otherwise (security review finding 14,
+// docs/security-review-publisher-design-260828.md: "array order is not a
+// durable identifier... use a server-assigned format ID or stable format
+// key"). formatId is unambiguous even when two formats share a mediaType
+// (allowed, see validateArtifactFields's own doc comment); mediaType stays
+// supported for the common case where a caller doesn't need to -- or
+// hasn't kept -- the id ArtifactCreated returned at creation time.
+func (s *Server) resolveArtifactFormat(w http.ResponseWriter, r *http.Request, artifact tea.Artifact, artifactUUID string, artifactVersion int) (formatIndex int, ok bool) {
+	if formatID := r.FormValue("formatId"); formatID != "" {
+		index, err := s.repo.ArtifactFormatIndexByID(r.Context(), artifactUUID, artifactVersion, formatID)
+		if errors.Is(err, repo.ErrNotFound) {
+			httpx.NotFound(w)
+			return -1, false
+		}
+		if err != nil {
+			httpx.InternalError(w, r, err)
+			return -1, false
+		}
+		return index, true
+	}
+	mediaType := r.FormValue("mediaType")
+	if mediaType == "" {
+		httpx.BadRequest(w, "formatId or mediaType is required")
+		return -1, false
+	}
+	return resolveArtifactFormatIndex(w, artifact, mediaType)
 }
 
 // resolveArtifactFormatIndex finds the index of the one format among
@@ -218,8 +279,8 @@ func (s *Server) uploadArtifactFile(w http.ResponseWriter, r *http.Request) {
 // positional array index (security review finding 14, docs/security-
 // review-publisher-design-260828.md). Writes the appropriate error
 // response and returns ok=false if none match (404) or more than one does
-// (400, ambiguous -- this draft has no server-assigned per-format id to
-// disambiguate that case).
+// (400, ambiguous -- a caller with a genuinely ambiguous mediaType must
+// use formatId instead, see resolveArtifactFormat).
 func resolveArtifactFormatIndex(w http.ResponseWriter, artifact tea.Artifact, mediaType string) (formatIndex int, ok bool) {
 	formatIndex = -1
 	for i, f := range artifact.Formats {
@@ -227,7 +288,7 @@ func resolveArtifactFormatIndex(w http.ResponseWriter, artifact tea.Artifact, me
 			continue
 		}
 		if formatIndex != -1 {
-			httpx.BadRequest(w, "mediaType is ambiguous: more than one format of this artifact version shares it")
+			httpx.BadRequest(w, "mediaType is ambiguous: more than one format of this artifact version shares it -- use formatId instead")
 			return -1, false
 		}
 		formatIndex = i
@@ -243,24 +304,24 @@ func resolveArtifactFormatIndex(w http.ResponseWriter, artifact tea.Artifact, me
 // by ParseMultipartForm), stores it via the blob store, and records blob
 // bookkeeping -- shared by uploadArtifactFile and uploadArtifactSignatureFile,
 // which differ only in what they do with the resulting sha256Hex.
-func (s *Server) receiveUploadedFile(w http.ResponseWriter, r *http.Request) (sha256Hex string, ok bool) {
+func (s *Server) receiveUploadedFile(w http.ResponseWriter, r *http.Request) (sha256Hex string, size int64, ok bool) {
 	file, header, err := r.FormFile("file")
 	if err != nil {
 		httpx.BadRequest(w, "missing \"file\" form field: "+err.Error())
-		return "", false
+		return "", 0, false
 	}
 	defer func() { _ = file.Close() }()
 
-	sha256Hex, size, err := s.storage.Put(r.Context(), file)
+	sha256Hex, size, err = s.storage.Put(r.Context(), file)
 	if err != nil {
 		httpx.InternalError(w, r, err)
-		return "", false
+		return "", 0, false
 	}
 	if err := s.repo.UpsertBlob(r.Context(), sha256Hex, size, header.Header.Get("Content-Type")); err != nil {
 		httpx.InternalError(w, r, err)
-		return "", false
+		return "", 0, false
 	}
-	return sha256Hex, true
+	return sha256Hex, size, true
 }
 
 // uploadArtifactSignatureFile mirrors uploadArtifactFile, addressing the
@@ -296,16 +357,11 @@ func (s *Server) uploadArtifactSignatureFile(w http.ResponseWriter, r *http.Requ
 		httpx.BadRequest(w, "invalid multipart form: "+err.Error())
 		return
 	}
-	mediaType := r.FormValue("mediaType")
-	if mediaType == "" {
-		httpx.BadRequest(w, "mediaType is required")
-		return
-	}
-	formatIndex, ok := resolveArtifactFormatIndex(w, artifact, mediaType)
+	formatIndex, ok := s.resolveArtifactFormat(w, r, artifact, uuid, version)
 	if !ok {
 		return
 	}
-	sha256Hex, ok := s.receiveUploadedFile(w, r)
+	sha256Hex, size, ok := s.receiveUploadedFile(w, r)
 	if !ok {
 		return
 	}
@@ -317,5 +373,5 @@ func (s *Server) uploadArtifactSignatureFile(w http.ResponseWriter, r *http.Requ
 		httpx.InternalError(w, r, err)
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	httpx.WriteJSON(w, http.StatusOK, teapublisher.ArtifactFileUploaded{SHA256: sha256Hex, Size: size})
 }

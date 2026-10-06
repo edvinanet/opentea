@@ -26,6 +26,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/oej/opentea/pkg/teapublisher"
 )
 
 // maxResponseBody bounds how much of any single HTTP response body this
@@ -118,48 +120,56 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	return json.Unmarshal(respBody, out)
 }
 
-// doUpload issues a multipart/form-data POST carrying a "mediaType" field
-// and a "file" field (UploadArtifactFile's shape -- addressed by mediaType,
-// not a positional index, matching internal/publisher/artifact.go's
-// mediaType-based addressing, design/publisher-openapi.yaml v0.10). r is
+// doUpload issues a multipart/form-data POST carrying a "file" field plus
+// one field naming the target format -- fieldName is "mediaType" or
+// "formatId" (the stable, server-assigned id ArtifactCreated.FormatIDs
+// returns; mediaType alone is ambiguous once two formats share a media
+// type, docs/security-review-publisher-design-260828.md finding 14). r is
 // read to completion and not closed by this method -- callers own its
-// lifecycle, matching os.File/io.Reader convention.
-func (c *Client) doUpload(ctx context.Context, path, mediaType, filename string, r io.Reader) error {
+// lifecycle, matching os.File/io.Reader convention. Returns the server's
+// computed checksum/size (teapublisher.ArtifactFileUploaded), not just
+// success/failure -- finding 14's "checksum and size returned after
+// upload."
+func (c *Client) doUpload(ctx context.Context, path, fieldName, fieldValue, filename string, r io.Reader) (teapublisher.ArtifactFileUploaded, error) {
 	var buf bytes.Buffer
 	w := multipart.NewWriter(&buf)
-	if err := w.WriteField("mediaType", mediaType); err != nil {
-		return err
+	if err := w.WriteField(fieldName, fieldValue); err != nil {
+		return teapublisher.ArtifactFileUploaded{}, err
 	}
 	part, err := w.CreateFormFile("file", filename)
 	if err != nil {
-		return err
+		return teapublisher.ArtifactFileUploaded{}, err
 	}
 	if _, err := io.Copy(part, r); err != nil {
-		return err
+		return teapublisher.ArtifactFileUploaded{}, err
 	}
 	if err := w.Close(); err != nil {
-		return err
+		return teapublisher.ArtifactFileUploaded{}, err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, &buf)
 	if err != nil {
-		return err
+		return teapublisher.ArtifactFileUploaded{}, err
 	}
 	req.Header.Set("Content-Type", w.FormDataContentType())
 	req.Header.Set("Authorization", "Bearer "+c.bearerToken)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return err
+		return teapublisher.ArtifactFileUploaded{}, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody+1))
 	if err != nil {
-		return err
+		return teapublisher.ArtifactFileUploaded{}, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return &APIError{StatusCode: resp.StatusCode, Body: respBody}
+		return teapublisher.ArtifactFileUploaded{}, &APIError{StatusCode: resp.StatusCode, Body: respBody}
 	}
-	return nil
+	var uploaded teapublisher.ArtifactFileUploaded
+	if err := json.Unmarshal(respBody, &uploaded); err != nil {
+		return teapublisher.ArtifactFileUploaded{}, err
+	}
+	return uploaded, nil
 }

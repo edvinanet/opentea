@@ -1,11 +1,38 @@
 openapi: 3.1.0
 info:
   title: TEA Publisher API
-  version: 0.17.0-draft
+  version: 0.18.0-draft
   description: |
-    **Status: draft v0.17, for discussion. opentea's own server-side implementation
+    **Status: draft v0.18, for discussion. opentea's own server-side implementation
     exists (`internal/publisher`) but this document is still a draft, not approved by
     CycloneDX or any TEA working group.**
+
+    v0.18: closes finding 14 of the same external security review
+    (docs/security-review-publisher-design-260828.md) -- "artifact format addressing by
+    array position is fragile." `createArtifact`/`createArtifactVersion` now return a new
+    `artifact-created` body: the artifact plus `formatIds`, each format's stable,
+    server-assigned id (positionally aligned with `formats`). `uploadArtifactFile`/
+    `uploadArtifactSignatureFile` accept a new `formatId` field, preferred over `mediaType`
+    and unambiguous even when two formats share a media type -- `mediaType` addressing is
+    kept (still `400` if ambiguous), and duplicate `mediaType` values across an artifact's
+    formats are now explicitly allowed rather than treated as something to forbid, since
+    `formatId` is how each stays individually reachable. Both upload operations' response
+    changed from a bare `204` to `200` plus a new `artifact-file-uploaded` body (the
+    checksum and size the server actually computed), closing finding 14's "checksum and
+    size returned after upload." Also fixes a real bug found while implementing this: a
+    second upload to the same format before evidence locks it in now *replaces* the first
+    upload's checksum instead of accumulating a duplicate row alongside it (the operations'
+    own summaries now say so explicitly, finding 14's "whether upload creates or
+    replaces"). Finding 14's remaining sub-points -- filename handling (accepted, never
+    used, nothing to sanitize), concurrent upload (serialized deterministically by the
+    target's own single database connection, never a torn result), and content-type
+    verification (deliberately not sniffed/checked, consistent with every other trusted,
+    unverified caller-supplied value elsewhere in this API) -- are answered in
+    `uploadArtifactFile`'s own summary rather than requiring a behavior change. A new
+    `maxArtifactFormats` cap (opentea's own implementation: 50) on `createArtifact`/
+    `createArtifactVersion` is **not** part of this spec -- a target-specific resource
+    limit, not a wire-contract change, same category as the still-unspecified upload size
+    limit (§15.1).
 
     v0.17: partial progress on finding 13 of the same external security review
     (docs/security-review-publisher-design-260828.md) -- "write operations lack
@@ -524,7 +551,10 @@ paths:
       summary: >-
         Create an artifact (metadata only — file content and evidence are attached by the
         two operations below). Corresponds to oej's workflow phase 1/2 boundary: this
-        operation itself is not a signing event.
+        operation itself is not a signing event. The response's `formatIds` (v0.18,
+        external security review, docs/security-review-publisher-design-260828.md finding
+        14) is the *only* way to learn a format's stable id — record it if you may ever
+        need to address that format unambiguously later (see `uploadArtifactFile` below).
       requestBody:
         required: true
         content:
@@ -535,7 +565,7 @@ paths:
           description: Created.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/artifact' }
+              schema: { $ref: '#/components/schemas/artifact-created' }
 
   /artifacts/{artifactUuid}/versions:
     post:
@@ -572,7 +602,7 @@ paths:
           description: Created.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/artifact' }
+              schema: { $ref: '#/components/schemas/artifact-created' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
           description: >-
@@ -598,6 +628,25 @@ paths:
         reference client, §14.1) should check its own file size against a sane limit
         before attempting this call at all, but that is a courtesy, not a substitute for
         this operation's own enforcement (§15.1).
+
+        **Create-vs-replace (v0.18, finding 14's "whether upload creates or replaces
+        content"):** a second call for the same format before evidence locks it in
+        *replaces* the first upload's content and checksum — it does not accumulate a
+        second checksum alongside the first. **Concurrent uploads** to the same or
+        different formats of the same artifact version are serialized by the target's own
+        single database connection (design/publisher-service.md §1's
+        `internal/db.Open`) — the last one to commit wins deterministically, never a
+        torn/partial result. **Filename and declared-vs-actual content type:** the
+        uploaded filename is accepted but never used for anything (no storage path, no
+        reflected header) — nothing to sanitize because nothing is done with it. The
+        uploaded bytes' actual content type is not sniffed or checked against the
+        format's own `mediaType` (set once, at creation, independent of upload) — trusted,
+        consistent with every other caller-supplied value this API trusts without
+        verifying (checksums, external `url`s). **Per-format upload state:** there is
+        currently no operation to check whether a specific format already has content
+        without attempting an upload (or a signature-prepare call, which will fail
+        informatively if there's nothing to canonicalize) — `/publisher/v1` has no
+        artifact read/GET operation at all yet; a real gap, not resolved here.
       parameters:
         - $ref: '#/components/parameters/ArtifactUuid'
         - $ref: '#/components/parameters/ArtifactVersion'
@@ -607,24 +656,41 @@ paths:
           multipart/form-data:
             schema:
               type: object
-              required: [mediaType, file]
+              required: [file]
               properties:
+                formatId:
+                  type: string
+                  description: >-
+                    Selects which of the artifact's formats this file belongs to, by the
+                    stable, server-assigned id `createArtifact`/`createArtifactVersion`
+                    returned (`artifact-created.formatIds`) — unambiguous even when two
+                    formats share a `mediaType` (v0.18, external security review,
+                    docs/security-review-publisher-design-260828.md finding 14: "array
+                    order is not a durable identifier... use a server-assigned format ID
+                    or stable format key"). Preferred over `mediaType` below when both are
+                    available; exactly one of `formatId`/`mediaType` is required.
                 mediaType:
                   type: string
                   description: >-
                     Selects which of the artifact's formats this file belongs to, by the
                     same `mediaType` value that format was created with
                     (`artifact-format-create.mediaType`) — not a positional array index
-                    (v0.10, found by external security review:
-                    docs/security-review-publisher-design-260828.md finding 14 — array
-                    order is not a durable identifier). `404` if no format matches; `400`
-                    if more than one format shares this `mediaType` (ambiguous — this
-                    draft does not yet define a server-assigned per-format id to
-                    disambiguate that case, a narrower, still-open version of the same
-                    finding).
+                    (v0.10). `404` if no format matches; `400` if more than one format
+                    shares this `mediaType` (ambiguous — use `formatId` instead, v0.18).
+                    Duplicate `mediaType` values across an artifact's formats are
+                    themselves allowed (finding 14's "duplicate media-type handling",
+                    resolved this way rather than forbidden) — `formatId` is how each one
+                    stays individually reachable.
                 file: { type: string, format: binary }
       responses:
-        '204': { description: Uploaded. }
+        '200':
+          description: >-
+            Uploaded. Body is the checksum and size the server actually computed from the
+            uploaded bytes (v0.18, finding 14: "checksum and size returned after upload" —
+            previously a bare `204`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/artifact-file-uploaded' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
           description: Evidence has already been submitted for this artifact version.
@@ -645,14 +711,16 @@ paths:
       tags: [Artifacts]
       summary: >-
         Upload a detached signature for one of the artifact's formats, selected by
-        `mediaType` the same way as `uploadArtifactFile` (v0.11, TEA 1.0 conformance —
-        `spec/openapi.yaml`'s `formats[].signatureUrl` is now documented as always an
-        external location; a target may instead host the signature itself, retrievable via
-        the TEA consumer API's own `.../signature/download` operation). Unlike
-        `uploadArtifactFile`, never rejected once evidence has been submitted for this
-        artifact version — evidence attests to the format's content checksum, which a
+        `formatId` or `mediaType` the same way as `uploadArtifactFile` (v0.11, TEA 1.0
+        conformance — `spec/openapi.yaml`'s `formats[].signatureUrl` is now documented as
+        always an external location; a target may instead host the signature itself,
+        retrievable via the TEA consumer API's own `.../signature/download` operation).
+        Unlike `uploadArtifactFile`, never rejected once evidence has been submitted for
+        this artifact version — evidence attests to the format's content checksum, which a
         signature upload never changes. Subject to the same per-upload size limit and
-        per-principal quota as `uploadArtifactFile` (§15, §15.1).
+        per-principal quota as `uploadArtifactFile` (§15, §15.1). Same create-vs-replace,
+        concurrent-upload, and filename/content-type handling as `uploadArtifactFile`
+        (v0.18 — see that operation's summary).
       parameters:
         - $ref: '#/components/parameters/ArtifactUuid'
         - $ref: '#/components/parameters/ArtifactVersion'
@@ -662,18 +730,31 @@ paths:
           multipart/form-data:
             schema:
               type: object
-              required: [mediaType, file]
+              required: [file]
               properties:
+                formatId:
+                  type: string
+                  description: >-
+                    Selects which of the artifact's formats this signature belongs to, by
+                    its stable, server-assigned id — see `uploadArtifactFile`'s own
+                    `formatId` description (v0.18).
                 mediaType:
                   type: string
                   description: >-
                     Selects which of the artifact's formats this signature belongs to, by
                     the same `mediaType` value that format was created with — identical
                     selection rule and `404`/`400`-ambiguous behavior as
-                    `uploadArtifactFile`.
+                    `uploadArtifactFile`. Exactly one of `formatId`/`mediaType` is
+                    required.
                 file: { type: string, format: binary }
       responses:
-        '204': { description: Uploaded. }
+        '200':
+          description: >-
+            Uploaded. Body is the checksum and size the server actually computed from the
+            uploaded bytes (v0.18 — previously a bare `204`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/artifact-file-uploaded' }
         '404': { $ref: '#/components/responses/NotFound' }
         '413':
           description: File exceeds the target's per-upload size limit (§15.1).
@@ -2209,6 +2290,44 @@ components:
             created since it last read this artifact's state, instead of silently creating
             version N+2 on top of an unexpected N+1.
       required: [type, formats]
+
+    artifact-created:
+      type: object
+      description: >-
+        Response body for createArtifact/createArtifactVersion: the created `artifact`
+        plus `formatIds`, each format's stable, server-assigned id, in the same order as
+        `formats` (v0.18, external security review,
+        docs/security-review-publisher-design-260828.md finding 14: "array order is not a
+        durable identifier... use a server-assigned format ID or stable format key"). This
+        is the only place a `formatId` is ever returned — capture it here and pass it to
+        `uploadArtifactFile`/`uploadArtifactSignatureFile` instead of `mediaType` whenever
+        two formats of the same artifact might share a media type.
+      allOf:
+        - $ref: '#/components/schemas/artifact'
+        - type: object
+          properties:
+            formatIds:
+              type: array
+              description: >-
+                Each format's stable id, positionally aligned with `formats` (same index,
+                same order) — not necessarily a UUID, just an opaque stable string.
+              items: { type: string }
+          required: [formatIds]
+
+    artifact-file-uploaded:
+      type: object
+      description: >-
+        Response body for uploadArtifactFile/uploadArtifactSignatureFile: the checksum and
+        size the server actually computed from the uploaded bytes (v0.18, finding 14:
+        "checksum and size returned after upload" — previously a bare `204` with no body).
+      properties:
+        sha256:
+          type: string
+          description: Lowercase hex SHA-256 of the uploaded bytes, as actually stored.
+        size:
+          type: integer
+          description: Size of the uploaded bytes, in bytes, as actually stored.
+      required: [sha256, size]
 
     cle-event-create:
       type: object

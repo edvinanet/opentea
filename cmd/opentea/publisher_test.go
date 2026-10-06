@@ -5,6 +5,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -27,10 +28,20 @@ import (
 // mediaType-based format addressing (not formatIndex).
 func publisherUploadFile(t *testing.T, srv *testServer, path, token, mediaTypeField string, content []byte) (int, []byte) {
 	t.Helper()
+	return publisherUploadFileField(t, srv, path, token, "mediaType", mediaTypeField, content)
+}
+
+// publisherUploadFileField is publisherUploadFile generalized to write an
+// arbitrary form field naming the target format -- "mediaType" (the usual
+// case) or "formatId" (docs/security-review-publisher-design-260828.md
+// finding 14's stable-id addressing, for when mediaType alone is
+// ambiguous).
+func publisherUploadFileField(t *testing.T, srv *testServer, path, token, fieldName, fieldValue string, content []byte) (int, []byte) {
+	t.Helper()
 	var buf bytes.Buffer
 	w := multipart.NewWriter(&buf)
-	if err := w.WriteField("mediaType", mediaTypeField); err != nil {
-		t.Fatalf("write mediaType field: %v", err)
+	if err := w.WriteField(fieldName, fieldValue); err != nil {
+		t.Fatalf("write %s field: %v", fieldName, err)
 	}
 	part, err := w.CreateFormFile("file", "artifact.bin")
 	if err != nil {
@@ -497,10 +508,42 @@ func TestPublisherSelfApprovalRejectedAcrossDifferentActorNames(t *testing.T) {
 	}
 }
 
+// TestPublisherCreateArtifactMaxFormats is the regression test for
+// docs/security-review-publisher-design-260828.md finding 14's "maximum
+// format count": createArtifact's formats array was previously unbounded.
+func TestPublisherCreateArtifactMaxFormats(t *testing.T) {
+	srv := newTestServer(t)
+	cicd := createPublisherCredential(t, srv, "cicd-cred", model.PublisherScopeCICD)
+
+	tooMany := make([]map[string]any, 51)
+	for i := range tooMany {
+		tooMany[i] = map[string]any{"mediaType": "application/vnd.cyclonedx+json"}
+	}
+	if status, body := publisherRequest(t, srv, http.MethodPost, "/publisher/v1/artifacts", cicd, map[string]any{
+		"type": "BOM", "formats": tooMany,
+	}); status != http.StatusBadRequest {
+		t.Fatalf("51 formats: status=%d body=%s, want 400", status, body)
+	}
+
+	exactlyMax := make([]map[string]any, 50)
+	for i := range exactlyMax {
+		exactlyMax[i] = map[string]any{"mediaType": "application/vnd.cyclonedx+json"}
+	}
+	if status, body := publisherRequest(t, srv, http.MethodPost, "/publisher/v1/artifacts", cicd, map[string]any{
+		"type": "BOM", "formats": exactlyMax,
+	}); status != http.StatusCreated {
+		t.Fatalf("50 formats (at the limit): status=%d body=%s, want 201", status, body)
+	}
+}
+
 // TestPublisherUploadArtifactFileByMediaType covers security-review fix 14
 // (docs/security-review-publisher-design-260828.md): uploadArtifactFile
 // addresses a format by mediaType, not a positional index. Also confirms
-// the ambiguous-mediaType and unknown-mediaType rejections.
+// the ambiguous-mediaType and unknown-mediaType rejections, that the
+// response now carries the computed checksum/size instead of a bare 204,
+// and that a genuinely ambiguous mediaType -- still rejected on its own --
+// is resolved by addressing the same format with its stable formatId
+// instead (ArtifactCreated.FormatIDs).
 func TestPublisherUploadArtifactFileByMediaType(t *testing.T) {
 	srv := newTestServer(t)
 	cicd := createPublisherCredential(t, srv, "cicd-cred", model.PublisherScopeCICD)
@@ -516,8 +559,15 @@ func TestPublisherUploadArtifactFileByMediaType(t *testing.T) {
 	if status != http.StatusCreated {
 		t.Fatalf("createArtifact: status=%d body=%s", status, raw)
 	}
-	var artifact tea.Artifact
-	decodeInto(t, raw, &artifact)
+	var created teapublisher.ArtifactCreated
+	decodeInto(t, raw, &created)
+	artifact := created.Artifact
+	if len(created.FormatIDs) != 3 || created.FormatIDs[0] == "" || created.FormatIDs[1] == "" || created.FormatIDs[2] == "" {
+		t.Fatalf("FormatIDs = %v, want 3 non-empty ids", created.FormatIDs)
+	}
+	if created.FormatIDs[1] == created.FormatIDs[2] {
+		t.Fatalf("FormatIDs[1] == FormatIDs[2] (%q): the two duplicate-mediaType formats must still have distinct ids", created.FormatIDs[1])
+	}
 
 	uploadPath := "/publisher/v1/artifacts/" + artifact.UUID + "/1/files"
 
@@ -525,13 +575,32 @@ func TestPublisherUploadArtifactFileByMediaType(t *testing.T) {
 	if status, body := publisherUploadFile(t, srv, uploadPath, cicd, "application/does-not-exist", []byte("x")); status != http.StatusNotFound {
 		t.Fatalf("unknown mediaType: status=%d body=%s, want 404", status, body)
 	}
-	// Ambiguous mediaType (two formats share it) -> 400.
+	// Ambiguous mediaType (two formats share it) -> 400, even now that
+	// formatId exists -- mediaType addressing itself doesn't become
+	// unambiguous just because an alternative exists.
 	if status, body := publisherUploadFile(t, srv, uploadPath, cicd, "application/vnd.cyclonedx+xml", []byte("x")); status != http.StatusBadRequest {
 		t.Fatalf("ambiguous mediaType: status=%d body=%s, want 400", status, body)
 	}
-	// Unambiguous mediaType -> 204, uploaded to the right format.
-	if status, body := publisherUploadFile(t, srv, uploadPath, cicd, "application/vnd.cyclonedx+json", []byte(`{"ok":true}`)); status != http.StatusNoContent {
-		t.Fatalf("upload by mediaType: status=%d body=%s, want 204", status, body)
+	// Unambiguous mediaType -> 200, with the computed checksum/size, not a
+	// bare 204.
+	status, body := publisherUploadFile(t, srv, uploadPath, cicd, "application/vnd.cyclonedx+json", []byte(`{"ok":true}`))
+	if status != http.StatusOK {
+		t.Fatalf("upload by mediaType: status=%d body=%s, want 200", status, body)
+	}
+	var uploaded teapublisher.ArtifactFileUploaded
+	decodeInto(t, body, &uploaded)
+	wantSHA256Sum := sha256.Sum256([]byte(`{"ok":true}`))
+	wantSHA256 := hex.EncodeToString(wantSHA256Sum[:])
+	if uploaded.SHA256 != wantSHA256 || uploaded.Size != int64(len(`{"ok":true}`)) {
+		t.Fatalf("uploaded = %+v, want sha256=%s size=%d", uploaded, wantSHA256, len(`{"ok":true}`))
+	}
+
+	// The genuinely ambiguous XML format IS now addressable -- by its
+	// stable formatId instead of its shared mediaType -- resolving the
+	// exact case the 400 above shows mediaType alone still can't.
+	status, body = publisherUploadFileField(t, srv, uploadPath, cicd, "formatId", created.FormatIDs[2], []byte("<xml2/>"))
+	if status != http.StatusOK {
+		t.Fatalf("upload by formatId (ambiguous mediaType format): status=%d body=%s, want 200", status, body)
 	}
 
 	got, err := srv.repo.GetArtifactByVersion(t.Context(), artifact.UUID, 1)
@@ -543,8 +612,15 @@ func TestPublisherUploadArtifactFileByMediaType(t *testing.T) {
 	if got.Formats[0].URL != "" || len(got.Formats[0].Checksums) == 0 {
 		t.Fatalf("json format (index 0) not populated as expected (want empty URL, real checksum): %+v", got.Formats[0])
 	}
-	if got.Formats[1].URL != "" || got.Formats[2].URL != "" {
-		t.Fatalf("xml formats should be untouched: %+v / %+v", got.Formats[1], got.Formats[2])
+	// Formats[1] (the first xml duplicate) was never addressed by either
+	// upload above -- still untouched. Formats[2] (addressed by formatId)
+	// now has real content, proving the upload landed on the specific
+	// format named by id, not merely "some xml format."
+	if got.Formats[1].URL != "" || len(got.Formats[1].Checksums) != 0 {
+		t.Fatalf("xml format (index 1) should be untouched: %+v", got.Formats[1])
+	}
+	if got.Formats[2].URL != "" || len(got.Formats[2].Checksums) == 0 {
+		t.Fatalf("xml format (index 2) not populated as expected (want empty URL, real checksum): %+v", got.Formats[2])
 	}
 }
 
@@ -653,8 +729,8 @@ func TestPublisherUploadArtifactFileRejectedAfterEvidence(t *testing.T) {
 	decodeInto(t, raw, &artifact)
 	uploadPath := "/publisher/v1/artifacts/" + artifact.UUID + "/1/files"
 
-	if status, body := publisherUploadFile(t, srv, uploadPath, cicd, "application/vnd.cyclonedx+json", []byte(`{"ok":true}`)); status != http.StatusNoContent {
-		t.Fatalf("initial upload: status=%d body=%s, want 204", status, body)
+	if status, body := publisherUploadFile(t, srv, uploadPath, cicd, "application/vnd.cyclonedx+json", []byte(`{"ok":true}`)); status != http.StatusOK {
+		t.Fatalf("initial upload: status=%d body=%s, want 200", status, body)
 	}
 
 	status, raw = publisherRequest(t, srv, http.MethodPost, "/publisher/v1/artifacts/"+artifact.UUID+"/1/evidence/prepare", cicd, nil)
@@ -704,8 +780,8 @@ func TestPublisherUploadArtifactSignatureFile(t *testing.T) {
 	var artifact tea.Artifact
 	decodeInto(t, raw, &artifact)
 
-	if status, body := publisherUploadFile(t, srv, "/publisher/v1/artifacts/"+artifact.UUID+"/1/files", cicd, "application/vnd.cyclonedx+json", []byte(`{"ok":true}`)); status != http.StatusNoContent {
-		t.Fatalf("content upload: status=%d body=%s, want 204", status, body)
+	if status, body := publisherUploadFile(t, srv, "/publisher/v1/artifacts/"+artifact.UUID+"/1/files", cicd, "application/vnd.cyclonedx+json", []byte(`{"ok":true}`)); status != http.StatusOK {
+		t.Fatalf("content upload: status=%d body=%s, want 200", status, body)
 	}
 
 	sigPath := "/publisher/v1/artifacts/" + artifact.UUID + "/1/signature/files"
@@ -716,8 +792,8 @@ func TestPublisherUploadArtifactSignatureFile(t *testing.T) {
 	}
 
 	signature := []byte("fake-detached-signature-bytes")
-	if status, body := publisherUploadFile(t, srv, sigPath, cicd, "application/vnd.cyclonedx+json", signature); status != http.StatusNoContent {
-		t.Fatalf("signature upload: status=%d body=%s, want 204", status, body)
+	if status, body := publisherUploadFile(t, srv, sigPath, cicd, "application/vnd.cyclonedx+json", signature); status != http.StatusOK {
+		t.Fatalf("signature upload: status=%d body=%s, want 200", status, body)
 	}
 
 	// Prepare and submit evidence for the artifact -- content is now
@@ -741,8 +817,8 @@ func TestPublisherUploadArtifactSignatureFile(t *testing.T) {
 		t.Fatalf("submitArtifactEvidence: status=%d body=%s", status, raw)
 	}
 	replacementSig := []byte("replacement-signature-bytes")
-	if status, body := publisherUploadFile(t, srv, sigPath, cicd, "application/vnd.cyclonedx+json", replacementSig); status != http.StatusNoContent {
-		t.Fatalf("signature upload after evidence: status=%d body=%s, want 204 (unlike content, not frozen)", status, body)
+	if status, body := publisherUploadFile(t, srv, sigPath, cicd, "application/vnd.cyclonedx+json", replacementSig); status != http.StatusOK {
+		t.Fatalf("signature upload after evidence: status=%d body=%s, want 200 (unlike content, not frozen)", status, body)
 	}
 
 	// Round-trip via the consumer API's own signature download endpoint.

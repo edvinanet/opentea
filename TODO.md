@@ -1620,6 +1620,68 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       `golangci-lint`, `go vet`, `gofmt` clean (one `gocyclo` complexity warning on the
       touched `PutCollectionDraft` fixed by extracting its artifact-existence loop into
       `requireArtifactsExistTx`, a pure refactor).
+- [x] ~~**[security review finding 14] Artifact format addressing by array position is
+      fragile** — `uploadArtifactFile`/`uploadArtifactSignatureFile` select which of an
+      artifact's formats to attach content to by `mediaType`, which is not a durable
+      identifier: two formats of the same artifact can legitimately share a `mediaType`
+      (e.g. the same SBOM content offered at two different URLs), making that upload
+      permanently ambiguous for one of them. The review asked for a server-assigned
+      format ID or stable format key, plus clarification of several adjacent open
+      questions: whether upload creates or replaces content, whether checksum/size are
+      returned after upload, filename handling, concurrent-upload safety, and
+      content-type verification.~~ **Fixed 2026-10-05**
+      (`design/publisher-openapi.yaml` v0.18). `createArtifact`/`createArtifactVersion`
+      now return a new `artifact-created` body (`teapublisher.ArtifactCreated{tea.Artifact,
+      FormatIDs []string}`) carrying each format's stable, server-assigned id, positionally
+      aligned with `formats` — the only place a `formatId` is ever surfaced.
+      `uploadArtifactFile`/`uploadArtifactSignatureFile` gained an optional `formatId` form
+      field (`internal/publisher/artifact.go`'s new `resolveArtifactFormat`, backed by new
+      `internal/repo.ArtifactFormatIndexByID`), preferred over `mediaType` and unambiguous
+      even when two formats share one; `mediaType` addressing is kept for compatibility
+      (still `400` if ambiguous, message updated to say "use formatId instead") and
+      duplicate `mediaType` values across an artifact's formats are now explicitly
+      *allowed* rather than something to forbid, since `formatId` is how each stays
+      individually reachable. Both upload operations' response changed from a bare `204`
+      to `200` plus a new `teapublisher.ArtifactFileUploaded{SHA256, Size}` body (the
+      checksum/size the server actually computed) — closes "checksum and size returned
+      after upload." Found and fixed a real bug while implementing this:
+      `SetArtifactFormatFile` had no replace step before inserting a new checksum row (no
+      `UNIQUE` constraint on `checksum` existed to catch it), so a second upload to the
+      same format accumulated a duplicate row instead of replacing the first — now deletes
+      the format's existing checksum row before inserting, and the operations' own
+      summaries state the replace semantics explicitly. The remaining sub-questions are
+      answered in `uploadArtifactFile`'s summary rather than requiring a behavior change:
+      filename is accepted but never used for anything, so there's nothing to sanitize;
+      concurrent uploads are serialized deterministically by the target's own single
+      database connection (`internal/db.Open`), never a torn result; content type is
+      deliberately not sniffed or checked against the format's declared `mediaType`,
+      consistent with every other caller-supplied value this API already trusts without
+      verifying. Also added a `maxArtifactFormats` cap (opentea's own implementation
+      choice: 50) to `createArtifact`/`createArtifactVersion` — a target-specific resource
+      limit, not a wire-contract change, deliberately left out of the OpenAPI spec itself
+      (same category as the still-unspecified upload size limit, §15.1). **Deliberately not
+      propagated**: `cmd/openteapublisher`'s own `/cicdapi/v1` proxy layer
+      (`internal/openteapublisher/cicdapi.go`) still addresses formats by `mediaType` only
+      and still returns a bare `204` on upload — a separate, narrower, not-yet-decided gap
+      in that proxy's own wire contract, flagged here rather than silently expanded into.
+      Verified: new `TestSetArtifactFormatFileReplacesNotAccumulates`
+      (`internal/repo/artifact_test.go`) — confirmed to fail against the pre-fix code (2
+      checksum rows survive instead of 1), passes after. Extended
+      `TestPublisherUploadArtifactFileByMediaType` (`cmd/opentea/publisher_test.go`) to
+      assert 3 distinct non-empty `formatIds` (including that the two duplicate-mediaType
+      formats get different ids), a 200 response with checksum/size, and a
+      `formatId`-addressed upload to the previously-ambiguous duplicate format landing on
+      the correct format index. New `TestPublisherCreateArtifactMaxFormats` (51 → 400, 50 →
+      201). Updated `pkg/teapublisherclient` (`CreateArtifact` returns `ArtifactCreated`;
+      `UploadArtifactFile`/`UploadArtifactSignatureFile` return `ArtifactFileUploaded`; new
+      `UploadArtifactFileByFormatID`/`UploadArtifactSignatureFileByFormatID`) and its own
+      tests. Manual smoke test against a live built binary: created an artifact with two
+      formats sharing a `mediaType` and one distinct, confirmed 3 distinct `formatIds`;
+      confirmed ambiguous-`mediaType` upload still 400s; confirmed unambiguous-`mediaType`
+      and `formatId` uploads both return 200 with checksum/size; confirmed a second
+      `formatId` upload to the same format returns a different checksum (replacement, not
+      accumulation); confirmed 51 formats on create is rejected with 400. Full suite,
+      `-race`, `golangci-lint`, `go vet`, `gofmt` clean.~~
 - [ ] **[security review finding 15] Publisher API: standard error-response schema** —
       `internal/publisher` handlers mostly reuse `httpx`'s existing `{"message": ...}` shape
       (`BadRequest`/`Conflict`/etc.), which doesn't distinguish, say, a stale-digest 400 from

@@ -110,6 +110,37 @@ type ArtifactCreate struct {
 	Formats         []ArtifactFormatCreate `json:"formats"`
 }
 
+// ArtifactCreated is the response body for createArtifact/
+// createArtifactVersion: the created tea.Artifact (promoted to the top
+// level, same embedding convention as tea.ProductReleaseWithCollection),
+// plus the server-assigned, stable id of each of its Formats, in the same
+// order as Artifact.Formats[]. FormatIDs is the only way to learn a
+// format's id at all -- neither this API nor tea.ArtifactFormat exposes
+// one anywhere else (deliberately: it's not part of the official consumer
+// spec's object model, only this implementation's own bookkeeping, so it
+// stays out of the spec-mirroring shared type). Pass one of these values
+// as uploadArtifactFile's/uploadArtifactSignatureFile's formatId field
+// instead of mediaType when two formats might share a media type --
+// mediaType-based addressing is permanently ambiguous for both of them in
+// that case (external security review,
+// docs/security-review-publisher-design-260828.md finding 14: "array order
+// is not a durable identifier... use a server-assigned format ID").
+type ArtifactCreated struct {
+	tea.Artifact
+	FormatIDs []string `json:"formatIds"`
+}
+
+// ArtifactFileUploaded is the response body for uploadArtifactFile/
+// uploadArtifactSignatureFile: the checksum and size the server actually
+// computed from the uploaded bytes (external security review,
+// docs/security-review-publisher-design-260828.md finding 14: "checksum
+// and size returned after upload" -- previously neither was, both
+// operations returned a bare 204).
+type ArtifactFileUploaded struct {
+	SHA256 string `json:"sha256"`
+	Size   int64  `json:"size"`
+}
+
 // ArtifactVersionCreate is the request body for createArtifactVersion:
 // same shape as ArtifactCreate -- nothing is carried forward automatically
 // from the artifact's prior version, since TEA 1.0's own artifact.version

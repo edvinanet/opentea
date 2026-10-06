@@ -171,10 +171,10 @@ func TestUploadArtifactFile(t *testing.T) {
 			t.Fatalf("read file: %v", err)
 		}
 		gotFileContent = string(content)
-		w.WriteHeader(http.StatusNoContent)
+		_ = json.NewEncoder(w).Encode(teapublisher.ArtifactFileUploaded{SHA256: "deadbeef", Size: int64(len(gotFileContent))})
 	})
 
-	err := client.UploadArtifactFile(context.Background(), "artifact-1", 1, "application/vnd.cyclonedx+json", "sbom.json", strings.NewReader(`{"ok":true}`))
+	uploaded, err := client.UploadArtifactFile(context.Background(), "artifact-1", 1, "application/vnd.cyclonedx+json", "sbom.json", strings.NewReader(`{"ok":true}`))
 	if err != nil {
 		t.Fatalf("UploadArtifactFile: %v", err)
 	}
@@ -187,6 +187,39 @@ func TestUploadArtifactFile(t *testing.T) {
 	if gotFileContent != `{"ok":true}` {
 		t.Errorf("file content = %q", gotFileContent)
 	}
+	if uploaded.SHA256 != "deadbeef" || uploaded.Size != int64(len(`{"ok":true}`)) {
+		t.Errorf("uploaded = %+v", uploaded)
+	}
+}
+
+// TestUploadArtifactFileByFormatID is the client-side counterpart of
+// docs/security-review-publisher-design-260828.md finding 14: confirms
+// the client sends "formatId", not "mediaType", when addressing a format
+// by its stable id.
+func TestUploadArtifactFileByFormatID(t *testing.T) {
+	var gotFormatID, gotMediaType string
+	client := newFakeServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatalf("ParseMultipartForm: %v", err)
+		}
+		gotFormatID = r.FormValue("formatId")
+		gotMediaType = r.FormValue("mediaType")
+		_ = json.NewEncoder(w).Encode(teapublisher.ArtifactFileUploaded{SHA256: "deadbeef", Size: 4})
+	})
+
+	uploaded, err := client.UploadArtifactFileByFormatID(context.Background(), "artifact-1", 1, "format-xyz", "sbom.json", strings.NewReader("test"))
+	if err != nil {
+		t.Fatalf("UploadArtifactFileByFormatID: %v", err)
+	}
+	if gotFormatID != "format-xyz" {
+		t.Errorf("formatId = %q, want format-xyz", gotFormatID)
+	}
+	if gotMediaType != "" {
+		t.Errorf("mediaType = %q, want empty -- formatId addressing shouldn't also send mediaType", gotMediaType)
+	}
+	if uploaded.SHA256 != "deadbeef" {
+		t.Errorf("uploaded = %+v", uploaded)
+	}
 }
 
 func TestUploadArtifactFileConflict(t *testing.T) {
@@ -195,7 +228,7 @@ func TestUploadArtifactFileConflict(t *testing.T) {
 		_, _ = w.Write([]byte(`{"message":"already has evidence"}`))
 	})
 
-	err := client.UploadArtifactFile(context.Background(), "artifact-1", 1, "application/json", "f.json", strings.NewReader("x"))
+	_, err := client.UploadArtifactFile(context.Background(), "artifact-1", 1, "application/json", "f.json", strings.NewReader("x"))
 	if !IsConflict(err) {
 		t.Fatalf("err = %v, want IsConflict", err)
 	}

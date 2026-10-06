@@ -536,14 +536,23 @@ func getArtifactFormatSignatureTx(ctx context.Context, q dbtx, uuid string, vers
 }
 
 // SetArtifactFormatFile records an uploaded file for the formatIndex-th
-// format (0-based, in creation order) of an artifact revision: adds a
-// SHA-256 checksum row locating the content in blob storage (self-hosted
-// content is retrieved via the download endpoints,
-// internal/api/artifactdownload.go, resolved from this checksum -- TEA
-// 1.0's url field is reserved for genuinely external locations, so this no
-// longer sets it). Runs as one transaction (format lookup, checksum
-// insert, and the revision bump below) so the revision that backs this
-// artifact version's ETag can never observe a partial version of this
+// format (0-based, in creation order) of an artifact revision: replaces
+// the format's checksum rows with a single fresh SHA-256 one locating the
+// content in blob storage (self-hosted content is retrieved via the
+// download endpoints, internal/api/artifactdownload.go, resolved from this
+// checksum -- TEA 1.0's url field is reserved for genuinely external
+// locations, so this no longer sets it). A second call for the same format
+// (before any evidence locks it, see internal/publisher/artifact.go's own
+// evidence-lock check) *replaces* the prior upload's checksum, it does not
+// accumulate a second row alongside it -- external security review,
+// docs/security-review-publisher-design-260828.md finding 14's "whether
+// upload creates or replaces content": this was previously undefined in
+// behavior, not just in the draft's prose -- a second upload silently left
+// two checksum rows for the same format (the stale one still pointing at
+// now-orphaned blob content), corrupting the format's checksums[] array on
+// every subsequent read. Runs as one transaction (format lookup, checksum
+// delete+insert, and the revision bump below) so the revision that backs
+// this artifact version's ETag can never observe a partial version of this
 // change.
 func (r *Repo) SetArtifactFormatFile(ctx context.Context, artifactUUID string, artifactVersion, formatIndex int, sha256Hex string) (tea.Artifact, error) {
 	return runInTx(ctx, r, func(tx dbtx) (tea.Artifact, error) {
@@ -572,6 +581,9 @@ func (r *Repo) SetArtifactFormatFile(ctx context.Context, artifactUUID string, a
 		}
 		formatID := ids[formatIndex]
 
+		if _, err := tx.ExecContext(ctx, `DELETE FROM checksum WHERE owner_type = ? AND owner_id = ?`, OwnerArtifactFormat, formatID); err != nil {
+			return tea.Artifact{}, err
+		}
 		if err := insertChecksums(ctx, tx, OwnerArtifactFormat, formatID, []tea.Checksum{{AlgType: "SHA-256", AlgValue: sha256Hex}}); err != nil {
 			return tea.Artifact{}, err
 		}
@@ -626,4 +638,62 @@ func (r *Repo) SetArtifactFormatSignatureFile(ctx context.Context, artifactUUID 
 
 		return getArtifactByVersionTx(ctx, tx, artifactUUID, artifactVersion)
 	})
+}
+
+// ArtifactFormatIDs returns the server-assigned, stable id of every format
+// of (artifactUUID, artifactVersion), in the same order as
+// tea.Artifact.Formats -- the durable identifier external security review
+// finding 14 (docs/security-review-publisher-design-260828.md) asked for,
+// to replace relying solely on a mutable array index or an ambiguous
+// mediaType match (two formats of the same artifact sharing a media type,
+// unrestricted today, make mediaType-based addressing permanently
+// ambiguous for both of them). internal/publisher's createArtifact/
+// createArtifactVersion call this once, right after creating the artifact,
+// to hand these ids back to the caller -- there is no other way to learn
+// them, since neither this API nor pkg/tea.ArtifactFormat exposes a format
+// id on the wire anywhere else (deliberately not added there: it isn't
+// part of the official consumer spec's object model at all, only this
+// implementation's own internal bookkeeping, so it stays out of the
+// spec-mirroring shared type and lives in pkg/teapublisher's own
+// ArtifactCreated wrapper instead).
+func (r *Repo) ArtifactFormatIDs(ctx context.Context, artifactUUID string, artifactVersion int) ([]string, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT id FROM artifact_format WHERE artifact_uuid = ? AND artifact_version = ? ORDER BY rowid`,
+		artifactUUID, artifactVersion)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	ids := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// ArtifactFormatIndexByID returns the 0-based index (in the same order as
+// tea.Artifact.Formats) of the format identified by formatID within
+// (artifactUUID, artifactVersion) -- the lookup
+// uploadArtifactFile/uploadArtifactSignatureFile perform when a caller
+// addresses a format by its stable id instead of mediaType (finding 14).
+// Returns ErrNotFound if formatID doesn't belong to that artifact version
+// at all (including if it belongs to a *different* one -- this is not a
+// global format lookup, it's scoped to the one artifact version the caller
+// already named in the URL).
+func (r *Repo) ArtifactFormatIndexByID(ctx context.Context, artifactUUID string, artifactVersion int, formatID string) (int, error) {
+	ids, err := r.ArtifactFormatIDs(ctx, artifactUUID, artifactVersion)
+	if err != nil {
+		return -1, err
+	}
+	for i, id := range ids {
+		if id == formatID {
+			return i, nil
+		}
+	}
+	return -1, ErrNotFound
 }

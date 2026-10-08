@@ -23,16 +23,16 @@ func (s *Server) putCollectionDraftForOwner(ownerType string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ownerUUID, err := httpx.PathUUID(r, "uuid")
 		if err != nil {
-			httpx.BadRequest(w, "invalid uuid")
+			badRequest(w, r, teapublisher.ErrorInvalidPathParameter, "invalid uuid")
 			return
 		}
 		var req teapublisher.CollectionDraftArtifactList
 		if err := decodeJSON(r, &req); err != nil {
-			httpx.BadRequest(w, "invalid JSON body: "+err.Error())
+			badRequest(w, r, teapublisher.ErrorInvalidRequestBody, "invalid JSON body: "+err.Error())
 			return
 		}
 		if req.Actor == "" {
-			httpx.BadRequest(w, "actor is required")
+			badRequest(w, r, teapublisher.ErrorMissingField, "actor is required", teapublisher.FieldError{Field: "actor", Message: "is required"})
 			return
 		}
 		refs := make([]repo.ArtifactRef, len(req.Artifacts))
@@ -52,7 +52,7 @@ func (s *Server) getCollectionDraftForOwner(ownerType string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ownerUUID, err := httpx.PathUUID(r, "uuid")
 		if err != nil {
-			httpx.BadRequest(w, "invalid uuid")
+			badRequest(w, r, teapublisher.ErrorInvalidPathParameter, "invalid uuid")
 			return
 		}
 		draft, err := s.repo.GetCollectionDraft(r.Context(), ownerType, ownerUUID)
@@ -66,16 +66,16 @@ func (s *Server) deleteCollectionDraftForOwner(ownerType string) http.HandlerFun
 	return func(w http.ResponseWriter, r *http.Request) {
 		ownerUUID, err := httpx.PathUUID(r, "uuid")
 		if err != nil {
-			httpx.BadRequest(w, "invalid uuid")
+			badRequest(w, r, teapublisher.ErrorInvalidPathParameter, "invalid uuid")
 			return
 		}
 		err = s.repo.DeleteCollectionDraft(r.Context(), ownerType, ownerUUID)
 		if errors.Is(err, repo.ErrNotFound) {
-			httpx.NotFound(w)
+			notFoundErr(w, r)
 			return
 		}
 		if err != nil {
-			httpx.InternalError(w, r, err)
+			internalErr(w, r, err)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -98,23 +98,23 @@ func (s *Server) decideCollectionDraftForOwner(ownerType string, approve bool) h
 	return func(w http.ResponseWriter, r *http.Request) {
 		ownerUUID, err := httpx.PathUUID(r, "uuid")
 		if err != nil {
-			httpx.BadRequest(w, "invalid uuid")
+			badRequest(w, r, teapublisher.ErrorInvalidPathParameter, "invalid uuid")
 			return
 		}
 		var req teapublisher.ApprovalDecision
 		if err := decodeJSON(r, &req); err != nil {
-			httpx.BadRequest(w, "invalid JSON body: "+err.Error())
+			badRequest(w, r, teapublisher.ErrorInvalidRequestBody, "invalid JSON body: "+err.Error())
 			return
 		}
 		if req.Actor == "" {
-			httpx.BadRequest(w, "actor is required")
+			badRequest(w, r, teapublisher.ErrorMissingField, "actor is required", teapublisher.FieldError{Field: "actor", Message: "is required"})
 			return
 		}
 
 		cred := credentialFromContext(r.Context())
 		draft, err := s.repo.DecideCollectionDraft(r.Context(), ownerType, ownerUUID, req.Actor, cred.UUID, req.Comment, approve, s.cfg.PublisherApprovalTTL)
 		if errors.Is(err, repo.ErrSelfApproval) {
-			httpx.Forbidden(w, "actor equals the draft's own draftedBy, or the same credential drafted and is deciding this draft -- self-approval is rejected")
+			forbiddenErr(w, r, teapublisher.ErrorSelfApproval, "actor equals the draft's own draftedBy, or the same credential drafted and is deciding this draft -- self-approval is rejected")
 			return
 		}
 		writeCollectionDraftResult(w, r, draft, err)
@@ -129,25 +129,25 @@ func (s *Server) prepareCollectionCommitForOwner(ownerType string) http.HandlerF
 	return func(w http.ResponseWriter, r *http.Request) {
 		ownerUUID, err := httpx.PathUUID(r, "uuid")
 		if err != nil {
-			httpx.BadRequest(w, "invalid uuid")
+			badRequest(w, r, teapublisher.ErrorInvalidPathParameter, "invalid uuid")
 			return
 		}
 		wouldBe, err := s.repo.PrepareCollectionCommit(r.Context(), ownerType, ownerUUID, s.cfg.PublisherLockTTL)
 		if errors.Is(err, repo.ErrApprovalRequired) {
-			httpx.Conflict(w, "no current approval on record for this draft")
+			conflictErr(w, r, teapublisher.ErrorApprovalRequired, "no current approval on record for this draft")
 			return
 		}
 		if errors.Is(err, repo.ErrNotFound) {
-			httpx.NotFound(w)
+			notFoundErr(w, r)
 			return
 		}
 		if err != nil {
-			httpx.InternalError(w, r, err)
+			internalErr(w, r, err)
 			return
 		}
 		digestToSign, err := digestOf(wouldBe)
 		if err != nil {
-			httpx.InternalError(w, r, err)
+			internalErr(w, r, err)
 			return
 		}
 		httpx.WriteJSON(w, http.StatusOK, teapublisher.PrepareCommitResponse{
@@ -164,16 +164,16 @@ func (s *Server) cancelPrepareCollectionCommitForOwner(ownerType string) http.Ha
 	return func(w http.ResponseWriter, r *http.Request) {
 		ownerUUID, err := httpx.PathUUID(r, "uuid")
 		if err != nil {
-			httpx.BadRequest(w, "invalid uuid")
+			badRequest(w, r, teapublisher.ErrorInvalidPathParameter, "invalid uuid")
 			return
 		}
 		err = s.repo.CancelPrepareCollectionCommit(r.Context(), ownerType, ownerUUID)
 		if errors.Is(err, repo.ErrNotFound) || errors.Is(err, repo.ErrLockNotHeld) {
-			httpx.NotFound(w)
+			notFoundErr(w, r)
 			return
 		}
 		if err != nil {
-			httpx.InternalError(w, r, err)
+			internalErr(w, r, err)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -190,77 +190,77 @@ func (s *Server) commitCollectionDraftForOwner(ownerType string) http.HandlerFun
 	return func(w http.ResponseWriter, r *http.Request) {
 		ownerUUID, err := httpx.PathUUID(r, "uuid")
 		if err != nil {
-			httpx.BadRequest(w, "invalid uuid")
+			badRequest(w, r, teapublisher.ErrorInvalidPathParameter, "invalid uuid")
 			return
 		}
 		var req teapublisher.EvidenceSubmission
 		if err := decodeJSON(r, &req); err != nil {
-			httpx.BadRequest(w, "invalid JSON body: "+err.Error())
+			badRequest(w, r, teapublisher.ErrorInvalidRequestBody, "invalid JSON body: "+err.Error())
 			return
 		}
 		if req.ObjectDigestValue == "" {
-			httpx.BadRequest(w, "objectDigestValue is required")
+			badRequest(w, r, teapublisher.ErrorMissingField, "objectDigestValue is required", teapublisher.FieldError{Field: "objectDigestValue", Message: "is required"})
 			return
 		}
 		if !validSignatureFormats[req.SignatureFormat] {
-			httpx.BadRequest(w, "signatureFormat: only \"jws-detached\" is implemented in this phase")
+			badRequest(w, r, teapublisher.ErrorUnsupportedSignatureFormat, "signatureFormat: only \"jws-detached\" is implemented in this phase", teapublisher.FieldError{Field: "signatureFormat", Message: "only \"jws-detached\" is implemented in this phase"})
 			return
 		}
 		if req.SignatureValue == "" {
-			httpx.BadRequest(w, "signatureValue is required")
+			badRequest(w, r, teapublisher.ErrorMissingField, "signatureValue is required", teapublisher.FieldError{Field: "signatureValue", Message: "is required"})
 			return
 		}
 		if req.CertificatePEM == "" {
-			httpx.BadRequest(w, "certificatePem is required")
+			badRequest(w, r, teapublisher.ErrorMissingField, "certificatePem is required", teapublisher.FieldError{Field: "certificatePem", Message: "is required"})
 			return
 		}
 
 		digestBytes, err := hex.DecodeString(req.ObjectDigestValue)
 		if err != nil {
-			httpx.BadRequest(w, "objectDigestValue must be hex-encoded")
+			badRequest(w, r, teapublisher.ErrorInvalidField, "objectDigestValue must be hex-encoded", teapublisher.FieldError{Field: "objectDigestValue", Message: "must be hex-encoded"})
 			return
 		}
 		sigBytes, err := base64.StdEncoding.DecodeString(req.SignatureValue)
 		if err != nil {
-			httpx.BadRequest(w, "signatureValue must be base64-encoded")
+			badRequest(w, r, teapublisher.ErrorInvalidField, "signatureValue must be base64-encoded", teapublisher.FieldError{Field: "signatureValue", Message: "must be base64-encoded"})
 			return
 		}
 
 		wouldBe, err := s.repo.PeekCollectionDraftCommit(r.Context(), ownerType, ownerUUID)
 		if errors.Is(err, repo.ErrApprovalRequired) {
-			httpx.Conflict(w, "no current approval on record for this draft")
+			conflictErr(w, r, teapublisher.ErrorApprovalRequired, "no current approval on record for this draft")
 			return
 		}
 		if errors.Is(err, repo.ErrNotFound) || errors.Is(err, repo.ErrLockNotHeld) {
-			httpx.NotFound(w)
+			notFoundErr(w, r)
 			return
 		}
 		if err != nil {
-			httpx.InternalError(w, r, err)
+			internalErr(w, r, err)
 			return
 		}
 		computed, err := digestOf(wouldBe)
 		if err != nil {
-			httpx.InternalError(w, r, err)
+			internalErr(w, r, err)
 			return
 		}
 		if !strings.EqualFold(computed, req.ObjectDigestValue) {
-			httpx.BadRequest(w, "objectDigestValue does not match the server-recomputed digest -- the draft changed since prepareCollectionCommit was called")
+			badRequest(w, r, teapublisher.ErrorDigestMismatch, "objectDigestValue does not match the server-recomputed digest -- the draft changed since prepareCollectionCommit was called", teapublisher.FieldError{Field: "objectDigestValue", Message: "does not match the server-recomputed digest"})
 			return
 		}
 
 		pub, err := trust.ParseCertificatePublicKey(req.CertificatePEM, time.Now())
 		if err != nil {
-			httpx.BadRequest(w, "certificatePem: "+err.Error())
+			badRequest(w, r, teapublisher.ErrorCertificateInvalid, "certificatePem: "+err.Error(), teapublisher.FieldError{Field: "certificatePem", Message: err.Error()})
 			return
 		}
 		if !trust.Verify(pub, digestBytes, sigBytes) {
-			httpx.BadRequest(w, "signatureValue does not verify against certificatePem and objectDigestValue")
+			badRequest(w, r, teapublisher.ErrorSignatureInvalid, "signatureValue does not verify against certificatePem and objectDigestValue", teapublisher.FieldError{Field: "signatureValue", Message: "does not verify against certificatePem and objectDigestValue"})
 			return
 		}
 		fingerprint, trustDomain, err := trust.ParseCertificateSubject(req.CertificatePEM, pub)
 		if err != nil {
-			httpx.BadRequest(w, "certificatePem: "+err.Error())
+			badRequest(w, r, teapublisher.ErrorCertificateInvalid, "certificatePem: "+err.Error(), teapublisher.FieldError{Field: "certificatePem", Message: err.Error()})
 			return
 		}
 
@@ -276,19 +276,19 @@ func (s *Server) commitCollectionDraftForOwner(ownerType string) http.HandlerFun
 			CertificateTrustDomain: string(trustDomain),
 		})
 		if errors.Is(err, repo.ErrFingerprintReused) {
-			httpx.BadRequest(w, "certificate fingerprint has already been used by another evidence bundle")
+			badRequest(w, r, teapublisher.ErrorFingerprintReused, "certificate fingerprint has already been used by another evidence bundle")
 			return
 		}
 		if errors.Is(err, repo.ErrApprovalRequired) {
-			httpx.Conflict(w, "no current approval on record for this draft")
+			conflictErr(w, r, teapublisher.ErrorApprovalRequired, "no current approval on record for this draft")
 			return
 		}
 		if errors.Is(err, repo.ErrNotFound) || errors.Is(err, repo.ErrLockNotHeld) {
-			httpx.NotFound(w)
+			notFoundErr(w, r)
 			return
 		}
 		if err != nil {
-			httpx.InternalError(w, r, err)
+			internalErr(w, r, err)
 			return
 		}
 		httpx.WriteJSON(w, http.StatusCreated, collection)
@@ -311,19 +311,19 @@ func digestOf(c any) (string, error) {
 // design/publisher-openapi.yaml documents for each of those operations.
 func writeCollectionDraftResult(w http.ResponseWriter, r *http.Request, draft teapublisher.CollectionDraft, err error) {
 	if errors.Is(err, repo.ErrNotFound) {
-		httpx.NotFound(w)
+		notFoundErr(w, r)
 		return
 	}
 	if errors.Is(err, repo.ErrDraftLocked) {
-		httpx.Conflict(w, "the draft is locked by an outstanding prepareCollectionCommit -- call cancelPrepare first, or wait for the pending commit to complete")
+		conflictErr(w, r, teapublisher.ErrorConflict, "the draft is locked by an outstanding prepareCollectionCommit -- call cancelPrepare first, or wait for the pending commit to complete")
 		return
 	}
 	if errors.Is(err, repo.ErrDraftRevisionConflict) {
-		httpx.Conflict(w, err.Error())
+		conflictErr(w, r, teapublisher.ErrorRevisionConflict, err.Error())
 		return
 	}
 	if err != nil {
-		httpx.InternalError(w, r, err)
+		internalErr(w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, draft)

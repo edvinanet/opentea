@@ -34,10 +34,10 @@ var validArtifactTypes = map[string]bool{
 func (s *Server) createArtifact(w http.ResponseWriter, r *http.Request) {
 	var req teapublisher.ArtifactCreate
 	if err := decodeJSON(r, &req); err != nil {
-		httpx.BadRequest(w, "invalid JSON body: "+err.Error())
+		badRequest(w, r, teapublisher.ErrorInvalidRequestBody, "invalid JSON body: "+err.Error())
 		return
 	}
-	formats, ok := validateArtifactFields(w, req.Type, req.Formats)
+	formats, ok := validateArtifactFields(w, r, req.Type, req.Formats)
 	if !ok {
 		return
 	}
@@ -51,7 +51,7 @@ func (s *Server) createArtifact(w http.ResponseWriter, r *http.Request) {
 		Formats:         formats,
 	})
 	if err != nil {
-		httpx.InternalError(w, r, err)
+		internalErr(w, r, err)
 		return
 	}
 	writeArtifactCreated(w, r, s, a)
@@ -65,7 +65,7 @@ func (s *Server) createArtifact(w http.ResponseWriter, r *http.Request) {
 func writeArtifactCreated(w http.ResponseWriter, r *http.Request, s *Server, a tea.Artifact) {
 	formatIDs, err := s.repo.ArtifactFormatIDs(r.Context(), a.UUID, a.Version)
 	if err != nil {
-		httpx.InternalError(w, r, err)
+		internalErr(w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusCreated, teapublisher.ArtifactCreated{Artifact: a, FormatIDs: formatIDs})
@@ -90,23 +90,23 @@ const maxArtifactFormats = 50
 // (ArtifactCreated.FormatIDs) a caller can address it by, so a shared
 // mediaType no longer makes any format unreachable the way it did when
 // mediaType was the only addressing option.
-func validateArtifactFields(w http.ResponseWriter, artifactType string, in []teapublisher.ArtifactFormatCreate) (formats []repo.ArtifactFormatInput, ok bool) {
+func validateArtifactFields(w http.ResponseWriter, r *http.Request, artifactType string, in []teapublisher.ArtifactFormatCreate) (formats []repo.ArtifactFormatInput, ok bool) {
 	if !validArtifactTypes[artifactType] {
-		httpx.BadRequest(w, "type must be a valid artifact-type enum value")
+		badRequest(w, r, teapublisher.ErrorInvalidField, "type must be a valid artifact-type enum value", teapublisher.FieldError{Field: "type", Message: "must be a valid artifact-type enum value"})
 		return nil, false
 	}
 	if len(in) == 0 {
-		httpx.BadRequest(w, "at least one format is required")
+		badRequest(w, r, teapublisher.ErrorMissingField, "at least one format is required", teapublisher.FieldError{Field: "formats", Message: "at least one is required"})
 		return nil, false
 	}
 	if len(in) > maxArtifactFormats {
-		httpx.BadRequest(w, fmt.Sprintf("formats: at most %d allowed, got %d", maxArtifactFormats, len(in)))
+		badRequest(w, r, teapublisher.ErrorLimitExceeded, fmt.Sprintf("formats: at most %d allowed, got %d", maxArtifactFormats, len(in)), teapublisher.FieldError{Field: "formats", Message: fmt.Sprintf("at most %d allowed, got %d", maxArtifactFormats, len(in))})
 		return nil, false
 	}
 	formats = make([]repo.ArtifactFormatInput, len(in))
 	for i, f := range in {
 		if f.MediaType == "" {
-			httpx.BadRequest(w, "formats[].mediaType is required")
+			badRequest(w, r, teapublisher.ErrorMissingField, "formats[].mediaType is required", teapublisher.FieldError{Field: fmt.Sprintf("formats[%d].mediaType", i), Message: "is required"})
 			return nil, false
 		}
 		formats[i] = repo.ArtifactFormatInput{MediaType: f.MediaType, Description: f.Description}
@@ -127,16 +127,16 @@ func validateArtifactFields(w http.ResponseWriter, artifactType string, in []tea
 func (s *Server) createArtifactVersion(w http.ResponseWriter, r *http.Request) {
 	uuid, err := httpx.PathUUID(r, "uuid")
 	if err != nil {
-		httpx.BadRequest(w, "invalid uuid")
+		badRequest(w, r, teapublisher.ErrorInvalidPathParameter, "invalid uuid")
 		return
 	}
 
 	var req teapublisher.ArtifactVersionCreate
 	if err := decodeJSON(r, &req); err != nil {
-		httpx.BadRequest(w, "invalid JSON body: "+err.Error())
+		badRequest(w, r, teapublisher.ErrorInvalidRequestBody, "invalid JSON body: "+err.Error())
 		return
 	}
-	formats, ok := validateArtifactFields(w, req.Type, req.Formats)
+	formats, ok := validateArtifactFields(w, r, req.Type, req.Formats)
 	if !ok {
 		return
 	}
@@ -150,15 +150,15 @@ func (s *Server) createArtifactVersion(w http.ResponseWriter, r *http.Request) {
 		Formats:         formats,
 	})
 	if errors.Is(err, repo.ErrNotFound) {
-		httpx.NotFound(w)
+		notFoundErr(w, r)
 		return
 	}
 	if errors.Is(err, repo.ErrVersionConflict) {
-		httpx.Conflict(w, err.Error())
+		conflictErr(w, r, teapublisher.ErrorRevisionConflict, err.Error())
 		return
 	}
 	if err != nil {
-		httpx.InternalError(w, r, err)
+		internalErr(w, r, err)
 		return
 	}
 	writeArtifactCreated(w, r, s, a)
@@ -176,22 +176,22 @@ const maxUploadBody = 1 << 30 // 1 GiB cap per uploaded file, matches internal/a
 func (s *Server) uploadArtifactFile(w http.ResponseWriter, r *http.Request) {
 	uuid, err := httpx.PathUUID(r, "uuid")
 	if err != nil {
-		httpx.BadRequest(w, "invalid uuid")
+		badRequest(w, r, teapublisher.ErrorInvalidPathParameter, "invalid uuid")
 		return
 	}
 	version, err := httpx.PathPositiveInt(r, "version")
 	if err != nil {
-		httpx.BadRequest(w, "invalid version")
+		badRequest(w, r, teapublisher.ErrorInvalidPathParameter, "invalid version")
 		return
 	}
 
 	artifact, err := s.repo.GetArtifactByVersion(r.Context(), uuid, version)
 	if errors.Is(err, repo.ErrNotFound) {
-		httpx.NotFound(w)
+		notFoundErr(w, r)
 		return
 	}
 	if err != nil {
-		httpx.InternalError(w, r, err)
+		internalErr(w, r, err)
 		return
 	}
 
@@ -203,16 +203,16 @@ func (s *Server) uploadArtifactFile(w http.ResponseWriter, r *http.Request) {
 	// finding 1). A new revision belongs under a new artifact version, not
 	// a file swap on an already-validated one.
 	if _, err := s.repo.GetEvidenceBundleForOwner(r.Context(), "ARTIFACT", uuid, version); err == nil {
-		httpx.Conflict(w, "this artifact version already has evidence submitted -- file content is frozen once validated")
+		conflictErr(w, r, teapublisher.ErrorEvidenceAlreadySubmitted, "this artifact version already has evidence submitted -- file content is frozen once validated")
 		return
 	} else if !errors.Is(err, repo.ErrNotFound) {
-		httpx.InternalError(w, r, err)
+		internalErr(w, r, err)
 		return
 	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBody)
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
-		httpx.BadRequest(w, "invalid multipart form: "+err.Error())
+		badRequest(w, r, teapublisher.ErrorInvalidRequestBody, "invalid multipart form: "+err.Error())
 		return
 	}
 	formatIndex, ok := s.resolveArtifactFormat(w, r, artifact, uuid, version)
@@ -230,10 +230,10 @@ func (s *Server) uploadArtifactFile(w http.ResponseWriter, r *http.Request) {
 	// checksum SetArtifactFormatFile records.
 	if _, err := s.repo.SetArtifactFormatFile(r.Context(), uuid, version, formatIndex, sha256Hex); err != nil {
 		if errors.Is(err, repo.ErrNotFound) {
-			httpx.NotFound(w)
+			notFoundErr(w, r)
 			return
 		}
-		httpx.InternalError(w, r, err)
+		internalErr(w, r, err)
 		return
 	}
 	// Returns the checksum and size the server actually computed from the
@@ -257,21 +257,21 @@ func (s *Server) resolveArtifactFormat(w http.ResponseWriter, r *http.Request, a
 	if formatID := r.FormValue("formatId"); formatID != "" {
 		index, err := s.repo.ArtifactFormatIndexByID(r.Context(), artifactUUID, artifactVersion, formatID)
 		if errors.Is(err, repo.ErrNotFound) {
-			httpx.NotFound(w)
+			notFoundErr(w, r)
 			return -1, false
 		}
 		if err != nil {
-			httpx.InternalError(w, r, err)
+			internalErr(w, r, err)
 			return -1, false
 		}
 		return index, true
 	}
 	mediaType := r.FormValue("mediaType")
 	if mediaType == "" {
-		httpx.BadRequest(w, "formatId or mediaType is required")
+		badRequest(w, r, teapublisher.ErrorMissingField, "formatId or mediaType is required")
 		return -1, false
 	}
-	return resolveArtifactFormatIndex(w, artifact, mediaType)
+	return resolveArtifactFormatIndex(w, r, artifact, mediaType)
 }
 
 // resolveArtifactFormatIndex finds the index of the one format among
@@ -281,20 +281,20 @@ func (s *Server) resolveArtifactFormat(w http.ResponseWriter, r *http.Request, a
 // response and returns ok=false if none match (404) or more than one does
 // (400, ambiguous -- a caller with a genuinely ambiguous mediaType must
 // use formatId instead, see resolveArtifactFormat).
-func resolveArtifactFormatIndex(w http.ResponseWriter, artifact tea.Artifact, mediaType string) (formatIndex int, ok bool) {
+func resolveArtifactFormatIndex(w http.ResponseWriter, r *http.Request, artifact tea.Artifact, mediaType string) (formatIndex int, ok bool) {
 	formatIndex = -1
 	for i, f := range artifact.Formats {
 		if f.MediaType != mediaType {
 			continue
 		}
 		if formatIndex != -1 {
-			httpx.BadRequest(w, "mediaType is ambiguous: more than one format of this artifact version shares it -- use formatId instead")
+			badRequest(w, r, teapublisher.ErrorAmbiguousFormat, "mediaType is ambiguous: more than one format of this artifact version shares it -- use formatId instead", teapublisher.FieldError{Field: "mediaType", Message: "ambiguous -- use formatId instead"})
 			return -1, false
 		}
 		formatIndex = i
 	}
 	if formatIndex == -1 {
-		httpx.NotFound(w)
+		notFoundErr(w, r)
 		return -1, false
 	}
 	return formatIndex, true
@@ -307,18 +307,18 @@ func resolveArtifactFormatIndex(w http.ResponseWriter, artifact tea.Artifact, me
 func (s *Server) receiveUploadedFile(w http.ResponseWriter, r *http.Request) (sha256Hex string, size int64, ok bool) {
 	file, header, err := r.FormFile("file")
 	if err != nil {
-		httpx.BadRequest(w, "missing \"file\" form field: "+err.Error())
+		badRequest(w, r, teapublisher.ErrorMissingField, "missing \"file\" form field: "+err.Error(), teapublisher.FieldError{Field: "file", Message: "is required"})
 		return "", 0, false
 	}
 	defer func() { _ = file.Close() }()
 
 	sha256Hex, size, err = s.storage.Put(r.Context(), file)
 	if err != nil {
-		httpx.InternalError(w, r, err)
+		internalErr(w, r, err)
 		return "", 0, false
 	}
 	if err := s.repo.UpsertBlob(r.Context(), sha256Hex, size, header.Header.Get("Content-Type")); err != nil {
-		httpx.InternalError(w, r, err)
+		internalErr(w, r, err)
 		return "", 0, false
 	}
 	return sha256Hex, size, true
@@ -333,28 +333,28 @@ func (s *Server) receiveUploadedFile(w http.ResponseWriter, r *http.Request) (sh
 func (s *Server) uploadArtifactSignatureFile(w http.ResponseWriter, r *http.Request) {
 	uuid, err := httpx.PathUUID(r, "uuid")
 	if err != nil {
-		httpx.BadRequest(w, "invalid uuid")
+		badRequest(w, r, teapublisher.ErrorInvalidPathParameter, "invalid uuid")
 		return
 	}
 	version, err := httpx.PathPositiveInt(r, "version")
 	if err != nil {
-		httpx.BadRequest(w, "invalid version")
+		badRequest(w, r, teapublisher.ErrorInvalidPathParameter, "invalid version")
 		return
 	}
 
 	artifact, err := s.repo.GetArtifactByVersion(r.Context(), uuid, version)
 	if errors.Is(err, repo.ErrNotFound) {
-		httpx.NotFound(w)
+		notFoundErr(w, r)
 		return
 	}
 	if err != nil {
-		httpx.InternalError(w, r, err)
+		internalErr(w, r, err)
 		return
 	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBody)
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
-		httpx.BadRequest(w, "invalid multipart form: "+err.Error())
+		badRequest(w, r, teapublisher.ErrorInvalidRequestBody, "invalid multipart form: "+err.Error())
 		return
 	}
 	formatIndex, ok := s.resolveArtifactFormat(w, r, artifact, uuid, version)
@@ -367,10 +367,10 @@ func (s *Server) uploadArtifactSignatureFile(w http.ResponseWriter, r *http.Requ
 	}
 	if _, err := s.repo.SetArtifactFormatSignatureFile(r.Context(), uuid, version, formatIndex, sha256Hex); err != nil {
 		if errors.Is(err, repo.ErrNotFound) {
-			httpx.NotFound(w)
+			notFoundErr(w, r)
 			return
 		}
-		httpx.InternalError(w, r, err)
+		internalErr(w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, teapublisher.ArtifactFileUploaded{SHA256: sha256Hex, Size: size})

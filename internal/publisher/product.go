@@ -19,19 +19,19 @@ import (
 func (s *Server) createProduct(w http.ResponseWriter, r *http.Request) {
 	var req teapublisher.ProductCreate
 	if err := decodeJSON(r, &req); err != nil {
-		httpx.BadRequest(w, "invalid JSON body: "+err.Error())
+		badRequest(w, r, teapublisher.ErrorInvalidRequestBody, "invalid JSON body: "+err.Error())
 		return
 	}
 	if req.Name == "" {
-		httpx.BadRequest(w, "name is required")
+		badRequest(w, r, teapublisher.ErrorMissingField, "name is required", teapublisher.FieldError{Field: "name", Message: "is required"})
 		return
 	}
 	p, err := s.repo.CreateProduct(r.Context(), req.Name, req.Identifiers)
-	if writeIdentifierValidationError(w, err) {
+	if writeIdentifierValidationError(w, r, err) {
 		return
 	}
 	if err != nil {
-		httpx.InternalError(w, r, err)
+		internalErr(w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusCreated, p)
@@ -44,16 +44,16 @@ func (s *Server) createProduct(w http.ResponseWriter, r *http.Request) {
 func (s *Server) createProductRelease(w http.ResponseWriter, r *http.Request) {
 	productUUID, err := httpx.PathUUID(r, "uuid")
 	if err != nil {
-		httpx.BadRequest(w, "invalid uuid")
+		badRequest(w, r, teapublisher.ErrorInvalidPathParameter, "invalid uuid")
 		return
 	}
 	var req teapublisher.ProductReleaseCreate
 	if err := decodeJSON(r, &req); err != nil {
-		httpx.BadRequest(w, "invalid JSON body: "+err.Error())
+		badRequest(w, r, teapublisher.ErrorInvalidRequestBody, "invalid JSON body: "+err.Error())
 		return
 	}
 	if req.Version == "" {
-		httpx.BadRequest(w, "version is required")
+		badRequest(w, r, teapublisher.ErrorMissingField, "version is required", teapublisher.FieldError{Field: "version", Message: "is required"})
 		return
 	}
 
@@ -69,14 +69,14 @@ func (s *Server) createProductRelease(w http.ResponseWriter, r *http.Request) {
 		Identifiers: req.Identifiers,
 	})
 	if errors.Is(err, repo.ErrNotFound) {
-		httpx.NotFound(w)
+		notFoundErr(w, r)
 		return
 	}
-	if writeIdentifierValidationError(w, err) {
+	if writeIdentifierValidationError(w, r, err) {
 		return
 	}
 	if err != nil {
-		httpx.InternalError(w, r, err)
+		internalErr(w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusCreated, pr)
@@ -87,26 +87,26 @@ func (s *Server) createProductRelease(w http.ResponseWriter, r *http.Request) {
 func (s *Server) linkComponent(w http.ResponseWriter, r *http.Request) {
 	productReleaseUUID, err := httpx.PathUUID(r, "uuid")
 	if err != nil {
-		httpx.BadRequest(w, "invalid uuid")
+		badRequest(w, r, teapublisher.ErrorInvalidPathParameter, "invalid uuid")
 		return
 	}
 	var ref tea.ComponentRef
 	if err := decodeJSON(r, &ref); err != nil {
-		httpx.BadRequest(w, "invalid JSON body: "+err.Error())
+		badRequest(w, r, teapublisher.ErrorInvalidRequestBody, "invalid JSON body: "+err.Error())
 		return
 	}
 	if ref.UUID == "" {
-		httpx.BadRequest(w, "uuid is required")
+		badRequest(w, r, teapublisher.ErrorMissingField, "uuid is required", teapublisher.FieldError{Field: "uuid", Message: "is required"})
 		return
 	}
 
 	pr, err := s.repo.LinkComponent(r.Context(), productReleaseUUID, ref)
 	if errors.Is(err, repo.ErrNotFound) {
-		httpx.NotFound(w)
+		notFoundErr(w, r)
 		return
 	}
 	if err != nil {
-		httpx.InternalError(w, r, err)
+		internalErr(w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, pr)

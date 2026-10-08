@@ -1,11 +1,48 @@
 openapi: 3.1.0
 info:
   title: TEA Publisher API
-  version: 0.18.0-draft
+  version: 0.19.0-draft
   description: |
-    **Status: draft v0.18, for discussion. opentea's own server-side implementation
+    **Status: draft v0.19, for discussion. opentea's own server-side implementation
     exists (`internal/publisher`) but this document is still a draft, not approved by
     CycloneDX or any TEA working group.**
+
+    v0.19: closes finding 15 of the same external security review
+    (docs/security-review-publisher-design-260828.md) -- "error contracts are
+    inconsistent and incomplete." The `error-response` schema is now structured: `code`
+    (a finite, stable, machine-readable enum), `message` (free text), `requestId`
+    (correlation id -- the same value the `X-Request-Id` response header carries, now
+    also in the body), `retryable` (true only for `INTERNAL_ERROR`), and `fields`
+    (per-field validation detail for `MISSING_FIELD`/`INVALID_FIELD`) -- replacing the
+    previous bare `{"message": ...}` every error response carried, with no code at all.
+    Closes finding 15's own named example first: `submitArtifactEvidence`'s and
+    `commitCollectionDraft`'s verification `400`s -- "signature mismatch, stale prepare,
+    unsupported signature format, and invalid certificate should not all be
+    indistinguishable" -- now carry four distinct codes
+    (`UNSUPPORTED_SIGNATURE_FORMAT`/`DIGEST_MISMATCH`/`SIGNATURE_INVALID`/
+    `CERTIFICATE_INVALID`) instead of one generic `400`. Also closes finding 15's "many
+    operations omit common responses": every one of this draft's 32 operations now
+    documents `401` (any operation can reject a missing/invalid bearer credential before
+    its own handler ever runs) and `500` (any handler can hit an unexpected server-side
+    failure); `403` is documented only on "full"-scope operations, since a "cicd"
+    credential can never actually receive it on a "cicd"-scoped one (`full` satisfies
+    `cicd` too, and those are the only two scopes that exist) -- added where genuinely
+    true, not mechanically everywhere. `400` is added to every operation whose handler
+    can actually emit it (most of them), and deliberately *not* added to the four
+    `createXxxCLEEvent` operations or to `findComponents`, which genuinely cannot (no
+    request-body/path validation exists for the former beyond required-field checks
+    already covered, and the latter has no validated input at all) -- kept honest to
+    actual behavior rather than padded for uniformity. `413`/`429` stay exactly where
+    they already were (the two upload operations) -- no other operation has a size or
+    quota concept to report. `503` is deliberately **not** added anywhere: nothing in
+    this implementation can currently produce it (no health/circuit-breaker logic
+    exists), and documenting a status code with no real producer would be aspirational,
+    not accurate -- flagged in `TODO.md` instead of guessed at here. Field-level
+    validation detail (`fields`) is populated for every `MISSING_FIELD`/`INVALID_FIELD`
+    case this draft's handlers can distinguish down to a specific field; a handful of
+    genuinely ambiguous cases (e.g. `uploadArtifactFile`'s "formatId or mediaType is
+    required," where neither was supplied) carry a `code` and `message` but no `fields`
+    entry, since no single field is the one at fault.
 
     v0.18: closes finding 14 of the same external security review
     (docs/security-review-publisher-design-260828.md) -- "artifact format addressing by
@@ -420,6 +457,9 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/product' }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalServerError' }
 
   /products/{productUuid}/releases:
     post:
@@ -440,7 +480,10 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/productRelease' }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalServerError' }
 
   # ---------------------------------------------------------------- Components
   /components:
@@ -472,6 +515,9 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/component-search-results' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalServerError' }
     post:
       operationId: createComponent
       tags: [Components]
@@ -506,6 +552,9 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/component' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalServerError' }
 
   /components/{componentUuid}/releases:
     post:
@@ -525,7 +574,11 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/release' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalServerError' }
 
   /productReleases/{productReleaseUuid}/components:
     post:
@@ -541,7 +594,11 @@ paths:
             schema: { $ref: '#/components/schemas/component-ref' }
       responses:
         '204': { description: Linked. }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalServerError' }
 
   # ---------------------------------------------------------------- Artifacts
   /artifacts:
@@ -566,6 +623,9 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/artifact-created' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '500': { $ref: '#/components/responses/InternalServerError' }
 
   /artifacts/{artifactUuid}/versions:
     post:
@@ -603,11 +663,14 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/artifact-created' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
           description: >-
             `previousVersion` was supplied and no longer matches the artifact's current
             latest version.
+        '500': { $ref: '#/components/responses/InternalServerError' }
 
   /artifacts/{artifactUuid}/{version}/files:
     post:
@@ -691,6 +754,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/artifact-file-uploaded' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
           description: Evidence has already been submitted for this artifact version.
@@ -704,6 +769,7 @@ paths:
             per-request rejection at all. One of three plausible status codes for this
             specific case (429, 507, 403 all have an argument, §15.1's own open
             question); not settled here.
+        '500': { $ref: '#/components/responses/InternalServerError' }
 
   /artifacts/{artifactUuid}/{version}/signature/files:
     post:
@@ -755,11 +821,14 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/artifact-file-uploaded' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
         '413':
           description: File exceeds the target's per-upload size limit (§15.1).
         '429':
           description: This principal's outstanding-bytes/count quota is exhausted (§15.1).
+        '500': { $ref: '#/components/responses/InternalServerError' }
 
   /artifacts/{artifactUuid}/{version}/evidence/prepare:
     post:
@@ -782,7 +851,10 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/prepare-artifact-evidence-response' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalServerError' }
 
   /artifacts/{artifactUuid}/{version}/evidence:
     post:
@@ -827,8 +899,17 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/evidence-bundle' }
         '400':
-          description: Verification failed (bad signature, digest mismatch, or expired/malformed certificate) — nothing was stored.
+          description: >-
+            Verification failed — nothing was stored. Distinguished by `code` (v0.19,
+            finding 15): UNSUPPORTED_SIGNATURE_FORMAT, DIGEST_MISMATCH ("stale prepare" —
+            the artifact changed since `prepareArtifactEvidence` returned this digest),
+            SIGNATURE_INVALID, or CERTIFICATE_INVALID — previously all indistinguishable.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/error-response' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalServerError' }
 
   # ---------------------------------------------------------------- Lifecycle (CLE)
   /products/{productUuid}/cle/events:
@@ -852,6 +933,10 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/cle-event' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalServerError' }
 
   /productReleases/{productReleaseUuid}/cle/events:
     post:
@@ -871,6 +956,10 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/cle-event' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalServerError' }
 
   /components/{componentUuid}/cle/events:
     post:
@@ -890,6 +979,10 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/cle-event' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalServerError' }
 
   /componentReleases/{componentReleaseUuid}/cle/events:
     post:
@@ -909,6 +1002,10 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/cle-event' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalServerError' }
 
   # CLE *definitions* (as opposed to CLE *events*, above) have no /publisher/v1 write
   # operation at all, for any of the four owner types -- genuinely unimplemented
@@ -989,6 +1086,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/collection-draft' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
           description: >-
@@ -996,6 +1095,7 @@ paths:
             cancelPrepare first, or wait for the pending commit to complete. Or (v0.17):
             `expectedRevision` was supplied and no longer matches the draft's current
             actual revision.
+        '500': { $ref: '#/components/responses/InternalServerError' }
     get:
       operationId: getCollectionDraft
       tags: [Collections]
@@ -1011,7 +1111,10 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/collection-draft' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalServerError' }
     delete:
       operationId: deleteCollectionDraft
       tags: [Collections]
@@ -1020,7 +1123,10 @@ paths:
         - $ref: '#/components/parameters/ProductReleaseUuid'
       responses:
         '204': { description: Deleted. }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalServerError' }
 
   /productReleases/{productReleaseUuid}/collectionDraft/approve:
     post:
@@ -1058,11 +1164,17 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/collection-draft' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '403':
-          description: actor equals the draft's own draftedBy — self-approval is rejected.
+          description: >-
+            actor equals the draft's own draftedBy — self-approval is rejected (code
+            SELF_APPROVAL), or the credential's scope doesn't permit this operation (code
+            FORBIDDEN, v0.19).
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
           description: The draft is locked by an outstanding prepareCollectionCommit.
+        '500': { $ref: '#/components/responses/InternalServerError' }
 
   /productReleases/{productReleaseUuid}/collectionDraft/reject:
     post:
@@ -1087,11 +1199,16 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/collection-draft' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '403':
-          description: actor equals the draft's own draftedBy.
+          description: >-
+            actor equals the draft's own draftedBy (code SELF_APPROVAL), or the
+            credential's scope doesn't permit this operation (code FORBIDDEN, v0.19).
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
           description: The draft is locked by an outstanding prepareCollectionCommit.
+        '500': { $ref: '#/components/responses/InternalServerError' }
 
   /productReleases/{productReleaseUuid}/collectionDraft/prepareCommit:
     post:
@@ -1132,9 +1249,12 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/prepare-commit-response' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
           description: No current approval on record for this draft (see summary).
+        '500': { $ref: '#/components/responses/InternalServerError' }
 
   /productReleases/{productReleaseUuid}/collectionDraft/cancelPrepare:
     post:
@@ -1152,8 +1272,11 @@ paths:
         - $ref: '#/components/parameters/ProductReleaseUuid'
       responses:
         '204': { description: Lock released. }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '404':
           description: No such draft, or no lock currently held.
+        '500': { $ref: '#/components/responses/InternalServerError' }
 
   /productReleases/{productReleaseUuid}/collectionDraft/commit:
     post:
@@ -1200,8 +1323,14 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/collection' }
         '400':
-          description: Signature verification failed, or the draft's digest no longer matches (it changed since prepareCommit) — nothing was published.
+          description: >-
+            Signature verification failed (code UNSUPPORTED_SIGNATURE_FORMAT,
+            DIGEST_MISMATCH, SIGNATURE_INVALID, or CERTIFICATE_INVALID — v0.19, same
+            codes as submitArtifactEvidence's own 400), or the draft's digest no longer
+            matches (it changed since prepareCommit) — nothing was published.
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalServerError' }
 
   # componentReleaseUuid equivalents of the eight productReleaseUuid operations above --
   # identical shape and behavior throughout, only the owning release type differs
@@ -1226,9 +1355,12 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/collection-draft' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
           description: The draft is locked by an outstanding prepareCollectionCommit (§9.5).
+        '500': { $ref: '#/components/responses/InternalServerError' }
     get:
       operationId: getComponentReleaseCollectionDraft
       tags: [Collections]
@@ -1241,7 +1373,10 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/collection-draft' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalServerError' }
     delete:
       operationId: deleteComponentReleaseCollectionDraft
       tags: [Collections]
@@ -1250,7 +1385,10 @@ paths:
         - $ref: '#/components/parameters/ComponentReleaseUuid'
       responses:
         '204': { description: Deleted. }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalServerError' }
 
   /componentReleases/{componentReleaseUuid}/collectionDraft/approve:
     post:
@@ -1272,11 +1410,17 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/collection-draft' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '403':
-          description: actor equals the draft's own draftedBy — self-approval is rejected.
+          description: >-
+            actor equals the draft's own draftedBy — self-approval is rejected (code
+            SELF_APPROVAL), or the credential's scope doesn't permit this operation (code
+            FORBIDDEN, v0.19).
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
           description: The draft is locked by an outstanding prepareCollectionCommit.
+        '500': { $ref: '#/components/responses/InternalServerError' }
 
   /componentReleases/{componentReleaseUuid}/collectionDraft/reject:
     post:
@@ -1296,11 +1440,16 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/collection-draft' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '403':
-          description: actor equals the draft's own draftedBy.
+          description: >-
+            actor equals the draft's own draftedBy (code SELF_APPROVAL), or the
+            credential's scope doesn't permit this operation (code FORBIDDEN, v0.19).
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
           description: The draft is locked by an outstanding prepareCollectionCommit.
+        '500': { $ref: '#/components/responses/InternalServerError' }
 
   /componentReleases/{componentReleaseUuid}/collectionDraft/prepareCommit:
     post:
@@ -1318,9 +1467,12 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/prepare-commit-response' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
           description: No current approval on record for this draft (see summary).
+        '500': { $ref: '#/components/responses/InternalServerError' }
 
   /componentReleases/{componentReleaseUuid}/collectionDraft/cancelPrepare:
     post:
@@ -1331,8 +1483,11 @@ paths:
         - $ref: '#/components/parameters/ComponentReleaseUuid'
       responses:
         '204': { description: Lock released. }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '404':
           description: No such draft, or no lock currently held.
+        '500': { $ref: '#/components/responses/InternalServerError' }
 
   /componentReleases/{componentReleaseUuid}/collectionDraft/commit:
     post:
@@ -1356,8 +1511,14 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/collection' }
         '400':
-          description: Signature verification failed, or the draft's digest no longer matches (it changed since prepareCommit) — nothing was published.
+          description: >-
+            Signature verification failed (code UNSUPPORTED_SIGNATURE_FORMAT,
+            DIGEST_MISMATCH, SIGNATURE_INVALID, or CERTIFICATE_INVALID — v0.19, same
+            codes as submitArtifactEvidence's own 400), or the draft's digest no longer
+            matches (it changed since prepareCommit) — nothing was published.
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalServerError' }
 
 components:
   securitySchemes:
@@ -1409,6 +1570,34 @@ components:
           schema: { $ref: '#/components/schemas/error-response' }
     NotFound:
       description: No such resource.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/error-response' }
+    # Unauthorized/Forbidden/InternalServerError added v0.19 (external
+    # security review, docs/security-review-publisher-design-260828.md
+    # finding 15: "many operations omit common responses, including 401...
+    # 403... 500"). Every operation goes through requireScope, which can
+    # reject a missing/invalid credential (401) before an operation's own
+    # handler ever runs, and any operation's handler can hit an unexpected
+    # server-side failure (500) -- both apply uniformly, wired onto every
+    # operation below. 403 (insufficient scope) applies only to "full"-scope
+    # operations -- a "cicd" credential can never 403 on a "cicd"-scoped
+    # operation, since "full" also satisfies "cicd" and those are the only
+    # two scopes that exist (internal/publisher/auth_middleware.go's
+    # scopeSatisfies) -- so Forbidden is wired only onto operations this is
+    # actually true for, not mechanically onto all 32.
+    Unauthorized:
+      description: No bearer credential was presented, or the one presented doesn't resolve to a valid, unrevoked publisher credential.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/error-response' }
+    Forbidden:
+      description: A valid credential was presented, but its scope doesn't permit this operation.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/error-response' }
+    InternalServerError:
+      description: Unexpected server-side failure. No internal detail is leaked; retryable is always true here, and only here (ErrorResponse.Retryable's own doc comment).
       content:
         application/json:
           schema: { $ref: '#/components/schemas/error-response' }
@@ -2078,20 +2267,74 @@ components:
       type: object
       description: >-
         Error response actually emitted by `/publisher/v1` -- not the consumer spec's
-        schema of the same name. See info.description, deviation 6.
+        schema of the same name. See info.description, deviation 6. Structured as of
+        v0.19, closing external security review finding 15 ("signature mismatch, stale
+        prepare, unsupported signature format, and invalid certificate should not all be
+        indistinguishable 400 responses" -- more generally, every error needs a stable
+        code, a correlation id, and whether retrying makes sense, not just human prose).
       x-deviation: >-
         `/publisher/v1` (internal/publisher) is not governed by spec/openapi.yaml at all,
-        and its every error path (internal/httpx.BadRequest/Forbidden/Conflict/
-        Unauthorized/InternalError) writes this project's own, unrelated
-        `{"message": "..."}` shape (internal/httpx.messageBody), never the consumer spec's
-        `{error, message}` shape with `error` from a fixed enum. Previously claimed
-        "reused verbatim" -- false; see info.description, deviation 6.
+        and every one of its error paths writes this project's own, unrelated shape
+        (pkg/teapublisher.ErrorResponse), never the consumer spec's `{error, message}`
+        shape with `error` from a fixed enum. Previously claimed "reused verbatim" --
+        false; see info.description, deviation 6.
       additionalProperties: false
       properties:
+        code:
+          type: string
+          description: >-
+            Stable, machine-readable error code -- one of the error-code values listed
+            below. A finite, coarse-grained taxonomy a caller can actually branch on, not
+            a unique code per human-readable message.
+          enum:
+            - INVALID_PATH_PARAMETER
+            - INVALID_REQUEST_BODY
+            - MISSING_FIELD
+            - INVALID_FIELD
+            - LIMIT_EXCEEDED
+            - AMBIGUOUS_FORMAT
+            - NOT_FOUND
+            - CONFLICT
+            - REVISION_CONFLICT
+            - APPROVAL_REQUIRED
+            - SELF_APPROVAL
+            - EVIDENCE_ALREADY_SUBMITTED
+            - FINGERPRINT_REUSED
+            - DIGEST_MISMATCH
+            - UNSUPPORTED_SIGNATURE_FORMAT
+            - SIGNATURE_INVALID
+            - CERTIFICATE_INVALID
+            - UNAUTHORIZED
+            - FORBIDDEN
+            - INTERNAL_ERROR
         message:
           type: string
           description: Human-readable explanation. Not a fixed enum -- free text.
-      required: [message]
+        requestId:
+          type: string
+          description: >-
+            This request's correlation id -- the same value the X-Request-Id response
+            header carries, repeated here so it survives into whatever a caller logs or
+            displays from the body alone.
+        retryable:
+          type: boolean
+          description: >-
+            Whether re-sending the identical request might succeed without the caller
+            changing anything. True only for code INTERNAL_ERROR (a transient server-side
+            failure); every validation, conflict, not-found, or auth failure is false.
+        fields:
+          type: array
+          description: >-
+            Per-field validation detail, present only for code MISSING_FIELD/INVALID_FIELD
+            -- absent when the failure isn't about specific request fields.
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              field: { type: string }
+              message: { type: string }
+            required: [field, message]
+      required: [code, message, retryable]
 
     # ================================================================
     # Trust-architecture extension (already-adopted precedent, not new — see

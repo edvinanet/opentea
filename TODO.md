@@ -1682,12 +1682,72 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       `formatId` upload to the same format returns a different checksum (replacement, not
       accumulation); confirmed 51 formats on create is rejected with 400. Full suite,
       `-race`, `golangci-lint`, `go vet`, `gofmt` clean.~~
-- [ ] **[security review finding 15] Publisher API: standard error-response schema** —
+- [x] ~~**[security review finding 15] Publisher API: standard error-response schema** —
       `internal/publisher` handlers mostly reuse `httpx`'s existing `{"message": ...}` shape
       (`BadRequest`/`Conflict`/etc.), which doesn't distinguish, say, a stale-digest 400 from
       a bad-signature-format 400 by machine-readable code. Needs a real problem/error schema
       (stable code, correlation id, retryability) before automated clients can branch on
-      failure reasons instead of string-matching messages.
+      failure reasons instead of string-matching messages. Also: many operations omit common
+      responses (401/403/409/413/429/500/503), and several described errors have no
+      structured body at all.~~ **Fixed 2026-10-08** (`design/publisher-openapi.yaml` v0.19).
+      New `teapublisher.ErrorResponse{Code, Message, RequestID, Retryable, Fields}` replaces
+      the bare `{"message": ...}` body on every one of `/publisher/v1`'s error paths (new
+      `pkg/teapublisher/errorcodes.go`: 19 stable `UPPER_SNAKE_CASE` codes, a finite,
+      coarse-grained taxonomy a caller can branch on, not a unique code per message; new
+      `internal/publisher/httperror.go`: `badRequest`/`notFoundErr`/`conflictErr`/
+      `forbiddenErr`/`unauthorizedErr`/`internalErr` helpers, used throughout
+      `artifact.go`/`auth_middleware.go`/`cle.go`/`collectiondraft.go`/`component.go`/
+      `evidence.go`/`product.go`/`server.go` in place of `internal/httpx`'s generic,
+      untyped ones). `RequestID` is `internal/httpx.RequestID(ctx)` — the same correlation id
+      the `X-Request-Id` response header already carried, now also in the body. `Retryable`
+      is `true` only for `INTERNAL_ERROR` (every validation/conflict/not-found/auth failure
+      is `false` — the caller must change something before a retry could help). `Fields`
+      (`[]teapublisher.FieldError{Field, Message}`) is populated for `MISSING_FIELD`/
+      `INVALID_FIELD` wherever a specific field is identifiable.
+
+      Closes the finding's own named example first: `submitArtifactEvidence`'s and
+      `commitCollectionDraft`'s verification `400`s — "signature mismatch, stale prepare,
+      unsupported signature format, and invalid certificate should not all be
+      indistinguishable" — now carry four distinct codes
+      (`UNSUPPORTED_SIGNATURE_FORMAT`/`DIGEST_MISMATCH`/`SIGNATURE_INVALID`/
+      `CERTIFICATE_INVALID`) instead of one generic `400`. Also closes "many operations omit
+      common responses": every one of the OpenAPI draft's 32 operations now documents `401`
+      and `500` (uniformly true — every operation goes through `requireScope`, and any
+      handler can hit an unexpected server-side failure); `403` is documented only on
+      "full"-scope operations, since a "cicd" credential can never actually receive it on a
+      "cicd"-scoped one (`full` satisfies `cicd` too, and those are the only two scopes that
+      exist, `internal/publisher/auth_middleware.go`'s `scopeSatisfies`) — added where
+      genuinely true, not mechanically everywhere. `400` is added to every operation whose
+      handler can actually emit it; deliberately **not** added to the four
+      `createXxxCLEEvent` operations (no owner-existence check exists yet — a real, separate,
+      pre-existing gap, not touched here, since `internal/repo.CreateCLEEvent` never checks
+      whether `ownerUUID` exists before inserting; flagged below, not silently papered over)
+      or to `findComponents` (no validated input at all) — kept honest to actual behavior
+      rather than padded for uniformity. `413`/`429` stay exactly where they already were (the
+      two upload operations); `503` is deliberately **not** added anywhere, since nothing in
+      this implementation can currently produce it (no health/circuit-breaker logic exists) —
+      documenting a status code with no real producer would be aspirational, not accurate.
+
+      **New, separate gap found and flagged, not fixed here**: `internal/repo.CreateCLEEvent`
+      never verifies `ownerUUID` actually belongs to an existing product/release/component/
+      componentRelease before inserting a lifecycle event against it — a typo'd or
+      nonexistent owner silently succeeds (or fails with a confusing FK/500) rather than a
+      clean `404`. Out of scope for finding 15 (which is about error-response *shape*, not
+      missing existence checks) and not implied by anything finding 15's own text asks for —
+      a real, separate bug worth its own pass.
+
+      Verified: new `TestPublisherStructuredErrorResponses`
+      (`cmd/opentea/publisher_test.go`) — confirms all four named evidence-verification codes,
+      plus `MISSING_FIELD`'s `fields` detail, `UNAUTHORIZED`, `FORBIDDEN`, and `NOT_FOUND` —
+      confirmed to fail to even build against the pre-fix code (`teapublisher.ErrorResponse`
+      undefined, via `git stash`), passes after. Manual smoke test against a live built
+      binary: real Ed25519 key/cert/signature (via a throwaway `internal/trust` scratch test,
+      deleted immediately after use) driving all four `submitArtifactEvidence` failure modes
+      end-to-end over real HTTP, confirming each returns its own distinct `code`; confirmed
+      `MISSING_FIELD`/`UNAUTHORIZED`/`FORBIDDEN` bodies and the `X-Request-Id` header/body
+      correlation. OpenAPI YAML validated (`js-yaml`): parses cleanly, zero dangling `$ref`s,
+      32 unique `operationId`s, response-code audit confirmed against the actual Go handlers
+      operation-by-operation. Full suite, `-race`, `golangci-lint`, `go vet`, `gofmt` clean.
 - [x] **[security review finding 8]** N/A against the shipped implementation — the review's
       concern was a phased rollout that commits unsigned collections before signing becomes
       mandatory. `internal/publisher`'s `commitCollectionDraft` was built signed-only from

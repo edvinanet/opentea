@@ -344,6 +344,49 @@ type ApprovalDecision struct {
 	Comment string `json:"comment,omitempty"`
 }
 
+// ErrorResponse is the structured error body every /publisher/v1 failure
+// response now carries, replacing the bare `{"message": ...}` shape
+// (internal/httpx.messageBody) every operation previously wrote verbatim
+// (external security review, docs/security-review-publisher-design-260828.md
+// finding 15: "signature mismatch, stale prepare, unsupported signature
+// format, and invalid certificate should not all be indistinguishable 400
+// responses" -- more generally, every error needs a stable, machine-readable
+// code, a correlation id, and whether retrying makes sense, not just human
+// prose). Scoped to /publisher/v1 only -- internal/admin and
+// internal/webadmin keep today's untyped shape unchanged, since the review
+// never looked at those surfaces.
+type ErrorResponse struct {
+	// Code is one of the Error* constants in errorcodes.go -- a finite,
+	// stable vocabulary a caller can branch on, not a copy of Message.
+	Code string `json:"code"`
+	// Message is free-text, for a human, not for program logic.
+	Message string `json:"message"`
+	// RequestID is this request's correlation id (internal/httpx.RequestID)
+	// -- the same value already echoed on the X-Request-Id response header
+	// by every /publisher/v1 response, repeated here so it survives into
+	// whatever a caller logs or displays from the body alone.
+	RequestID string `json:"requestId,omitempty"`
+	// Retryable reports whether re-sending the identical request might
+	// succeed without the caller changing anything -- true only for
+	// ErrorInternal (a transient server-side failure); every validation,
+	// conflict, not-found, or auth failure is false, since the caller must
+	// change something (the request body, its credential, or wait for a
+	// real state change) before a retry could possibly succeed.
+	Retryable bool `json:"retryable"`
+	// Fields carries per-field validation detail for request-body
+	// validation failures (Code ErrorMissingField/ErrorInvalidField) --
+	// absent when the failure isn't about specific request fields (e.g. a
+	// malformed path parameter, a state conflict, an auth failure).
+	Fields []FieldError `json:"fields,omitempty"`
+}
+
+// FieldError is one entry in ErrorResponse.Fields: one request field that
+// failed validation, and why.
+type FieldError struct {
+	Field   string `json:"field"`
+	Message string `json:"message"`
+}
+
 // PrepareCommitResponse is the response to prepareCollectionCommit: the
 // collection that would be created if commitCollectionDraft is called now,
 // plus the digest to sign over it. Also the to-be-signed (TBS) package for

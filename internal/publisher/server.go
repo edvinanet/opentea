@@ -29,9 +29,9 @@ import (
 	"net/http"
 
 	"github.com/oej/opentea/internal/config"
-	"github.com/oej/opentea/internal/httpx"
 	"github.com/oej/opentea/internal/repo"
 	"github.com/oej/opentea/internal/storage"
+	"github.com/oej/opentea/pkg/teapublisher"
 )
 
 // Server holds the dependencies for the /publisher/v1 API handlers.
@@ -57,10 +57,13 @@ func decodeJSON(r *http.Request, v any) error {
 }
 
 // writeIdentifierValidationError mirrors internal/admin's own helper of
-// the same name exactly -- see its doc comment.
-func writeIdentifierValidationError(w http.ResponseWriter, err error) bool {
+// the same name in spirit (same underlying repo error check), but writes
+// this package's own structured ErrorResponse (finding 15) instead of
+// internal/admin's untyped body -- the two packages' error shapes are
+// unrelated by design, see ErrorResponse's own doc comment.
+func writeIdentifierValidationError(w http.ResponseWriter, r *http.Request, err error) bool {
 	if errors.Is(err, repo.ErrComplianceDocumentWrongOwner) || errors.Is(err, repo.ErrInvalidComplianceDocumentType) {
-		httpx.BadRequest(w, err.Error())
+		badRequest(w, r, teapublisher.ErrorInvalidField, err.Error(), teapublisher.FieldError{Field: "identifiers", Message: err.Error()})
 		return true
 	}
 	return false

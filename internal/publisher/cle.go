@@ -20,20 +20,27 @@ func (s *Server) createCLEEventForOwner(ownerType string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ownerUUID, err := httpx.PathUUID(r, "uuid")
 		if err != nil {
-			httpx.BadRequest(w, "invalid uuid")
+			badRequest(w, r, teapublisher.ErrorInvalidPathParameter, "invalid uuid")
 			return
 		}
 		var req teapublisher.CLEEventCreate
 		if err := decodeJSON(r, &req); err != nil {
-			httpx.BadRequest(w, "invalid JSON body: "+err.Error())
+			badRequest(w, r, teapublisher.ErrorInvalidRequestBody, "invalid JSON body: "+err.Error())
 			return
 		}
 		if req.Type == "" {
-			httpx.BadRequest(w, "type is required")
+			badRequest(w, r, teapublisher.ErrorMissingField, "type is required", teapublisher.FieldError{Field: "type", Message: "is required"})
 			return
 		}
-		if req.Effective.IsZero() || req.Published.IsZero() {
-			httpx.BadRequest(w, "effective and published are required")
+		var missing []teapublisher.FieldError
+		if req.Effective.IsZero() {
+			missing = append(missing, teapublisher.FieldError{Field: "effective", Message: "is required"})
+		}
+		if req.Published.IsZero() {
+			missing = append(missing, teapublisher.FieldError{Field: "published", Message: "is required"})
+		}
+		if len(missing) > 0 {
+			badRequest(w, r, teapublisher.ErrorMissingField, "effective and published are required", missing...)
 			return
 		}
 
@@ -52,11 +59,11 @@ func (s *Server) createCLEEventForOwner(ownerType string) http.HandlerFunc {
 			Description:         req.Description,
 			References:          req.References,
 		})
-		if writeIdentifierValidationError(w, err) {
+		if writeIdentifierValidationError(w, r, err) {
 			return
 		}
 		if err != nil {
-			httpx.InternalError(w, r, err)
+			internalErr(w, r, err)
 			return
 		}
 		httpx.WriteJSON(w, http.StatusCreated, e)

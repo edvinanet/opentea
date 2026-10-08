@@ -13,6 +13,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -533,6 +534,137 @@ func TestPublisherCreateArtifactMaxFormats(t *testing.T) {
 		"type": "BOM", "formats": exactlyMax,
 	}); status != http.StatusCreated {
 		t.Fatalf("50 formats (at the limit): status=%d body=%s, want 201", status, body)
+	}
+}
+
+// TestPublisherStructuredErrorResponses is the regression test for
+// docs/security-review-publisher-design-260828.md finding 15: every
+// /publisher/v1 error now carries a structured teapublisher.ErrorResponse
+// (stable code, correlation id, retryability, field detail) instead of a
+// bare {"message": ...}. Confirms the finding's own four named
+// "indistinguishable 400s" -- signature mismatch, stale prepare,
+// unsupported signature format, invalid certificate -- now carry four
+// distinct codes, plus the generic missing-field/unauthorized/forbidden/
+// not-found cases.
+func TestPublisherStructuredErrorResponses(t *testing.T) {
+	srv := newTestServer(t)
+	full := createPublisherCredential(t, srv, "full-cred", model.PublisherScopeFull)
+	cicd := createPublisherCredential(t, srv, "cicd-cred", model.PublisherScopeCICD)
+
+	// Missing field: stable code, field-level detail, not retryable, has a
+	// correlation id.
+	status, raw := publisherRequest(t, srv, http.MethodPost, "/publisher/v1/products", full, map[string]any{})
+	if status != http.StatusBadRequest {
+		t.Fatalf("missing name: status=%d body=%s", status, raw)
+	}
+	var errResp teapublisher.ErrorResponse
+	decodeInto(t, raw, &errResp)
+	if errResp.Code != teapublisher.ErrorMissingField {
+		t.Fatalf("code = %q, want %q", errResp.Code, teapublisher.ErrorMissingField)
+	}
+	if len(errResp.Fields) != 1 || errResp.Fields[0].Field != "name" {
+		t.Fatalf("fields = %+v, want one entry for \"name\"", errResp.Fields)
+	}
+	if errResp.Retryable {
+		t.Fatalf("retryable = true, want false for a validation error")
+	}
+	if errResp.RequestID == "" {
+		t.Fatalf("requestId is empty")
+	}
+
+	// Unauthorized (no credential at all).
+	status, raw = publisherRequest(t, srv, http.MethodPost, "/publisher/v1/products", "", map[string]any{"name": "x"})
+	decodeInto(t, raw, &errResp)
+	if status != http.StatusUnauthorized || errResp.Code != teapublisher.ErrorUnauthorized {
+		t.Fatalf("no token: status=%d code=%q, want 401/%q", status, errResp.Code, teapublisher.ErrorUnauthorized)
+	}
+
+	// Forbidden (valid credential, insufficient scope).
+	status, raw = publisherRequest(t, srv, http.MethodPost, "/publisher/v1/products", cicd, map[string]any{"name": "x"})
+	decodeInto(t, raw, &errResp)
+	if status != http.StatusForbidden || errResp.Code != teapublisher.ErrorForbidden {
+		t.Fatalf("cicd createProduct: status=%d code=%q, want 403/%q", status, errResp.Code, teapublisher.ErrorForbidden)
+	}
+
+	// Not found: a syntactically valid UUID that simply doesn't exist --
+	// distinct from the invalid-path-parameter case above.
+	status, raw = publisherRequest(t, srv, http.MethodGet, "/publisher/v1/productReleases/00000000-0000-0000-0000-000000000000/collectionDraft", cicd, nil)
+	decodeInto(t, raw, &errResp)
+	if status != http.StatusNotFound || errResp.Code != teapublisher.ErrorNotFound {
+		t.Fatalf("not found: status=%d code=%q, want 404/%q", status, errResp.Code, teapublisher.ErrorNotFound)
+	}
+
+	// Set up a real artifact and a prepared digest, to exercise finding
+	// 15's four explicitly named evidence-verification cases.
+	status, raw = publisherRequest(t, srv, http.MethodPost, "/publisher/v1/artifacts", cicd, map[string]any{
+		"type":    "BOM",
+		"formats": []map[string]any{{"mediaType": "application/vnd.cyclonedx+json"}},
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("createArtifact: status=%d body=%s", status, raw)
+	}
+	var artifact tea.Artifact
+	decodeInto(t, raw, &artifact)
+	evidencePath := "/publisher/v1/artifacts/" + artifact.UUID + "/1/evidence"
+
+	status, raw = publisherRequest(t, srv, http.MethodPost, "/publisher/v1/artifacts/"+artifact.UUID+"/1/evidence/prepare", cicd, nil)
+	if status != http.StatusOK {
+		t.Fatalf("prepareArtifactEvidence: status=%d body=%s", status, raw)
+	}
+	var prepared struct {
+		DigestToSign string `json:"digestToSign"`
+	}
+	decodeInto(t, raw, &prepared)
+	sigValue, certPEM := signDigest(t, prepared.DigestToSign)
+
+	// 1. Unsupported signature format.
+	status, raw = publisherRequest(t, srv, http.MethodPost, evidencePath, cicd, map[string]any{
+		"objectDigestValue": prepared.DigestToSign,
+		"signatureFormat":   "cms-detached",
+		"signatureValue":    sigValue,
+		"certificatePem":    certPEM,
+	})
+	decodeInto(t, raw, &errResp)
+	if status != http.StatusBadRequest || errResp.Code != teapublisher.ErrorUnsupportedSignatureFormat {
+		t.Fatalf("unsupported signature format: status=%d code=%q body=%s", status, errResp.Code, raw)
+	}
+
+	// 2. Stale prepare (digest mismatch).
+	status, raw = publisherRequest(t, srv, http.MethodPost, evidencePath, cicd, map[string]any{
+		"objectDigestValue": strings.Repeat("a", 64),
+		"signatureFormat":   "jws-detached",
+		"signatureValue":    sigValue,
+		"certificatePem":    certPEM,
+	})
+	decodeInto(t, raw, &errResp)
+	if status != http.StatusBadRequest || errResp.Code != teapublisher.ErrorDigestMismatch {
+		t.Fatalf("digest mismatch: status=%d code=%q body=%s", status, errResp.Code, raw)
+	}
+
+	// 3. Invalid certificate.
+	status, raw = publisherRequest(t, srv, http.MethodPost, evidencePath, cicd, map[string]any{
+		"objectDigestValue": prepared.DigestToSign,
+		"signatureFormat":   "jws-detached",
+		"signatureValue":    sigValue,
+		"certificatePem":    "not a certificate",
+	})
+	decodeInto(t, raw, &errResp)
+	if status != http.StatusBadRequest || errResp.Code != teapublisher.ErrorCertificateInvalid {
+		t.Fatalf("invalid certificate: status=%d code=%q body=%s", status, errResp.Code, raw)
+	}
+
+	// 4. Signature mismatch: a valid certificate, but a signature produced
+	// by a different key than the one that certificate names.
+	otherSigValue, _ := signDigest(t, prepared.DigestToSign)
+	status, raw = publisherRequest(t, srv, http.MethodPost, evidencePath, cicd, map[string]any{
+		"objectDigestValue": prepared.DigestToSign,
+		"signatureFormat":   "jws-detached",
+		"signatureValue":    otherSigValue,
+		"certificatePem":    certPEM,
+	})
+	decodeInto(t, raw, &errResp)
+	if status != http.StatusBadRequest || errResp.Code != teapublisher.ErrorSignatureInvalid {
+		t.Fatalf("signature mismatch: status=%d code=%q body=%s", status, errResp.Code, raw)
 	}
 }
 

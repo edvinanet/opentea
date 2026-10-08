@@ -9,9 +9,9 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/oej/opentea/internal/httpx"
 	"github.com/oej/opentea/internal/model"
 	"github.com/oej/opentea/internal/repo"
+	"github.com/oej/opentea/pkg/teapublisher"
 )
 
 // credentialContextKey is an unexported type so this package's context key
@@ -64,20 +64,20 @@ func (s *Server) requireScope(minScope string, next http.HandlerFunc) http.Handl
 	return func(w http.ResponseWriter, r *http.Request) {
 		token, ok := bearerToken(r)
 		if !ok {
-			httpx.Unauthorized(w, "missing or malformed Authorization header")
+			unauthorizedErr(w, r, "missing or malformed Authorization header")
 			return
 		}
 		cred, err := s.repo.GetPublisherCredentialByToken(r.Context(), token)
 		if errors.Is(err, repo.ErrNotFound) {
-			httpx.Unauthorized(w, "invalid or revoked bearer token")
+			unauthorizedErr(w, r, "invalid or revoked bearer token")
 			return
 		}
 		if err != nil {
-			httpx.InternalError(w, r, err)
+			internalErr(w, r, err)
 			return
 		}
 		if !scopeSatisfies(cred.Scope, minScope) {
-			httpx.Forbidden(w, "credential scope does not permit this operation")
+			forbiddenErr(w, r, teapublisher.ErrorForbidden, "credential scope does not permit this operation")
 			return
 		}
 		next(w, r.WithContext(withCredential(r.Context(), cred)))

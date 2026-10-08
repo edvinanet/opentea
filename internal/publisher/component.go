@@ -24,7 +24,7 @@ func (s *Server) findComponents(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query().Get("q")
 	components, hasNext, err := s.repo.SearchComponents(r.Context(), q, findComponentsLimit)
 	if err != nil {
-		httpx.InternalError(w, r, err)
+		internalErr(w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, teapublisher.ComponentSearchResults{Results: components, HasNext: hasNext})
@@ -43,11 +43,11 @@ func (s *Server) findComponents(w http.ResponseWriter, r *http.Request) {
 func (s *Server) createComponent(w http.ResponseWriter, r *http.Request) {
 	var req teapublisher.ComponentCreate
 	if err := decodeJSON(r, &req); err != nil {
-		httpx.BadRequest(w, "invalid JSON body: "+err.Error())
+		badRequest(w, r, teapublisher.ErrorInvalidRequestBody, "invalid JSON body: "+err.Error())
 		return
 	}
 	if req.Name == "" {
-		httpx.BadRequest(w, "name is required")
+		badRequest(w, r, teapublisher.ErrorMissingField, "name is required", teapublisher.FieldError{Field: "name", Message: "is required"})
 		return
 	}
 	c, err := s.repo.CreateComponent(r.Context(), req.Name, req.Identifiers)
@@ -55,11 +55,11 @@ func (s *Server) createComponent(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteJSON(w, http.StatusConflict, c)
 		return
 	}
-	if writeIdentifierValidationError(w, err) {
+	if writeIdentifierValidationError(w, r, err) {
 		return
 	}
 	if err != nil {
-		httpx.InternalError(w, r, err)
+		internalErr(w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusCreated, c)
@@ -72,16 +72,16 @@ func (s *Server) createComponent(w http.ResponseWriter, r *http.Request) {
 func (s *Server) createComponentRelease(w http.ResponseWriter, r *http.Request) {
 	componentUUID, err := httpx.PathUUID(r, "uuid")
 	if err != nil {
-		httpx.BadRequest(w, "invalid uuid")
+		badRequest(w, r, teapublisher.ErrorInvalidPathParameter, "invalid uuid")
 		return
 	}
 	var req teapublisher.ComponentReleaseCreate
 	if err := decodeJSON(r, &req); err != nil {
-		httpx.BadRequest(w, "invalid JSON body: "+err.Error())
+		badRequest(w, r, teapublisher.ErrorInvalidRequestBody, "invalid JSON body: "+err.Error())
 		return
 	}
 	if req.Version == "" {
-		httpx.BadRequest(w, "version is required")
+		badRequest(w, r, teapublisher.ErrorMissingField, "version is required", teapublisher.FieldError{Field: "version", Message: "is required"})
 		return
 	}
 
@@ -97,14 +97,14 @@ func (s *Server) createComponentRelease(w http.ResponseWriter, r *http.Request) 
 		Identifiers: req.Identifiers,
 	})
 	if errors.Is(err, repo.ErrNotFound) {
-		httpx.NotFound(w)
+		notFoundErr(w, r)
 		return
 	}
-	if writeIdentifierValidationError(w, err) {
+	if writeIdentifierValidationError(w, r, err) {
 		return
 	}
 	if err != nil {
-		httpx.InternalError(w, r, err)
+		internalErr(w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusCreated, cr)

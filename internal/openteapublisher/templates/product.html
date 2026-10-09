@@ -1,0 +1,24 @@
+{{define "content"}}
+<h1>{{.Product.Name}}</h1>
+<p><a href="/targets/{{.Target.UUID}}/products">&larr; Products</a> on {{.Target.Label}}</p>
+{{if .Error}}<div class="error">{{.Error}}</div>{{end}}
+
+<h1>Releases</h1>
+<table>
+  <tr><th>Version</th><th></th></tr>
+  {{range .ProductReleases}}
+  <tr>
+    <td>{{.Version}}</td>
+    <td><a href="/targets/{{$.Target.UUID}}/productReleases/{{.UUID}}">Open</a></td>
+  </tr>
+  {{else}}
+  <tr><td colspan="2">No releases yet.</td></tr>
+  {{end}}
+</table>
+
+<h1>Create release</h1>
+<form action="/targets/{{.Target.UUID}}/products/{{.Product.UUID}}/releases" method="post">
+  <label>Version<input type="text" name="version" required placeholder="1.0.0"></label>
+  <button type="submit">Create release</button>
+</form>
+{{end}}

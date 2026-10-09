@@ -1827,6 +1827,51 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       plaintext, no encryption-at-rest -- this app must present the actual usable
       credential on outbound calls, unlike opentea's own `publisher_credential`, which only
       ever stores a verifier-side hash.
+      **Critical-path publishing workflow shipped, 2026-10-09** (`design/publisher-
+      service.md` §18.3/§18.7/§18.9/§18.10): the first screens that actually drive a real
+      publish, built end-to-end before polishing any one screen in isolation (Components
+      §18.4 and Artifacts review §18.5 stay explicitly out of scope -- artifacts must
+      already exist on the target, created out-of-band via `/cicdapi/v1` or directly
+      against `/publisher/v1`). New `internal/openteapublisher/targetclients.go`
+      (`teaPublisherClientForTarget` -- renamed/moved out of `cicdapi.go`, no longer
+      CI/CD-specific; new `teaClientForTarget`, the read side, authenticated with the same
+      stored credential rather than anonymously, so a target that's narrowed its default
+      entitlement is still fully readable; `decodeAPIErrorMessage`, decoding a
+      `*teapublisherclient.APIError` body as the new structured `teapublisher.ErrorResponse`
+      for a human-readable message). `teaClientForTarget`'s `/tea/v1` root is computed from
+      `Target.BaseURL`'s scheme+host plus the default `/tea/v1` path
+      (`defaultConsumerAPIBasePath`) -- a documented v1 assumption (this target is this
+      project's own server on its default consumer path), not a generic "any TEA server"
+      discovery mechanism; real TEA discovery (`.well-known/tea`) was considered and
+      rejected for this because opentea's own server doesn't serve it (by design -- that's
+      static/web-server-layer content, not something `internal/api` produces, per the
+      user). `internal/openteapublisher/products.go` (minimal Products/Releases forms --
+      name/version only) and `collectiondraft.go` (the release detail page: current live
+      collection, draft panel with diff, add/remove-artifact-by-reference via GET-mutate-PUT
+      with `ExpectedRevision` as an optimistic-concurrency courtesy, protocol-level
+      Approve/Reject gated by `requireApprovalRole` -- reusing `security_compliance_approver`,
+      closing §18.9's own named gap -- and one "Sign & Publish" action doing
+      prepare→generate-ephemeral-key→sign→commit→destroy-key in a single request, §18.10).
+      `actor` on every write is always the session's own `staff.Username`, never a form
+      field (§18.1). New templates `products.html`/`product.html`/`productrelease.html`; a
+      "Products" link added per target row on the dashboard (no new global nav item --
+      target-scoped screens have nothing to scope to without one selected first).
+      **Real, concrete limitation found while building this** (not fixed here, see the
+      dedicated "derive approval actor from authenticated identity" entry below, updated
+      2026-10-09 with the confirmed consequence): a draft assembled through
+      `opentea-publisher`'s own GUI can never be approved through that same GUI, for any
+      staff member, because every GUI action for one target shares the exact same stored
+      credential and the target's own maker-checker partly keys off credential identity, not
+      only the asserted actor string. Verified: `internal/openteapublisher/products_test.go`/
+      `collectiondraft_test.go` (auth/role-gating only -- this package has no fake-target-
+      server precedent); `cmd/opentea/productrelease_gui_test.go`'s
+      `TestPublisherGUICollectionDraftAddRemove` (add/remove mechanics against a real target)
+      and `TestPublisherGUIApproveAndSignPublish` (approve + Sign & Publish against a real
+      target, working around the limitation above by assembling that test's draft with a
+      second, separate credential -- confirmed via the target's own repo that a real
+      evidence bundle was actually stored, and via its consumer `/tea/v1` that the published
+      collection has the right version/artifacts). Full suite, `-race`, `golangci-lint`,
+      `go vet`, `gofmt` clean.
 - [ ] **`opentea-publisher`: GUI requirements pass** (`design/publisher-service.md` §18,
       v0.22, companion to §7) maps the manufacturer process onto actual screens instead of
       protocol operations, and surfaces three concrete gaps the backend scaffold didn't:
@@ -1899,18 +1944,83 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       *also* holding the approver role, the approver succeeds, both create and decide are
       audited), a manual smoke test against the real built binary (admin/requester blocked,
       approver succeeds, self-approval blocked, all via `curl`), `make check`/
-      `golangci-lint`/`go test -race` all clean. **Deliberately not built**: no screen
-      consumes an approved request yet -- there's no "Sign & Publish" action to gate on one
-      (§18.7's draft-assembly screen and §18.10 both still unbuilt); `release_uuid` is typed
-      in by hand with no live `pkg/teaclient` lookup to resolve it to a human-readable label
-      (deferred until there's a real draft to source a reference from, not built
-      speculatively); this is a plain per-role approval count, not a true multi-team system --
+      `golangci-lint`/`go test -race` all clean. **Deliberately not built**: `release_uuid`
+      is typed in by hand with no live `pkg/teaclient` lookup to resolve it to a
+      human-readable label (deferred until there's a real draft to source a reference
+      from, not built speculatively); this is a plain per-role approval count, not a true
+      multi-team system --
       no way to require one legal sign-off *and* one security sign-off specifically, §10.1's
       own collapse of "legal, compliance, security engineering" into one
       `security_compliance_approver` role is carried through as-is, not re-litigated; no
       federated-identity role mapping (§10.1's own separately-open OIDC/LDAP claim-to-role
       question) -- `workflow_role` is set by hand today by whichever admin creates the
       account.
+      **Updated 2026-10-09**: §18.7's draft-assembly screen and §18.10's "Sign & Publish"
+      action now both exist too (see the **Reference publisher** entry's own "Critical-path
+      publishing workflow shipped" paragraph above) -- but neither checks this workflow's
+      approval status, and this workflow doesn't gate either of them. See the two new
+      entries immediately below.
+- [ ] **`opentea-publisher`: stage artifacts and collection drafts locally before
+      publication** (`design/publisher-service.md` §17.4/§18.7/§18.10, v0.31) -- found
+      2026-10-09 while discussing how legal/compliance review (the business-approval
+      workflow above) should actually work: today, an artifact's real file content reaches
+      the target -- a customer-facing TEA service -- the moment CI/CD uploads it via
+      `/cicdapi/v1`, and a collection draft lives on the target from the moment it's first
+      assembled, both well before any approval (business or protocol) exists. Neither is
+      actually gated by anything; "approval" today is purely advisory.
+
+      Decided shape: `opentea-publisher` stages both locally -- its own blob store (same
+      `storage.Storage` interface `cmd/opentea` already uses, new disk path) for artifact
+      file content, and new tables for a locally-tracked draft (artifact references,
+      actor, revision, diff) -- and only pushes to the target once, atomically, at the
+      moment of publish: create the real artifact(s), upload their content, assemble the
+      real collection draft, then immediately prepare/sign/commit, all in the same
+      `signAndPublishForm` request that already exists. Before that moment, nothing about
+      the pending release is reachable on the target at all -- not even an empty draft or
+      an artifact shell with no bytes behind it.
+
+      Also decided: "Sign & Publish" must require a matching *approved* business-approval
+      request (same target + release + revision) before doing anything, not just the
+      target's own protocol-level approval -- re-requiring business sign-off if the staged
+      draft changes after approval, exactly like the protocol-level approval already resets
+      on edit. Surface this plainly on the release page (a status badge, the button hidden/
+      disabled until both approvals are in hand), not a silent failure at publish time.
+
+      **Real, consequential rework, not an addition**: `/cicdapi/v1`'s artifact-create/
+      upload handlers (`cicdapi.go`) stop proxying straight through to the target and
+      write to local storage instead, returning a locally-scoped id, not the target's;
+      `collectiondraft.go`'s GET/PUT/diff logic needs a local equivalent instead of calling
+      the target's real collection-draft endpoints; §18.5's artifacts review screen
+      (previously out of scope for the critical-path pass, `docs/security-review...` not
+      applicable here) becomes directly relevant, since staged artifacts now need
+      something to actually review before they're ever real. Not designed in implementation
+      detail yet -- file layout, local id scheme, retention/cleanup for a rejected or
+      abandoned staged release, and how (or whether) a staged draft's diff-against-current
+      is computed without a live target round-trip are all still open.
+- [ ] **Add signing support for publisher** (`design/publisher-service.md` §9.5/§17.5/
+      §18.10, v0.31) -- named 2026-10-09 while discussing the staging work above: real
+      deployments need more than v1's ephemeral-self-signed-key-only model
+      (`internal/trust.GenerateEphemeralKey`, §17.5). Three concrete cases named so far,
+      really two: (a) today's ephemeral self-sign (Mode 1, built); (b) a long-lived
+      certificate from a commercial CA, private key in an external HSM (Mode 2, live);
+      (c) a private PKI's own CA issuing that certificate instead -- same mechanism as
+      (b), a different, deployment-configured trust anchor, not a third mode.
+
+      §9.5 already worked out what a *target* needs for Mode 2 (X.509 chain validation
+      against a configured trust store, `cms-detached` signature support -- the format
+      name exists in `internal/trust.SignatureFormat`'s vocabulary, nothing implements it
+      anywhere) -- none of that exists on `internal/publisher` today either, a prerequisite
+      for this regardless of what `opentea-publisher` does. What's newly named here is the
+      *publisher-side* gap: `signAndPublishForm` (§18.10) hardcodes Mode 1 -- generates its
+      own key, signs, discards -- with no way to select a different backend. Needs its own
+      design pass: a pluggable signing-backend abstraction (at minimum: ephemeral self-sign,
+      a live HSM/KMS call-out, and an export-the-TBS-package-and-wait-for-it-back flow for
+      an offline/air-gapped ceremony, §9.5's own three cases), chosen per target or per
+      release; whether/how `opentea-publisher` stores a long-lived certificate reference
+      (never the private key itself, which stays in the HSM) once Mode 2 exists; and how a
+      target advertises whether it supports Mode 2 at all (§9.5's own open question, still
+      unresolved) so a publisher doesn't have to find out by failing. Not designed further
+      here.
 - [ ] **`opentea-publisher`: CI/CD-facing API and capability scoping** (`design/publisher-
       service.md` §18.11, v0.24) resolves the gap §18.11 originally surfaced:
       `opentea-publisher` always presents a "full" credential to a target regardless of who
@@ -2018,6 +2128,33 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       workload `cicd`/`full` credential). Explicitly not designed further here — needs its
       own pass, and a real decision about `cmd/openteapublisher`'s intended long-term role in
       the approval flow, before either path should be implemented.
+      **2026-10-09, concretely confirmed via a real end-to-end test**: while building
+      `internal/openteapublisher`'s critical-path GUI (products/releases, collection-draft
+      panel, protocol-level approve/reject, "Sign & Publish" — `products.go`/
+      `collectiondraft.go`), the practical consequence of this entry's own gap turned out
+      sharper than "weak attribution": **a draft `PUT` through `opentea-publisher`'s own GUI
+      can never be approved through that same GUI, for any staff member, ever.**
+      `internal/repo.DecideCollectionDraft` rejects self-approval two ways — the asserted
+      `actor` string (correctly differs between two real staff members), *and*
+      `decidingCredentialUUID == row.draftedByCredentialUUID` (collectiondraft.go:406-410,
+      added deliberately so one caller can't defeat actor-string maker-checker by typing two
+      names under one credential). Since every GUI action for one target presents the exact
+      same stored `Target.BearerToken` regardless of which staff member clicked, the
+      credential check always fires, even when the actor strings genuinely differ. Confirmed
+      by a first attempt at `cmd/opentea/productrelease_gui_test.go`'s end-to-end test, which
+      failed with `ErrSelfApproval` for two distinct staff accounts before being restructured
+      around it. Worked around *in the test* (not fixed): `TestPublisherGUIApproveAndSignPublish`
+      assembles its draft directly against the target with a second, separate credential, not
+      through the GUI — proving approve/Sign & Publish genuinely work, but only for a draft
+      assembled by some other credential (e.g. CI/CD calling the target directly). This is a
+      real, user-facing v1 limitation, not a test artifact: a manufacturer whose staff only
+      ever use `opentea-publisher`'s own "add artifact to draft" GUI action
+      (`TestPublisherGUICollectionDraftAddRemove` covers that mechanic working fine on its
+      own) will find that *same* draft permanently unapprovable through the same GUI. Doesn't
+      change which of (a)/(b) above is right — if anything, strengthens the case for (b),
+      since (a)'s target-session-cookie alternative wouldn't hit this specific collision (a
+      real human's own session, not a shared credential, would draft each time) — but
+      confirms this isn't a hypothetical, deferrable corner case.
 - [ ] **Publisher platform: domain-ownership verification** (found 2026-08-29, during a DNS
       access-management discussion for the publisher platform) — before letting a
       manufacturer publish under a given domain, the publisher platform needs to verify they

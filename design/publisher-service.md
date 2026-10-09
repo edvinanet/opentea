@@ -1,6 +1,6 @@
 # TEA Publisher — protocol and service design
 
-**Status:** draft v0.30, for discussion. Nothing here is scheduled or approved; no
+**Status:** draft v0.31, for discussion. Nothing here is scheduled or approved; no
 implementation exists yet. This document is the design opentea's `TODO.md` "Reference
 publisher" entry has been blocked on since 2026-07-04.
 
@@ -403,6 +403,36 @@ than repeated here.
   than trusting a caller-supplied value, closing the back-date/future-date risk the
   review flagged. `releaseDate` is unaffected -- it was always, and remains, the
   genuinely caller-supplied manufacturer business date.
+- **v0.31 (this revision)** records three decisions reached while discussing the
+  critical-path GUI's actual legal/compliance review needs -- not yet designed in detail
+  or built, tracked as new `TODO.md` items, but real enough to change how §17.4/§17.5/
+  §18.8-18.10 should eventually be read:
+  1. **§17.4's "live, not cached" no longer applies to artifacts or collection drafts.**
+     It still holds for products/releases (stable identity, no sensitive content) -- but
+     an artifact's actual file content, and a collection draft's assembled state, are
+     exactly the things that shouldn't be reachable on a customer-facing target before
+     they're cleared. Revised shape: `opentea-publisher` stages both locally (its own
+     blob store + draft state) and only pushes to the target -- creating the real
+     artifact, assembling the real draft, then immediately signing and committing -- in
+     one atomic step once approval (both kinds, below) is in hand. This is a materially
+     bigger change to §18.7's mechanics than it sounds: the draft stops being a thing the
+     GUI reads/writes on the target at all until that one publish moment.
+  2. **§18.8's internal business-approval workflow (legal/compliance/security) needs to
+     actually gate §18.10's "Sign & Publish",** not just exist alongside it as a
+     separate, unconnected pre-check. Today neither §18.8 nor §18.9's protocol-level
+     approval is checked by anything before `commitCollectionDraft` could be called,
+     other than the target's own, unrelated protocol-level approval requirement.
+  3. **Signing needs to be genuinely pluggable per backend, not just per the two modes
+     §9.5 already describes in the abstract.** Three concrete cases named: (a) §17.5's
+     existing ephemeral self-signed key (Mode 1, built); (b) a long-lived certificate
+     issued by a commercial CA, private key in an external HSM (Mode 2, reachable live);
+     (c) a private PKI's own CA issuing that certificate instead of a commercial one --
+     same mechanism as (b), a different, deployment-configured trust anchor, not a third
+     protocol mode. §9.5 already worked out *what a target needs* for Mode 2 (X.509 chain
+     validation, a trust-anchor configuration, `cms-detached` support) -- what's newly
+     named here is that `opentea-publisher`'s own `signAndPublishForm` (§18.10) needs to
+     stop hardcoding Mode 1 and support selecting a signing backend instead. Not designed
+     further here -- see `TODO.md`'s new **"add signing support for publisher"** entry.
 
 ## 1. Problem statement
 
@@ -1890,14 +1920,21 @@ Narrower than it looks, because collection-draft staging deliberately stays targ
 - **Signing keys — none, for v1** (settled below, §17.5).
 - **No target-data cache** (settled below, §17.4).
 
-### 17.4 Read strategy: live, not cached
+### 17.4 Read strategy: live, not cached -- products/releases only (revised v0.31)
 
-The GUI queries a target live via `pkg/teaclient` for browsing (products, releases,
-existing collections) rather than mirroring/caching that data locally. No staleness, no
-sync-consistency design needed. Revisit only if latency or call volume becomes a real,
-measured problem — not speculatively.
+The GUI queries a target live via `pkg/teaclient` for browsing products and releases
+(stable identity, no sensitive content) rather than mirroring/caching that data locally.
+No staleness, no sync-consistency design needed there, and this part is unchanged.
 
-### 17.5 Signing: ephemeral-only for v1
+**Artifacts and collection drafts are the exception, as of v0.31.** Customer-facing
+content shouldn't exist on a reachable target before it clears legal/compliance and
+protocol approval -- so unlike products/releases, these stage locally in
+`opentea-publisher` first (its own blob store + draft state) and only reach the target
+atomically, at the moment of publish. Not designed in detail or built yet -- see
+`TODO.md`'s new **"stage artifacts and collection drafts locally before publication"**
+entry.
+
+### 17.5 Signing: ephemeral-only for v1 (pluggability named, not built, v0.31)
 
 v1 supports only §9.5's first signing mode — a fresh Ed25519 key generated per signing
 event, used immediately, discarded (`internal/trust.GenerateEphemeralKey`/`Sign`/`Destroy`)
@@ -1908,6 +1945,14 @@ shared restriction). This means **no persistent key storage of any kind** is nee
 possibly HSM/PKCS#11-backed, possibly air-gapped) stays designed but unbuilt; it would need
 real secrets-storage design (HSM/PKCS#11 integration or an encrypted-at-rest vault) whenever
 it's picked up.
+
+**Named as a concrete, prioritized requirement, not just a someday-maybe, as of v0.31**:
+a commercial-CA-issued certificate with its key in an external HSM, and a private PKI's own
+CA issuing that certificate instead -- both Mode 2, differing only in which trust anchor a
+target is configured to accept (§9.5's own point). The new implication for
+`opentea-publisher` specifically: §18.10's `signAndPublishForm` needs to stop hardcoding
+Mode 1 and support choosing a signing backend instead. Not designed further here -- see
+`TODO.md`'s new **"add signing support for publisher"** entry.
 
 ### 17.6 CI/CD surface
 
@@ -2047,12 +2092,21 @@ must be a different verified identity than whoever built the draft"). `required_
 (default 1) lets a deployment ask for more than one distinct approver; a single rejection
 always closes the request immediately, matching the asymmetry of §18.9's own approve/reject.
 
-**Deliberately not built in this pass**: no screen consumes an approved request yet — there
-is no "Sign & Publish" action to block on one (§18.10 still unbuilt, §18.7's draft-assembly
-screen doesn't exist). And this is a plain per-approver-role count, not a true multi-team
-system — there's no way to require, say, one legal sign-off *and* one security sign-off
-specifically; §10.1's own collapse of "legal, compliance, security engineering" down to a
-single `security_compliance_approver` role is carried through as-is here, not re-litigated.
+**Deliberately not built in this pass**: this is a plain per-approver-role count, not a
+true multi-team system — there's no way to require, say, one legal sign-off *and* one
+security sign-off specifically; §10.1's own collapse of "legal, compliance, security
+engineering" down to a single `security_compliance_approver` role is carried through as-is
+here, not re-litigated.
+
+**Updated, v0.31**: §18.7's draft-assembly screen and §18.10's "Sign & Publish" action now
+both exist (shipped 2026-10-09) — but neither checks this workflow's own approval status
+yet; the two remain unconnected. Making "Sign & Publish" actually require a matching
+*approved* request (same target + release + revision, re-requiring sign-off if the draft
+changes after approval, exactly like §18.9's own protocol-level approval already does) is
+the real, still-open gap this surfaces now that both halves exist — tracked in `TODO.md`'s
+new **"stage artifacts and collection drafts locally before publication"** entry, since
+it's naturally part of the same piece of work (both need the draft to be something
+`opentea-publisher` itself tracks state for, not just a pass-through to the target).
 
 ### 18.9 Protocol-level approval (maker-checker)
 
@@ -2063,19 +2117,16 @@ should also disable/hide the Approve button client-side when the logged-in staff
 the drafter, as a UX courtesy, not a substitute for the server-side check that actually
 enforces it.
 
-**Gap this surfaces (updated, v0.23)**: nothing today limits *which* staff members may
-approve *this*, protocol-level, decision specifically. `staff` gained two role axes since
-this gap was first written — `staff.role` (admin/member, administrative capability)
-and, as of §18.8's own v0.23 scaffold, `staff.workflow_role`
-(`security_compliance_approver` and friends, §10.1's workflow vocabulary) — but neither is
-wired into this collection-draft Approve/Reject action; the protocol's own maker-checker
-still only checks "not the same person who drafted it," not "is this person authorized to
-approve at all." Reusing `security_compliance_approver` here too (rather than inventing a
-third axis) is the obvious next step once this screen is actually built, not done now —
-left open the same way it was before, just with the building block it was missing now
-sitting right next to it.
+**Gap this surfaces (updated, v0.23) — closed, v0.31 (shipped 2026-10-09)**: nothing
+previously limited *which* staff members could approve *this*, protocol-level, decision
+specifically. `requireApprovalRole` now gates it too (`collectiondraft.go`'s
+`decideCollectionDraftForm`), reusing `staff.workflow_role ==
+"security_compliance_approver"` exactly as anticipated here, rather than inventing a third
+axis. A real, separate limitation remains per §18.8's own update above: this protocol-level
+approval and §18.8's internal business-approval workflow still don't gate each other, or
+"Sign & Publish," in any way.
 
-### 18.10 Prepare, sign, and commit
+### 18.10 Prepare, sign, and commit (shipped 2026-10-09; mechanics changing, v0.31)
 
 One **"Sign & Publish"** action, not a multi-step ceremony — v1's ephemeral-only signing
 model (§17.5) makes this possible: server-side, in one request, `opentea-publisher` calls
@@ -2086,7 +2137,18 @@ evidence. No separate "download this digest, sign it elsewhere, upload the signa
 ceremony is needed — that's only required for §9.5's second (Web PKI/HSM/air-gapped) mode,
 out of scope for v1 (§17.5). On success, show the new collection version and a link to it on
 the target's real `/tea/v1` — a genuine, externally-verifiable link, since commit only
-succeeds after atomic evidence-bound publish.
+succeeds after atomic evidence-bound publish. Built as described above, against a draft
+that already lived on the target the whole time (today's architecture).
+
+**Two changes coming per v0.31, not built yet**: (1) this action will need to require a
+matching approved business-approval request (§18.8) before doing anything, not just
+immediately call `PrepareXCollectionCommit`; (2) once drafts/artifacts stage locally
+(§17.4), "prepare" stops being a call to the target at all until this single action —
+it becomes: push the staged artifacts and draft to the target for the first time, then
+immediately prepare/sign/commit, all still in one request. The externally-verifiable
+`/tea/v1` link at the end is unaffected either way. See `TODO.md`'s new **"stage artifacts
+and collection drafts locally before publication"** and **"add signing support for
+publisher"** entries.
 
 ### 18.11 A credential-scoping requirement, resolved (v0.24)
 

@@ -62,27 +62,13 @@ func writeClientError(w http.ResponseWriter, r *http.Request, err error) {
 	httpx.InternalError(w, r, err)
 }
 
-// clientForTarget builds a teapublisherclient.Client for targetUUID,
-// presenting that target's own stored (full-scoped) bearer_token --
-// requireCICDCredential has already established the caller may act as
-// cicd for this target; the target itself never sees "cicd" here, since
-// it isn't a distinct credential on that side, only a narrower one issued
-// by opentea-publisher (cicd_credential).
-func (s *Server) clientForTarget(ctx context.Context, targetUUID string) (*teapublisherclient.Client, error) {
-	target, err := s.repo.GetTarget(ctx, targetUUID)
-	if err != nil {
-		return nil, err
-	}
-	return teapublisherclient.NewClient(target.BaseURL, target.BearerToken), nil
-}
-
 func (s *Server) cicdCreateArtifact(w http.ResponseWriter, r *http.Request, targetUUID string) {
 	var req teapublisher.ArtifactCreate
 	if err := decodeJSON(r, &req); err != nil {
 		httpx.BadRequest(w, "invalid JSON body: "+err.Error())
 		return
 	}
-	client, err := s.clientForTarget(r.Context(), targetUUID)
+	client, err := s.teaPublisherClientForTarget(r.Context(), targetUUID)
 	if err != nil {
 		httpx.InternalError(w, r, err)
 		return
@@ -124,7 +110,7 @@ func (s *Server) cicdUploadArtifactFile(w http.ResponseWriter, r *http.Request, 
 	}
 	defer func() { _ = file.Close() }()
 
-	client, err := s.clientForTarget(r.Context(), targetUUID)
+	client, err := s.teaPublisherClientForTarget(r.Context(), targetUUID)
 	if err != nil {
 		httpx.InternalError(w, r, err)
 		return
@@ -171,7 +157,7 @@ func (s *Server) cicdUploadArtifactSignatureFile(w http.ResponseWriter, r *http.
 	}
 	defer func() { _ = file.Close() }()
 
-	client, err := s.clientForTarget(r.Context(), targetUUID)
+	client, err := s.teaPublisherClientForTarget(r.Context(), targetUUID)
 	if err != nil {
 		httpx.InternalError(w, r, err)
 		return
@@ -194,7 +180,7 @@ func (s *Server) cicdPrepareArtifactEvidence(w http.ResponseWriter, r *http.Requ
 		httpx.BadRequest(w, "invalid version")
 		return
 	}
-	client, err := s.clientForTarget(r.Context(), targetUUID)
+	client, err := s.teaPublisherClientForTarget(r.Context(), targetUUID)
 	if err != nil {
 		httpx.InternalError(w, r, err)
 		return
@@ -223,7 +209,7 @@ func (s *Server) cicdSubmitArtifactEvidence(w http.ResponseWriter, r *http.Reque
 		httpx.BadRequest(w, "invalid JSON body: "+err.Error())
 		return
 	}
-	client, err := s.clientForTarget(r.Context(), targetUUID)
+	client, err := s.teaPublisherClientForTarget(r.Context(), targetUUID)
 	if err != nil {
 		httpx.InternalError(w, r, err)
 		return
@@ -306,7 +292,7 @@ func (s *Server) cicdPutCollectionDraft(ops collectionDraftOps) cicdHandler {
 			httpx.BadRequest(w, "invalid JSON body: "+err.Error())
 			return
 		}
-		client, err := s.clientForTarget(r.Context(), targetUUID)
+		client, err := s.teaPublisherClientForTarget(r.Context(), targetUUID)
 		if err != nil {
 			httpx.InternalError(w, r, err)
 			return
@@ -327,7 +313,7 @@ func (s *Server) cicdGetCollectionDraft(ops collectionDraftOps) cicdHandler {
 			httpx.BadRequest(w, "invalid uuid")
 			return
 		}
-		client, err := s.clientForTarget(r.Context(), targetUUID)
+		client, err := s.teaPublisherClientForTarget(r.Context(), targetUUID)
 		if err != nil {
 			httpx.InternalError(w, r, err)
 			return
@@ -348,7 +334,7 @@ func (s *Server) cicdDeleteCollectionDraft(ops collectionDraftOps) cicdHandler {
 			httpx.BadRequest(w, "invalid uuid")
 			return
 		}
-		client, err := s.clientForTarget(r.Context(), targetUUID)
+		client, err := s.teaPublisherClientForTarget(r.Context(), targetUUID)
 		if err != nil {
 			httpx.InternalError(w, r, err)
 			return
@@ -368,7 +354,7 @@ func (s *Server) cicdPrepareCollectionCommit(ops collectionDraftOps) cicdHandler
 			httpx.BadRequest(w, "invalid uuid")
 			return
 		}
-		client, err := s.clientForTarget(r.Context(), targetUUID)
+		client, err := s.teaPublisherClientForTarget(r.Context(), targetUUID)
 		if err != nil {
 			httpx.InternalError(w, r, err)
 			return
@@ -389,7 +375,7 @@ func (s *Server) cicdCancelPrepareCollectionCommit(ops collectionDraftOps) cicdH
 			httpx.BadRequest(w, "invalid uuid")
 			return
 		}
-		client, err := s.clientForTarget(r.Context(), targetUUID)
+		client, err := s.teaPublisherClientForTarget(r.Context(), targetUUID)
 		if err != nil {
 			httpx.InternalError(w, r, err)
 			return
@@ -414,7 +400,7 @@ func (s *Server) cicdCommitCollectionDraft(ops collectionDraftOps) cicdHandler {
 			httpx.BadRequest(w, "invalid JSON body: "+err.Error())
 			return
 		}
-		client, err := s.clientForTarget(r.Context(), targetUUID)
+		client, err := s.teaPublisherClientForTarget(r.Context(), targetUUID)
 		if err != nil {
 			httpx.InternalError(w, r, err)
 			return

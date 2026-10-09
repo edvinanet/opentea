@@ -38,4 +38,24 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /cicd-credentials", s.requireRole(StaffRoleAdmin, s.cicdCredentialsPage))
 	mux.HandleFunc("POST /cicd-credentials", s.requireRole(StaffRoleAdmin, s.createCICDCredentialForm))
 	mux.HandleFunc("POST /cicd-credentials/{uuid}/revoke", s.requireRole(StaffRoleAdmin, s.revokeCICDCredentialForm))
+
+	// Critical-path publishing workflow (§18.3/§18.7/§18.9/§18.10):
+	// products/releases, collection-draft assembly, protocol-level
+	// approval, and Sign & Publish -- every route target-scoped under
+	// /targets/{targetUuid}/..., reached via the dashboard's per-target
+	// "Products" link rather than a global nav item (§18.1). Any
+	// authenticated staff member may do everything here except decide a
+	// protocol-level approve/reject, which requireApprovalRole reserves
+	// for a security_compliance_approver (§18.9's own named gap, closed
+	// here by reusing that same role).
+	mux.HandleFunc("GET /targets/{targetUuid}/products", s.requireSession(s.productsPage))
+	mux.HandleFunc("POST /targets/{targetUuid}/products", s.requireSession(s.createProductForm))
+	mux.HandleFunc("GET /targets/{targetUuid}/products/{uuid}", s.requireSession(s.productPage))
+	mux.HandleFunc("POST /targets/{targetUuid}/products/{uuid}/releases", s.requireSession(s.createProductReleaseForm))
+
+	mux.HandleFunc("GET /targets/{targetUuid}/productReleases/{uuid}", s.requireSession(s.productReleasePage))
+	mux.HandleFunc("POST /targets/{targetUuid}/productReleases/{uuid}/collectionDraft", s.requireSession(s.updateCollectionDraftForm))
+	mux.HandleFunc("POST /targets/{targetUuid}/productReleases/{uuid}/collectionDraft/approve", s.requireApprovalRole(s.decideCollectionDraftForm(true)))
+	mux.HandleFunc("POST /targets/{targetUuid}/productReleases/{uuid}/collectionDraft/reject", s.requireApprovalRole(s.decideCollectionDraftForm(false)))
+	mux.HandleFunc("POST /targets/{targetUuid}/productReleases/{uuid}/collectionDraft/signAndPublish", s.requireSession(s.signAndPublishForm))
 }

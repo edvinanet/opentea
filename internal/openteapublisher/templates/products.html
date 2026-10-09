@@ -1,0 +1,21 @@
+{{define "content"}}
+<h1>Products — {{.Target.Label}}</h1>
+{{if .Error}}<div class="error">{{.Error}}</div>{{end}}
+<table>
+  <tr><th>Name</th><th></th></tr>
+  {{range .Products}}
+  <tr>
+    <td>{{.Name}}</td>
+    <td><a href="/targets/{{$.Target.UUID}}/products/{{.UUID}}">Open</a></td>
+  </tr>
+  {{else}}
+  <tr><td colspan="2">No products on this target yet.</td></tr>
+  {{end}}
+</table>
+
+<h1>Create product</h1>
+<form action="/targets/{{.Target.UUID}}/products" method="post">
+  <label>Name<input type="text" name="name" required></label>
+  <button type="submit">Create product</button>
+</form>
+{{end}}

@@ -105,34 +105,42 @@ func (res *ImportResult) record(kind string, created bool) {
 // (destination) server's own root URL, used to rebuild file URLs; the
 // source server's original URLs in the manifest are never reused directly.
 func Import(ctx context.Context, r *repo.Repo, store storage.Storage, rootURL string, zr *zip.Reader) (*ImportResult, error) {
+	return importBundle(ctx, r, store, rootURL, zr, false)
+}
+
+// ImportUnchecked is Import with the schema-validation-first,
+// file-hash-integrity (missing-file), and blob-content-integrity
+// (checksum-mismatch) checks all skipped -- entity-creation logic is
+// otherwise identical, including the same idempotent dedup rule. See
+// docs/bundle-format.md's "Force-import" section: this exists purely so a
+// disposable test server can be deliberately seeded with bundles that
+// fail normal validation, for
+// docs/consumer-api-conformance-test-rig.md's client-side suite to then
+// prove it detects that corruption on read.
+//
+// This function has no gate of its own -- it trusts the caller completely,
+// same as every other function in this package. The caller (internal/admin's
+// importProduct handler) is responsible for enforcing the
+// TEA_ALLOW_UNSAFE_IMPORT config gate *before* ever calling this; never
+// call it from anywhere that hasn't checked that flag itself.
+//
+// A dangling cross-reference (a product release's components[] naming a
+// component or component release absent from the manifest's own top-level
+// arrays) is NOT bypassed by this: that still fails as a foreign-key
+// violation, a database-level invariant this function doesn't touch.
+func ImportUnchecked(ctx context.Context, r *repo.Repo, store storage.Storage, rootURL string, zr *zip.Reader) (*ImportResult, error) {
+	return importBundle(ctx, r, store, rootURL, zr, true)
+}
+
+// importBundle is Import/ImportUnchecked's shared implementation.
+func importBundle(ctx context.Context, r *repo.Repo, store storage.Storage, rootURL string, zr *zip.Reader, unsafe bool) (*ImportResult, error) {
 	if err := checkZipResourceLimits(zr); err != nil {
 		return nil, err
 	}
 
-	manifestRaw, err := readZipFile(zr, "manifest.json", maxManifestSize)
+	m, err := decodeAndValidateManifest(zr, unsafe)
 	if err != nil {
 		return nil, err
-	}
-
-	// Schema validation happens on the raw bytes, before the manifest is
-	// decoded into Go structs or anything is written to the repository --
-	// a non-conformant bundle is rejected outright, not partially imported.
-	if err := ValidateManifest(manifestRaw); err != nil {
-		return nil, fmt.Errorf("bundle manifest rejected: %w", err)
-	}
-
-	var m Manifest
-	if err := json.Unmarshal(manifestRaw, &m); err != nil {
-		return nil, fmt.Errorf("decode manifest.json: %w", err)
-	}
-
-	// Mirrors Check's own MissingFiles check (check.go): a checksum the
-	// manifest references with no backing files/ entry is rejected here
-	// too, before anything is written -- Import is documented (CheckReport's
-	// own doc comment) as providing the same guarantees as Check, as a side
-	// effect of actually applying the bundle, not a weaker subset of them.
-	if missing := missingFileHashes(zr, m); len(missing) > 0 {
-		return nil, fmt.Errorf("bundle references %d checksum(s) with no corresponding files/ entry, e.g. files/%s", len(missing), missing[0])
 	}
 
 	sha256ToMediaType := collectMediaTypes(m)
@@ -148,46 +156,88 @@ func Import(ctx context.Context, r *repo.Repo, store storage.Storage, rootURL st
 	// (UpsertBlob, inside importBlobs) does still participate in this
 	// transaction, so it never survives with nothing referencing it.
 	err = r.WithTx(ctx, func(txRepo *repo.Repo) error {
-		sha256ToURL, err := importBlobs(ctx, txRepo, store, zr, rootURL, sha256ToMediaType)
-		if err != nil {
-			return err
-		}
-
-		productCreated, err := txRepo.ImportProduct(ctx, m.Product.UUID, m.Product.Name, m.Product.Identifiers)
-		if err != nil {
-			return fmt.Errorf("import product: %w", err)
-		}
-		res.ProductCreated = productCreated
-		res.record("product", productCreated)
-		if err := importCLE(ctx, txRepo, repo.OwnerProduct, m.Product.UUID, m.Product.CLE, res); err != nil {
-			return err
-		}
-
-		if err := importProductReleases(ctx, txRepo, m, res); err != nil {
-			return err
-		}
-		if err := importComponents(ctx, txRepo, m, res); err != nil {
-			return err
-		}
-		if err := importComponentReleases(ctx, txRepo, m, sha256ToURL, res); err != nil {
-			return err
-		}
-		// Component links are made only now, after every component release
-		// they might pin has been imported -- product_release_component's FK
-		// on component_release_uuid would otherwise fail for a pinned ref.
-		if err := importComponentLinks(ctx, txRepo, m); err != nil {
-			return err
-		}
-		if err := importCollections(ctx, txRepo, m, sha256ToURL, res); err != nil {
-			return err
-		}
-		return nil
+		return importAllEntities(ctx, txRepo, store, zr, rootURL, m, sha256ToMediaType, unsafe, res)
 	})
 	if err != nil {
 		return nil, err
 	}
 
 	return res, nil
+}
+
+// decodeAndValidateManifest reads and (unless unsafe) validates
+// manifest.json, decoding it into a Manifest either way. Split out of
+// importBundle purely to keep that function's own branching within this
+// project's complexity budget.
+func decodeAndValidateManifest(zr *zip.Reader, unsafe bool) (Manifest, error) {
+	manifestRaw, err := readZipFile(zr, "manifest.json", maxManifestSize)
+	if err != nil {
+		return Manifest{}, err
+	}
+
+	// Schema validation happens on the raw bytes, before the manifest is
+	// decoded into Go structs or anything is written to the repository --
+	// a non-conformant bundle is rejected outright, not partially imported.
+	if !unsafe {
+		if err := ValidateManifest(manifestRaw); err != nil {
+			return Manifest{}, fmt.Errorf("bundle manifest rejected: %w", err)
+		}
+	}
+
+	var m Manifest
+	if err := json.Unmarshal(manifestRaw, &m); err != nil {
+		return Manifest{}, fmt.Errorf("decode manifest.json: %w", err)
+	}
+
+	// Mirrors Check's own MissingFiles check (check.go): a checksum the
+	// manifest references with no backing files/ entry is rejected here
+	// too, before anything is written -- Import is documented (CheckReport's
+	// own doc comment) as providing the same guarantees as Check, as a side
+	// effect of actually applying the bundle, not a weaker subset of them.
+	if !unsafe {
+		if missing := missingFileHashes(zr, m); len(missing) > 0 {
+			return Manifest{}, fmt.Errorf("bundle references %d checksum(s) with no corresponding files/ entry, e.g. files/%s", len(missing), missing[0])
+		}
+	}
+	return m, nil
+}
+
+// importAllEntities runs every entity-creation step, in the fixed order
+// the FK dependencies between them require. Split out of importBundle's
+// r.WithTx closure purely to keep that function's own branching within
+// this project's complexity budget.
+func importAllEntities(ctx context.Context, txRepo *repo.Repo, store storage.Storage, zr *zip.Reader, rootURL string, m Manifest, sha256ToMediaType map[string]string, unsafe bool, res *ImportResult) error {
+	sha256ToURL, err := importBlobs(ctx, txRepo, store, zr, rootURL, sha256ToMediaType, unsafe)
+	if err != nil {
+		return err
+	}
+
+	productCreated, err := txRepo.ImportProduct(ctx, m.Product.UUID, m.Product.Name, m.Product.Identifiers)
+	if err != nil {
+		return fmt.Errorf("import product: %w", err)
+	}
+	res.ProductCreated = productCreated
+	res.record("product", productCreated)
+	if err := importCLE(ctx, txRepo, repo.OwnerProduct, m.Product.UUID, m.Product.CLE, res); err != nil {
+		return err
+	}
+
+	if err := importProductReleases(ctx, txRepo, m, res); err != nil {
+		return err
+	}
+	if err := importComponents(ctx, txRepo, m, res); err != nil {
+		return err
+	}
+	if err := importComponentReleases(ctx, txRepo, m, sha256ToURL, res); err != nil {
+		return err
+	}
+	// Component links are made only now, after every component release
+	// they might pin has been imported -- product_release_component's FK
+	// on component_release_uuid would otherwise fail for a pinned ref.
+	if err := importComponentLinks(ctx, txRepo, m); err != nil {
+		return err
+	}
+	return importCollections(ctx, txRepo, m, sha256ToURL, res)
 }
 
 func importProductReleases(ctx context.Context, r *repo.Repo, m Manifest, res *ImportResult) error {
@@ -425,14 +475,24 @@ func collectMediaTypes(m Manifest) map[string]string {
 	return out
 }
 
-// importBlobs stores every files/<sha256> zip entry via store.Put and
-// records it in the repo's blob bookkeeping, verifying that the actual
-// content hash matches the entry's claimed name (its SHA-256) before
-// accepting it -- a bundle whose file bytes don't match its own checksum is
-// rejected as corrupt, and this happens before any distribution or artifact
-// that references it is imported. Returns a sha256 -> destination-server URL
-// map for rewriting entity URLs.
-func importBlobs(ctx context.Context, r *repo.Repo, store storage.Storage, zr *zip.Reader, rootURL string, mediaTypes map[string]string) (map[string]string, error) {
+// importBlobs stores every files/<sha256> zip entry and records it in the
+// repo's blob bookkeeping. In the normal (unsafe=false) path, it verifies
+// the actual content hash matches the entry's claimed name before
+// accepting it -- a bundle whose file bytes don't match its own checksum
+// is rejected as corrupt, before any distribution or artifact that
+// references it is imported. In the force-import (unsafe=true) path, it
+// trusts the claimed name instead of verifying it -- via store's
+// storage.UnsafePutter capability if the backend supports one, so a
+// deliberately corrupt bundle (docs/bundle-format.md's "Force-import"
+// section) actually lands as claimed rather than being caught here; a
+// backend that doesn't implement UnsafePutter falls back to the normal
+// checked path even when unsafe is true, so this specific corruption
+// can't be forced in on such a backend -- a documented, narrower
+// degradation, not a crash or a silent correctness gap. Returns a
+// sha256 -> destination-server URL map for rewriting entity URLs.
+func importBlobs(ctx context.Context, r *repo.Repo, store storage.Storage, zr *zip.Reader, rootURL string, mediaTypes map[string]string, unsafe bool) (map[string]string, error) {
+	unsafePutter, _ := store.(storage.UnsafePutter)
+
 	sha256ToURL := map[string]string{}
 	for _, f := range zr.File {
 		const prefix = "files/"
@@ -445,7 +505,15 @@ func importBlobs(ctx context.Context, r *repo.Repo, store storage.Storage, zr *z
 		if err != nil {
 			return nil, fmt.Errorf("open bundle entry %s: %w", f.Name, err)
 		}
-		actualSHA256, size, err := store.Put(ctx, io.LimitReader(rc, maxZipEntrySize+1))
+
+		var actualSHA256 string
+		var size int64
+		if unsafe && unsafePutter != nil {
+			size, err = unsafePutter.PutUnchecked(ctx, expectedSHA256, io.LimitReader(rc, maxZipEntrySize+1))
+			actualSHA256 = expectedSHA256 // trusted as given, not verified
+		} else {
+			actualSHA256, size, err = store.Put(ctx, io.LimitReader(rc, maxZipEntrySize+1))
+		}
 		_ = rc.Close()
 		if err != nil {
 			return nil, fmt.Errorf("store bundle entry %s: %w", f.Name, err)
@@ -453,7 +521,7 @@ func importBlobs(ctx context.Context, r *repo.Repo, store storage.Storage, zr *z
 		if size > maxZipEntrySize {
 			return nil, fmt.Errorf("bundle entry %s exceeds %d byte limit", f.Name, maxZipEntrySize)
 		}
-		if actualSHA256 != expectedSHA256 {
+		if !unsafe && actualSHA256 != expectedSHA256 {
 			return nil, fmt.Errorf("bundle entry %s is corrupt: actual content hash %s does not match", f.Name, actualSHA256)
 		}
 

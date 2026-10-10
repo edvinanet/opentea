@@ -108,6 +108,20 @@ type Config struct {
 	// refresh token (auth/readme.md). Default matches RFC 6749 section
 	// 5.1's own worked example (expires_in: 3600).
 	AccessTokenTTL time.Duration
+
+	// AllowUnsafeImport gates POST /admin/v1/products/import's force=true
+	// parameter (docs/bundle-import-export-test-rig.md's "Force-import"
+	// section): with this unset (the default), force=true is rejected
+	// outright -- ignored exactly as if it weren't present at all,
+	// regardless of admin role -- so a stray query parameter can never
+	// bypass import validation by accident. Test-tooling only: it exists
+	// so a disposable test server can be deliberately seeded with bundles
+	// that fail normal validation (a checksum that doesn't match its own
+	// stored bytes, a declared checksum with no backing content at all),
+	// for docs/consumer-api-conformance-test-rig.md's client-side suite to
+	// then prove it detects that corruption on read. Never set this on a
+	// real deployment.
+	AllowUnsafeImport bool
 }
 
 // defaultConfigFile is checked automatically if TEA_CONFIG_FILE isn't set.
@@ -163,6 +177,7 @@ func Load() (Config, error) {
 		PublisherLockTTL:         lockTTL,
 		PublisherApprovalTTL:     approvalTTL,
 		AccessTokenTTL:           accessTokenTTL,
+		AllowUnsafeImport:        resolve("TEA_ALLOW_UNSAFE_IMPORT", fileValues, "false") == "true",
 	}, nil
 }
 

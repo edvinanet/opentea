@@ -88,6 +88,44 @@ func (s *FSStorage) Put(ctx context.Context, r io.Reader) (string, int64, error)
 	return sum, size, nil
 }
 
+// PutUnchecked implements UnsafePutter: same write-to-temp-then-rename
+// mechanics as Put, except the final path is built from sha256Hex as
+// given (still validated by pathFor, so this can't escape the blob
+// directory) rather than from a hash this method computes itself -- the
+// one place in this package that doesn't verify its own content-address
+// invariant. See UnsafePutter's doc comment for why this exists and when
+// it's safe to call.
+func (s *FSStorage) PutUnchecked(ctx context.Context, sha256Hex string, r io.Reader) (int64, error) {
+	finalPath, err := s.pathFor(sha256Hex)
+	if err != nil {
+		return 0, err
+	}
+
+	tmp, err := os.CreateTemp(s.dir, "upload-*")
+	if err != nil {
+		return 0, fmt.Errorf("create temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }() // no-op once successfully renamed
+
+	size, err := io.Copy(tmp, r)
+	closeErr := tmp.Close()
+	if err != nil {
+		return 0, fmt.Errorf("write blob: %w", err)
+	}
+	if closeErr != nil {
+		return 0, fmt.Errorf("close temp file: %w", closeErr)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(finalPath), 0o750); err != nil {
+		return 0, fmt.Errorf("create blob subdir: %w", err)
+	}
+	if err := os.Rename(tmpPath, finalPath); err != nil {
+		return 0, fmt.Errorf("finalize blob: %w", err)
+	}
+	return size, nil
+}
+
 // Open implements Storage.
 func (s *FSStorage) Open(ctx context.Context, sha256Hex string) (io.ReadCloser, error) {
 	path, err := s.pathFor(sha256Hex)

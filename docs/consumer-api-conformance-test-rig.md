@@ -72,7 +72,7 @@ measure different failure modes.
 |---|---|
 | Simple | A baseline read of every object kind once; a release's collection history across two versions; an artifact's own version history |
 | Complex | Pagination over a large (100+) object listing; identifier-filtered queries at scale; the same artifact object reachable from multiple distinct collections (shared-artifact reachability); resolving one format among several on a single artifact by media type; a collection with a multi-version history (more than two versions) |
-| Lifecycle & compliance | Lifecycle (CLE) data at every entity level the specification defines it for; every lifecycle event type the specification defines; a compliance-document identifier surviving on the object kinds the specification restricts it to; signature download on an artifact that carries one |
+| Lifecycle & compliance | Lifecycle (CLE) data at every entity level the specification defines it for; every lifecycle event type the specification defines; a compliance-document identifier surviving on the object kinds the specification restricts it to; a format's signature-url field surviving on an artifact that carries one |
 | Deliberately invalid data | A client correctly rejecting an artifact whose downloaded content doesn't match its declared checksum, and correctly handling an artifact whose declared content is entirely unavailable to download — see "Deliberately invalid data" below |
 
 See `docs/bundle-import-export-test-rig.md` for the exact structure of each dataset (exact

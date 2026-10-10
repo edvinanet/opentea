@@ -98,6 +98,49 @@ func TestOpenAndDeleteRejectPathTraversal(t *testing.T) {
 			if err := s.Delete(ctx, p); err == nil {
 				t.Errorf("Delete(%q): expected an error, got none", p)
 			}
+			if _, err := s.PutUnchecked(ctx, p, strings.NewReader("x")); err == nil {
+				t.Errorf("PutUnchecked(%q): expected an error, got none", p)
+			}
 		})
+	}
+}
+
+// TestPutUncheckedStoresUnderClaimedHashRegardlessOfContent is
+// PutUnchecked's whole reason to exist: internal/bundle's force-import
+// path needs to store content under a caller-claimed sha256 even when
+// that claim is wrong, to deliberately create the exact corruption
+// docs/consumer-api-conformance-test-rig.md's client-side suite proves it
+// detects. Put, by contrast, must never allow this -- it always computes
+// and returns the real hash, confirmed separately by
+// TestFSStoragePutOpenDelete.
+func TestPutUncheckedStoresUnderClaimedHashRegardlessOfContent(t *testing.T) {
+	s, err := NewFSStorage(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFSStorage: %v", err)
+	}
+	ctx := context.Background()
+
+	content := []byte("this is not the content that hashes to the claimed name below")
+	const claimedSHA256 = "d2dcfdfce3296e56b200d5a342c5dfa30dcc9e1ef8eacfd3cd1af5bca77bb586" // the real sha256 of "hello, tea", not of content above
+
+	size, err := s.PutUnchecked(ctx, claimedSHA256, bytes.NewReader(content))
+	if err != nil {
+		t.Fatalf("PutUnchecked: %v", err)
+	}
+	if size != int64(len(content)) {
+		t.Fatalf("size = %d, want %d", size, len(content))
+	}
+
+	rc, err := s.Open(ctx, claimedSHA256)
+	if err != nil {
+		t.Fatalf("Open(%s): %v", claimedSHA256, err)
+	}
+	got, err := io.ReadAll(rc)
+	_ = rc.Close()
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(got) != string(content) {
+		t.Fatalf("got %q, want %q -- PutUnchecked must store exactly what it was given, not what it was told", got, content)
 	}
 }

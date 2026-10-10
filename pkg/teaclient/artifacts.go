@@ -111,6 +111,23 @@ func (lw *limitWriter) Write(p []byte) (int, error) {
 // dependency); an unsupported algorithm is caught before the download
 // starts, not after.
 func (c *Client) DownloadAndVerifyTo(ctx context.Context, artifactUUID string, version int, format tea.ArtifactFormat, dst io.Writer) error {
+	return c.downloadContentAndVerifyTo(ctx, "/artifact/"+artifactUUID+"/"+strconv.Itoa(version)+"/download", format, dst)
+}
+
+// DownloadLatestAndVerifyTo is DownloadAndVerifyTo's counterpart for the
+// latest-revision download endpoint (GET /artifact/{uuid}/latest/download)
+// rather than one already-known version -- for a caller that only wants
+// whatever revision is newest right now, not a specific one. Same
+// self-hosted/external resolution and checksum-verification contract as
+// DownloadAndVerifyTo; see its own doc comment for both.
+func (c *Client) DownloadLatestAndVerifyTo(ctx context.Context, artifactUUID string, format tea.ArtifactFormat, dst io.Writer) error {
+	return c.downloadContentAndVerifyTo(ctx, "/artifact/"+artifactUUID+"/latest/download", format, dst)
+}
+
+// downloadContentAndVerifyTo is DownloadAndVerifyTo/DownloadLatestAndVerifyTo's
+// shared implementation, parameterized over the self-hosted download path
+// (versioned or "latest") the two callers differ on.
+func (c *Client) downloadContentAndVerifyTo(ctx context.Context, selfHostedPath string, format tea.ArtifactFormat, dst io.Writer) error {
 	hashers, err := newChecksumHashers(format.Checksums)
 	if err != nil {
 		return err
@@ -123,8 +140,7 @@ func (c *Client) DownloadAndVerifyTo(ctx context.Context, artifactUUID string, v
 			return err
 		}
 	} else {
-		u := c.baseURL + "/artifact/" + artifactUUID + "/" + strconv.Itoa(version) +
-			"/download?mediaType=" + url.QueryEscape(format.MediaType)
+		u := c.baseURL + selfHostedPath + "?mediaType=" + url.QueryEscape(format.MediaType)
 		req, err = http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 		if err != nil {
 			return err
@@ -141,7 +157,7 @@ func (c *Client) DownloadAndVerifyTo(ctx context.Context, artifactUUID string, v
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody))
-		return &APIError{StatusCode: resp.StatusCode, Body: body}
+		return &APIError{StatusCode: resp.StatusCode, ContentType: resp.Header.Get("Content-Type"), Body: body}
 	}
 
 	writers := make([]io.Writer, 0, len(hashers)+1)
@@ -160,6 +176,66 @@ func (c *Client) DownloadAndVerifyTo(ctx context.Context, artifactUUID string, v
 		}
 	}
 	return nil
+}
+
+// DownloadSignature fetches the detached signature for one format of a
+// specific artifact revision (GET /artifact/{uuid}/{version}/signature/download,
+// or the format's own SignatureURL if it names an external location).
+// Unlike DownloadAndVerify/DownloadAndVerifyTo, there is no checksum to
+// verify against: the specification "makes no assumption about the
+// signature technology in use" and defines no checksum field for a
+// signature itself -- this returns the signature exactly as published, for
+// the caller to verify however it knows how to. A 404 with TEAErrorCode
+// "SIGNATURE_NOT_FOUND" means the revision exists but this format has no
+// published signature; "OBJECT_UNKNOWN" means the revision itself is
+// unknown (or concealed) -- both surface as a plain *APIError, distinguish
+// via TEAErrorCode.
+func (c *Client) DownloadSignature(ctx context.Context, artifactUUID string, version int, format tea.ArtifactFormat) ([]byte, error) {
+	return c.downloadSignature(ctx, "/artifact/"+artifactUUID+"/"+strconv.Itoa(version)+"/signature/download", format)
+}
+
+// DownloadLatestSignature is DownloadSignature's counterpart for the
+// latest-revision signature endpoint (GET /artifact/{uuid}/latest/signature/download).
+func (c *Client) DownloadLatestSignature(ctx context.Context, artifactUUID string, format tea.ArtifactFormat) ([]byte, error) {
+	return c.downloadSignature(ctx, "/artifact/"+artifactUUID+"/latest/signature/download", format)
+}
+
+// downloadSignature is DownloadSignature/DownloadLatestSignature's shared
+// implementation, bounded by maxResponseBody like every other in-memory
+// response this package reads.
+func (c *Client) downloadSignature(ctx context.Context, selfHostedPath string, format tea.ArtifactFormat) ([]byte, error) {
+	var req *http.Request
+	var err error
+	if format.SignatureURL != "" {
+		req, err = http.NewRequestWithContext(ctx, http.MethodGet, format.SignatureURL, nil)
+	} else {
+		u := c.baseURL + selfHostedPath + "?mediaType=" + url.QueryEscape(format.MediaType)
+		req, err = http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+		if err == nil && c.bearerToken != "" {
+			req.Header.Set("Authorization", "Bearer "+c.bearerToken)
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > maxResponseBody {
+		return nil, fmt.Errorf("teaclient: signature download for %s exceeds %d byte limit", selfHostedPath, maxResponseBody)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, &APIError{StatusCode: resp.StatusCode, ContentType: resp.Header.Get("Content-Type"), Body: body}
+	}
+	return body, nil
 }
 
 // checksumHasher pairs a declared checksum with the running hash.Hash that

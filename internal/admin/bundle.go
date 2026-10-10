@@ -76,7 +76,18 @@ func (s *Server) importProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := bundle.Import(r.Context(), s.repo, s.storage, s.cfg.RootURL, zr)
+	// force=true is honored only when TEA_ALLOW_UNSAFE_IMPORT is set --
+	// checked before the parameter is even consulted, so a stray query
+	// parameter can never bypass import validation by accident on a real
+	// deployment. See docs/bundle-format.md's "Force-import" section:
+	// test-tooling only, for deliberately seeding a disposable test server
+	// with bundles that fail normal validation.
+	importFn := bundle.Import
+	if s.cfg.AllowUnsafeImport && r.URL.Query().Get("force") == "true" {
+		importFn = bundle.ImportUnchecked
+	}
+
+	result, err := importFn(r.Context(), s.repo, s.storage, s.cfg.RootURL, zr)
 	if err != nil {
 		httpx.BadRequest(w, "import failed: "+err.Error())
 		return

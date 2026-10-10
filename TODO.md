@@ -2656,6 +2656,19 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       guarantees as `Check`. (The dangling-component-reference case was already implicitly
       caught by `Import` via a foreign-key violation on `product_release_component` -- this
       makes `bundlecheck` catch it too, without needing a database at all.)
+- [x] ~~Way to deliberately get bad data into a server's storage, to prove a *client* reading
+      `/tea/v1` detects it, not just that the importer rejects it on the way in~~ -- done
+      (2026-10-10), `docs/bundle-format.md`'s "Force-import" section: `bundle.ImportUnchecked`
+      (same entity-creation logic as `Import`, schema/file-hash-integrity/referential-completeness
+      checks skipped), exposed as `POST /admin/v1/products/import?force=true`, gated behind
+      `TEA_ALLOW_UNSAFE_IMPORT` (default `false`, checked before `force` is even consulted --
+      never set this on a real deployment). `storage.UnsafePutter` (new optional capability,
+      implemented by `FSStorage`) lets a blob land under a caller-claimed sha256 that doesn't
+      match its own content, for the checksum-mismatch case specifically; a dangling
+      cross-reference still fails as a foreign-key violation regardless, unaffected by this flag.
+      `internal/conformance.CheckBadData` proves the payoff end to end: force-import both
+      `testdataset.BadChecksumMismatch`/`BadMissingFile`, then confirm a real `teaclient` call
+      (`DownloadAndVerify`) actually detects each one rather than silently accepting it.
 
 ## ETag / conditional requests (this feature)
 - [ ] Check the `revision`/`cle_revision`/`dataset_watermark` scheme (added 2026-08-06) against

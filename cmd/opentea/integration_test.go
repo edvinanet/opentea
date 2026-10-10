@@ -53,6 +53,16 @@ func newTestServer(t *testing.T) *testServer {
 // actually served (only) under the configured path.
 func newTestServerWithAPIBasePath(t *testing.T, apiBasePath string) *testServer {
 	t.Helper()
+	return newTestServerWithConfig(t, apiBasePath, nil)
+}
+
+// newTestServerWithConfig is newTestServer/newTestServerWithAPIBasePath's
+// shared implementation, with an extra mutate hook (nil means none) for
+// tests that need a config.Config field neither of those two convenience
+// entry points exposes -- e.g. AllowUnsafeImport, for the force-import test
+// rig (docs/bundle-format.md's "Force-import" section).
+func newTestServerWithConfig(t *testing.T, apiBasePath string, mutate func(*config.Config)) *testServer {
+	t.Helper()
 	dir := t.TempDir()
 
 	sqlDB, err := db.Open(filepath.Join(dir, "test.db"))
@@ -80,6 +90,9 @@ func newTestServerWithAPIBasePath(t *testing.T, apiBasePath string) *testServer 
 		PublisherLockTTL:     time.Hour,
 		PublisherApprovalTTL: 24 * time.Hour,
 		AccessTokenTTL:       time.Hour,
+	}
+	if mutate != nil {
+		mutate(&cfg)
 	}
 	srv := httptest.NewServer(nil) // handler attached below, once we know srv.URL for cfg.RootURL
 	cfg.RootURL = srv.URL

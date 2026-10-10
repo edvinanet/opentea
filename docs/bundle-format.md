@@ -16,7 +16,7 @@ imported. This document is the human-readable companion to that schema.
 | Method | Path | Role | Notes |
 |---|---|---|---|
 | GET | `/admin/v1/products/{uuid}/export` | admin | Streams `application/zip` |
-| POST | `/admin/v1/products/import` | admin | multipart, field `bundle`; returns a JSON summary |
+| POST | `/admin/v1/products/import` | admin | multipart, field `bundle`; returns a JSON summary. `?force=true` is test-tooling only — see "Force-import" below |
 
 ## Zip layout
 
@@ -98,6 +98,33 @@ import never overwrites data that's already there.
    bytes don't match its own claimed checksum is rejected as corrupt, before any distribution
    or artifact that references it is imported. (Only SHA-256 is independently verified this
    way, since it's the one algorithm this server itself ever computes — see `TODO.md`.)
+3. **Referential completeness.** Every SHA-256 checksum a distribution or artifact format
+   declares must have a corresponding `files/<sha256>` entry in the zip — a checksum with
+   nothing backing it is rejected the same way a mismatched one is. Mirrors `bundlecheck`'s
+   own `MissingFiles` check (below), so `Import` provides the same guarantees `Check` does, as
+   a side effect of actually applying the bundle rather than a weaker subset of them.
+
+## Force-import (test-tooling only)
+
+`POST /admin/v1/products/import?force=true` calls `bundle.ImportUnchecked` instead of
+`bundle.Import`: the same entity-creation logic, with checks 1 and 3 above skipped, and check 2
+skipped wherever the storage backend supports it (`storage.UnsafePutter`; `FSStorage` does) —
+deliberately letting a bundle that fails normal validation land in storage exactly as given,
+corruption included. A dangling cross-reference (a product release pinning a component or
+component release absent from the manifest's own top-level arrays) is **not** bypassed by
+this — that still fails as a foreign-key violation, a database-level invariant neither check
+skips.
+
+This exists for exactly one reason: proving a *client* reading `/tea/v1` correctly detects bad
+data that somehow ended up stored anyway, not just that this importer catches it on the way in
+— see `docs/bundle-import-export-test-rig.md`'s own "Force-import" section and
+`docs/consumer-api-conformance-test-rig.md`'s "Deliberately invalid data" section for the full
+test-rig context.
+
+`force=true` is honored only when the server is started with `TEA_ALLOW_UNSAFE_IMPORT=true`
+(see `README.md`'s config table) — checked *before* the parameter is even consulted, so it is
+silently ignored (the import proceeds as an ordinary, fully-validated one) on any deployment
+that hasn't explicitly opted in. **Never set that variable on a real deployment.**
 
 ## Standalone validation: `bundlecheck`
 
@@ -116,11 +143,14 @@ bundlecheck product-a.zip product-b.zip
 #   hash mismatch: files/2e01b874... (content doesn't match its claimed checksum)
 ```
 
-It runs the same two checks as import's own validation (schema conformance, file-hash
-integrity) plus a third: every SHA-256 checksum referenced by a distribution or artifact format
-must have a matching `files/` entry actually present in the zip (a "missing file" error, not
-just a hash mismatch on what's there). An extra `files/` entry not referenced by anything in the
-manifest is reported as a note, not an error — harmless orphan data, not invalid.
+It runs the same checks as import's own validation (schema conformance, file-hash integrity,
+referential completeness — the three numbered above), plus one `Import` can't check purely by
+reading the zip: a dangling `productReleases[].components[]` reference (a component or
+component-release UUID absent from the manifest's own top-level `components[]`/
+`componentReleases[]` arrays) — `Import` still catches this too, but only as a foreign-key
+violation once it actually tries to write the link, not before. An extra `files/` entry not
+referenced by anything in the manifest is reported as a note, not an error — harmless orphan
+data, not invalid.
 
 **Exit codes are the contract for scripting/CI use**: `0` if every given bundle is valid, `1` if
 any bundle is invalid *or* couldn't even be read (missing file, not a zip, etc.) — so

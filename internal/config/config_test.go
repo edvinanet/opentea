@@ -34,6 +34,20 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.AdminListenAddr != "" {
 		t.Errorf("AdminListenAddr = %q, want empty (single-listener default)", cfg.AdminListenAddr)
 	}
+	if cfg.AllowUnsafeImport {
+		t.Error("AllowUnsafeImport = true, want false by default -- this must never be on by accident")
+	}
+}
+
+func TestAllowUnsafeImportFromEnv(t *testing.T) {
+	t.Setenv("TEA_ALLOW_UNSAFE_IMPORT", "true")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.AllowUnsafeImport {
+		t.Error("AllowUnsafeImport = false, want true when TEA_ALLOW_UNSAFE_IMPORT=true")
+	}
 }
 
 func TestAdminListenAddrFromEnv(t *testing.T) {

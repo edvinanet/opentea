@@ -78,4 +78,7 @@ func printReport(path string, report *bundle.CheckReport) {
 	for _, h := range report.OrphanFiles {
 		fmt.Printf("  note: files/%s is present but not referenced by anything in the manifest\n", h)
 	}
+	for _, d := range report.DanglingReferences {
+		fmt.Printf("  dangling reference: %s\n", d)
+	}
 }

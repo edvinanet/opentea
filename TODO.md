@@ -2645,6 +2645,17 @@ TEI-format entries), now many commits behind. To be worked issue by issue, not a
       checksum referenced by the manifest has a matching `files/` entry) purely by reading the
       zip -- no server, DB, or admin auth needed. Scriptable: exit 0 if every given bundle is
       valid, exit 1 if any is invalid or unreadable.
+- [x] ~~`bundlecheck`/`Import` didn't catch a dangling `productRelease.components[]` reference
+      (a component or component-release UUID absent from the manifest's own top-level arrays),
+      and `Import` (unlike `Check`) didn't reject a checksum with no backing `files/` entry
+      either -- found while building `internal/testdataset`'s reference bundles (see
+      `docs/bundle-import-export-test-rig.md`)~~ -- fixed (2026-10-10): `Check` gained a new
+      `DanglingReferences` report field (`checkDanglingReferences` in `check.go`); `Import`
+      gained the equivalent missing-file check (`missingFileHashes` in `import.go`), run before
+      any DB write, matching `CheckReport`'s own doc comment that `Import` provides the same
+      guarantees as `Check`. (The dangling-component-reference case was already implicitly
+      caught by `Import` via a foreign-key violation on `product_release_component` -- this
+      makes `bundlecheck` catch it too, without needing a database at all.)
 
 ## ETag / conditional requests (this feature)
 - [ ] Check the `revision`/`cle_revision`/`dataset_watermark` scheme (added 2026-08-06) against

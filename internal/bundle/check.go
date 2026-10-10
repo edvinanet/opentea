@@ -38,6 +38,16 @@ type CheckReport struct {
 	// referenced by anything in the manifest -- harmless, but worth
 	// flagging; doesn't affect Valid.
 	OrphanFiles []string
+
+	// DanglingReferences lists product-release component links
+	// (components[].uuid / components[].release) that name a component or
+	// component-release UUID absent from the manifest's own top-level
+	// components[]/componentReleases[] arrays -- a reference the schema
+	// can't catch (JSON Schema has no notion of "this UUID must appear
+	// elsewhere in the document") but Import would reject as a foreign-key
+	// violation. Checking it here lets a dangling reference be caught
+	// without a database at all.
+	DanglingReferences []string
 }
 
 // Check validates a bundle zip's manifest against the JSON Schema and
@@ -70,9 +80,43 @@ func Check(zr *zip.Reader) (*CheckReport, error) {
 	if err := checkFileHashes(zr, m, report); err != nil {
 		return nil, err
 	}
+	checkDanglingReferences(m, report)
 
-	report.Valid = len(report.SchemaErrors) == 0 && len(report.HashMismatches) == 0 && len(report.MissingFiles) == 0
+	report.Valid = len(report.SchemaErrors) == 0 && len(report.HashMismatches) == 0 &&
+		len(report.MissingFiles) == 0 && len(report.DanglingReferences) == 0
 	return report, nil
+}
+
+// checkDanglingReferences populates report.DanglingReferences with every
+// product release's component link that names a component or component
+// release UUID not present in the manifest's own top-level components[]/
+// componentReleases[] arrays.
+func checkDanglingReferences(m Manifest, report *CheckReport) {
+	componentUUIDs := map[string]struct{}{}
+	for _, c := range m.Components {
+		componentUUIDs[c.UUID] = struct{}{}
+	}
+	componentReleaseUUIDs := map[string]struct{}{}
+	for _, cr := range m.ComponentReleases {
+		componentReleaseUUIDs[cr.UUID] = struct{}{}
+	}
+
+	for _, pr := range m.ProductReleases {
+		for _, ref := range pr.Components {
+			if _, ok := componentUUIDs[ref.UUID]; !ok {
+				report.DanglingReferences = append(report.DanglingReferences, fmt.Sprintf(
+					"product release %s: component %s is not present in components[]", pr.UUID, ref.UUID))
+				continue // the release UUID can't be checked meaningfully against an unknown component
+			}
+			if ref.Release != nil {
+				if _, ok := componentReleaseUUIDs[*ref.Release]; !ok {
+					report.DanglingReferences = append(report.DanglingReferences, fmt.Sprintf(
+						"product release %s: component release %s is not present in componentReleases[]", pr.UUID, *ref.Release))
+				}
+			}
+		}
+	}
+	sort.Strings(report.DanglingReferences)
 }
 
 // checkFileHashes compares the manifest's declared file references against

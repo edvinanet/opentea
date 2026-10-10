@@ -126,6 +126,15 @@ func Import(ctx context.Context, r *repo.Repo, store storage.Storage, rootURL st
 		return nil, fmt.Errorf("decode manifest.json: %w", err)
 	}
 
+	// Mirrors Check's own MissingFiles check (check.go): a checksum the
+	// manifest references with no backing files/ entry is rejected here
+	// too, before anything is written -- Import is documented (CheckReport's
+	// own doc comment) as providing the same guarantees as Check, as a side
+	// effect of actually applying the bundle, not a weaker subset of them.
+	if missing := missingFileHashes(zr, m); len(missing) > 0 {
+		return nil, fmt.Errorf("bundle references %d checksum(s) with no corresponding files/ entry, e.g. files/%s", len(missing), missing[0])
+	}
+
 	sha256ToMediaType := collectMediaTypes(m)
 	res := newImportResult()
 
@@ -454,6 +463,35 @@ func importBlobs(ctx context.Context, r *repo.Repo, store storage.Storage, zr *z
 		sha256ToURL[actualSHA256] = rootURL + "/files/" + actualSHA256
 	}
 	return sha256ToURL, nil
+}
+
+// missingFileHashes returns every SHA-256 checksum the manifest's artifact
+// formats or component-release distributions reference that has no
+// corresponding files/<sha256> entry in zr -- the same expected-hash
+// collection check.go's MissingFiles computes, reused here so Import rejects
+// the same bundles Check flags as invalid.
+func missingFileHashes(zr *zip.Reader, m Manifest) []string {
+	expected := map[string]struct{}{}
+	collectFileHashes(expected, m.Collections)
+	for _, cr := range m.ComponentReleases {
+		collectDistributionFileHashes(expected, cr.Distributions)
+	}
+
+	present := map[string]struct{}{}
+	const prefix = "files/"
+	for _, f := range zr.File {
+		if len(f.Name) > len(prefix) && f.Name[:len(prefix)] == prefix {
+			present[f.Name[len(prefix):]] = struct{}{}
+		}
+	}
+
+	var missing []string
+	for hash := range expected {
+		if _, ok := present[hash]; !ok {
+			missing = append(missing, hash)
+		}
+	}
+	return missing
 }
 
 // readZipFile reads the named zip entry in full, rejecting it if it exceeds
